@@ -10,7 +10,6 @@ runs/
 evaluate_results/
 .deepspeed*
 
-third_party/
 
 # ai coding
 .codex/
@@ -235,6 +234,9 @@ manifest.json
 *.locks*
 *.no_exist*
 *models--t5*
+
+!data/fastwam_model_hf_release/libero_uncond_2cam224.pt
+!data/fastwam_model_hf_release/robotwin_uncond_3cam_384.pt
 
 # OneLogger
 wandb/
