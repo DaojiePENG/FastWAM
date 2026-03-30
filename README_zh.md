@@ -22,6 +22,8 @@
 - [使用 Release 权重推理](#使用-release-权重推理)
 - [训练](#训练)
 - [使用自己训练的权重推理](#使用自己训练的权重推理)
+- [致谢](#致谢)
+- [BibTeX](#bibtex)
 
 ## File Structure
 
@@ -218,6 +220,8 @@ python experiments/robotwin/run_robotwin_manager.py \
 它会在一次 replan 窗口内连续执行一个 action chunk 时跳过 RGB 渲染，评测更快，但保存下来的视频帧率会低。
 如果想保存完整视频，可以把它设为 `false`。
 
+**注意：**我们测试用的是**unseen**指令，这点和Motus对齐。而[Lingbot-VA](https://github.com/Robbyant/lingbot-va/blob/661d52a59dc634a650efcd10a79d06bbb17ea81f/evaluation/robotwin/eval_polict_client_openpi.py#L308)使用的是**seen**，你可以尝试设置`EVALUATION.instruction_type=seen`来使用**seen**指令，理论上会提高一两个点。
+
 ## 训练
 
 ### 1) 训练前先预计算 T5 embedding cache
@@ -282,4 +286,21 @@ python experiments/robotwin/run_robotwin_manager.py task={task_name} ckpt={ckpt_
 ```text
 libero_uncond_2cam224_1e-4
 robotwin_uncond_3cam_384_1e-4
+```
+
+## 致谢
+
+本仓库中的 RoboTwin 评测代码基于官方 [RoboTwin 仓库](https://github.com/RoboTwin-Platform/RoboTwin) 适配而来。感谢 RoboTwin 团队公开其代码仓库和相关 assets。
+
+## BibTeX
+
+如果你觉得我们的工作有帮助，欢迎引用：
+
+```bibtex
+@misc{yuan2026fastwam,
+  title={Fast-WAM: Do World Action Models Need Test-time Future Imagination?},
+  author={Tianyuan Yuan and Zibin Dong and Yicheng Liu and Hang Zhao},
+  year={2026},
+  note={arXiv preprint arXiv:2603.16666}
+}
 ```

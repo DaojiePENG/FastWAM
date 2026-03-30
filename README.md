@@ -22,6 +22,8 @@ This repository contains the training and evaluation code for FastWAM on LIBERO 
 - [Inference with Released Checkpoints](#inference-with-released-checkpoints)
 - [Training](#training)
 - [Inference with Your Trained Checkpoints](#inference-with-your-trained-checkpoints)
+- [Acknowledgements](#acknowledgements)
+- [BibTeX](#bibtex)
 
 ## File Structure
 
@@ -218,6 +220,8 @@ For faster RoboTwin evaluation, we have enabled `EVALUATION.skip_get_obs_within_
 This skips RGB rendering while consecutively executing an action chunk within one replan window, which speeds up evaluation but makes the saved video look very low-FPS.
 Set it to `false` if you want to save a fully rendered video.
 
+**Note:** We evaluate with **unseen** instructions, following Motus. [Lingbot-VA](https://github.com/Robbyant/lingbot-va/blob/661d52a59dc634a650efcd10a79d06bbb17ea81f/evaluation/robotwin/eval_polict_client_openpi.py#L308) uses **seen** instructions instead. You can try `EVALUATION.instruction_type=seen` to use **seen** instructions, which should theoretically improve performance by one or two points.
+
 ## Training
 
 ### 1) Precompute T5 embedding cache before training
@@ -281,4 +285,21 @@ Common `task_name` examples:
 ```text
 libero_uncond_2cam224_1e-4
 robotwin_uncond_3cam_384_1e-4
+```
+
+## Acknowledgements
+
+The RoboTwin evaluation code in this repository is adapted from the official [RoboTwin repository](https://github.com/RoboTwin-Platform/RoboTwin). We thank the RoboTwin team for releasing their codebase and assets.
+
+## BibTeX
+
+If you find our work helpful, please consider citing:
+
+```bibtex
+@misc{yuan2026fastwam,
+  title={Fast-WAM: Do World Action Models Need Test-time Future Imagination?},
+  author={Tianyuan Yuan and Zibin Dong and Yicheng Liu and Hang Zhao},
+  year={2026},
+  note={arXiv preprint arXiv:2603.16666}
+}
 ```
