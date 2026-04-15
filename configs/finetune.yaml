@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - train
+  - _self_
+
+# Fine-tuning strategy configuration
+finetune:
+  # Freeze strategy: "none", "action_head_only", "action_only", "video_only"
+  # - none: train all (MoT including both video and action experts)
+  # - action_head_only: only train action expert's head (output layer)
+  # - action_only: train entire action expert, freeze video expert
+  # - video_only: train entire video expert, freeze action expert
+  freeze_strategy: "action_head_only"
+
+  # Whether to freeze video expert (only used when freeze_strategy is not "video_only")
+  freeze_video_expert: true
+
+  # Whether to freeze action expert backbone (only used when freeze_strategy is not "action_only")
+  freeze_action_backbone: true
+
+# Fine-tuning typically uses smaller learning rate
+learning_rate: 1.0e-5
+
+# Fine-tuning may need fewer epochs
+num_epochs: 1
+
+# Output directory for fine-tuning runs
+output_dir: ./runs/finetune/${now:%Y-%m-%d}_${now:%H-%M-%S}

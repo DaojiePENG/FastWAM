@@ -56,16 +56,33 @@ class Wan22Trainer:
             )
         self.wandb_enabled = bool(cfg.wandb.enabled)
 
+        # Fine-tuning configuration
+        self.finetune_config = cfg.get("finetune", None)
+        if self.finetune_config is None:
+            # Default: train all (backward compatibility)
+            self.freeze_strategy = "none"
+            self.freeze_video_expert = False
+            self.freeze_action_backbone = False
+        else:
+            self.freeze_strategy = str(self.finetune_config.get("freeze_strategy", "none")).lower()
+            self.freeze_video_expert = bool(self.finetune_config.get("freeze_video_expert", False))
+            self.freeze_action_backbone = bool(self.finetune_config.get("freeze_action_backbone", False))
+
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             mixed_precision=self.mixed_precision,
             step_scheduler_with_optimizer=False,
         )
         
+        # Get zero stage info if using DeepSpeed
+        zero_stage = "unknown"
+        if self.accelerator.state.deepspeed_plugin is not None:
+            zero_stage = self.accelerator.state.deepspeed_plugin.deepspeed_config.get("zero_optimization", {}).get("stage", "unknown")
+
         logger.info(
             "Accelerate training: distributed_type=%s zero_stage=%s world_size=%d process_index=%d cfg_mixed_precision=%s accelerator_mixed_precision=%s grad_accum=%d grad_clip=%.4f",
             self.accelerator.distributed_type,
-            self.accelerator.state.deepspeed_plugin.deepspeed_config.get("zero_optimization", {}).get("stage", "unknown"),
+            zero_stage,
             self.accelerator.num_processes,
             self.accelerator.process_index,
             self.mixed_precision,
@@ -80,12 +97,9 @@ class Wan22Trainer:
             self._assert_dataset_length_consistent(self.val_dataset, "val_dataset")
 
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
-        # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
-        self._apply_dit_only_train_mode(self.model)
-        trainable_params = list(self.model.dit.parameters())
-        proprio_encoder = getattr(self.model, "proprio_encoder", None)
-        if proprio_encoder is not None:
-            trainable_params.extend(list(proprio_encoder.parameters()))
+        # Apply freeze strategy based on configuration.
+        self._apply_freeze_strategy(self.model)
+        trainable_params = self._get_trainable_parameters(self.model)
         self.optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.learning_rate,
@@ -281,10 +295,127 @@ class Wan22Trainer:
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.
         logger.info("Setting DiT to train mode and freezing other model components.")
         model = self.accelerator.unwrap_model(self.model)
-        self._apply_dit_only_train_mode(model)
+        self._apply_freeze_strategy(model)
+
+    def _apply_freeze_strategy(self, model):
+        """Apply freeze strategy based on finetune configuration."""
+        logger.info(
+            "Applying freeze strategy: %s (freeze_video=%s, freeze_action_backbone=%s)",
+            self.freeze_strategy,
+            self.freeze_video_expert,
+            self.freeze_action_backbone,
+        )
+
+        # First, freeze everything
+        model.eval()
+        model.requires_grad_(False)
+
+        # Apply strategy
+        if self.freeze_strategy == "none":
+            # Train all (default behavior)
+            self._apply_dit_only_train_mode_legacy(model)
+        elif self.freeze_strategy == "action_head_only":
+            # Only train action expert's head
+            self._train_action_head_only(model)
+        elif self.freeze_strategy == "action_only":
+            # Train entire action expert, freeze video expert
+            self._train_action_only(model)
+        elif self.freeze_strategy == "video_only":
+            # Train entire video expert, freeze action expert
+            self._train_video_only(model)
+        else:
+            raise ValueError(
+                f"Unknown freeze_strategy: {self.freeze_strategy}. "
+                "Expected one of: ['none', 'action_head_only', 'action_only', 'video_only']."
+            )
+
+        # Optionally train proprio_encoder
+        proprio_encoder = getattr(model, "proprio_encoder", None)
+        if proprio_encoder is not None:
+            proprio_encoder.train()
+            proprio_encoder.requires_grad_(True)
+            logger.info("Proprio encoder is trainable.")
+
+    def _train_action_head_only(self, model):
+        """Only train action expert's head (output layer)."""
+        action_expert = getattr(model, "action_expert", None)
+        if action_expert is None:
+            raise ValueError("`model.action_expert` not found. Cannot apply action_head_only strategy.")
+
+        # Only the head is trainable
+        action_expert.head.train()
+        action_expert.head.requires_grad_(True)
+        logger.info("Action expert head is trainable. All other components are frozen.")
+
+    def _train_action_only(self, model):
+        """Train entire action expert, freeze video expert."""
+        action_expert = getattr(model, "action_expert", None)
+        if action_expert is None:
+            raise ValueError("`model.action_expert` not found. Cannot apply action_only strategy.")
+
+        # Train entire action expert
+        action_expert.train()
+        action_expert.requires_grad_(True)
+        logger.info("Entire action expert is trainable. Video expert is frozen.")
+
+    def _train_video_only(self, model):
+        """Train entire video expert, freeze action expert."""
+        video_expert = getattr(model, "video_expert", None)
+        if video_expert is None:
+            raise ValueError("`model.video_expert` not found. Cannot apply video_only strategy.")
+
+        # Train entire video expert
+        video_expert.train()
+        video_expert.requires_grad_(True)
+        logger.info("Entire video expert is trainable. Action expert is frozen.")
+
+    def _get_trainable_parameters(self, model):
+        """Get list of trainable parameters based on freeze strategy."""
+        trainable_params = []
+
+        if self.freeze_strategy == "none":
+            # Train all DiT (MoT)
+            trainable_params.extend(list(model.dit.parameters()))
+        elif self.freeze_strategy == "action_head_only":
+            # Only action head
+            action_expert = getattr(model, "action_expert", None)
+            if action_expert is not None:
+                trainable_params.extend(list(action_expert.head.parameters()))
+        elif self.freeze_strategy == "action_only":
+            # Entire action expert
+            action_expert = getattr(model, "action_expert", None)
+            if action_expert is not None:
+                trainable_params.extend(list(action_expert.parameters()))
+        elif self.freeze_strategy == "video_only":
+            # Entire video expert
+            video_expert = getattr(model, "video_expert", None)
+            if video_expert is not None:
+                trainable_params.extend(list(video_expert.parameters()))
+
+        # Always include proprio_encoder if it exists
+        proprio_encoder = getattr(model, "proprio_encoder", None)
+        if proprio_encoder is not None:
+            trainable_params.extend(list(proprio_encoder.parameters()))
+
+        if not trainable_params:
+            raise ValueError(
+                f"No trainable parameters found with freeze_strategy={self.freeze_strategy}. "
+                "Check your model configuration."
+            )
+
+        # Log number of trainable parameters
+        total_params = sum(p.numel() for p in trainable_params)
+        logger.info(
+            "Total trainable parameters: %d (%.2fM)",
+            total_params,
+            total_params / 1e6,
+        )
+
+        return trainable_params
 
     @staticmethod
-    def _apply_dit_only_train_mode(model):
+    def _apply_dit_only_train_mode_legacy(model):
+        """Legacy method: train entire DiT (MoT), freeze other components."""
         model.eval()
         model.requires_grad_(False)
         model.dit.train()
