@@ -96,6 +96,14 @@ class Wan22Trainer:
         if self.val_dataset is not None:
             self._assert_dataset_length_consistent(self.val_dataset, "val_dataset")
 
+        # CRITICAL: Load checkpoint BEFORE accelerator.prepare() to ensure proper synchronization
+        # This is especially important for DeepSpeed ZeRO modes
+        if self.resume:
+            resume_path = Path(str(self.resume))
+            if not resume_path.is_dir() and resume_path.exists():
+                logger.info("Loading pretrained weights before accelerator.prepare(): %s", self.resume)
+                self.model.load_checkpoint(str(resume_path), optimizer=None)
+
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # Apply freeze strategy based on configuration.
         self._apply_freeze_strategy(self.model)
@@ -277,19 +285,26 @@ class Wan22Trainer:
         return f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}", steps_per_sec
 
     def _resume_or_load_checkpoint(self):
+        """
+        Handle resuming from checkpoints.
+        Note: .pt weight files are already loaded before accelerator.prepare() in __init__
+        This method only handles resuming full training state from directories.
+        """
         resume = self.resume
         if not resume:
             return
         resume_path = Path(str(resume))
+
+        # Only handle directory (full training state with optimizer/scheduler)
         if resume_path.is_dir():
             logger.info("Resuming full training state from directory: %s", resume)
             self.load_training_state(str(resume_path))
             return
+
+        # For .pt files, they were already loaded in __init__ before accelerator.prepare()
+        # Nothing more to do here
         if not resume_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {resume}")
-        logger.info("Loading weight checkpoint only: %s", resume)
-        self.accelerator.unwrap_model(self.model).load_checkpoint(str(resume_path), optimizer=None)
-        logger.warning("Loaded .pt weights only; optimizer/scheduler/step were not restored under ZeRO2.")
 
     def _set_dit_only_train_mode(self):
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.

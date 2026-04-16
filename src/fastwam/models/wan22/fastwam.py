@@ -1100,7 +1100,11 @@ class FastWAM(torch.nn.Module):
     def load_checkpoint(self, path, optimizer=None):
         payload = torch.load(path, map_location="cpu")
         if "mot" in payload:
-            self.mot.load_state_dict(payload["mot"], strict=False)
+            missing_keys, unexpected_keys = self.mot.load_state_dict(payload["mot"], strict=False)
+            if missing_keys:
+                logger.warning(f"Missing keys when loading checkpoint (showing first 10): {missing_keys[:10]}")
+            if unexpected_keys:
+                logger.warning(f"Unexpected keys when loading checkpoint (showing first 10): {unexpected_keys[:10]}")
         elif "dit" in payload:
             logger.warning("Loading legacy `dit` checkpoint into video expert only.")
             self.video_expert.load_state_dict(payload["dit"], strict=False)
