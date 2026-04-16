@@ -1,19 +1,23 @@
 #!/bin/bash
 
-# Fine-tuning script for FastWAM
-# This script demonstrates how to fine-tune only the action head
+# FastWAM Fine-tuning Script (NOHUP + PID FILE)
+# Training survives SSH disconnect | PID saved for easy killing
 
 set -e
 
 # Configuration
 NUM_GPUS=${1:-1}
 TASK=${2:-"libero_finetune_action_head"}
+LOG_FILE="training_log_$(date +%Y%m%d_%H%M%S).log"
+PID_FILE="training_pid.txt"  # PID will be saved here
 
 echo "==================================="
-echo "FastWAM Fine-tuning Script"
+echo "FastWAM Fine-tuning (NOHUP + PID MODE)"
 echo "==================================="
-echo "Number of GPUs: $NUM_GPUS"
-echo "Task: $TASK"
+echo "GPUs:          $NUM_GPUS"
+echo "Task:          $TASK"
+echo "Log file:      $LOG_FILE"
+echo "PID file:      $PID_FILE"
 echo "==================================="
 
 # Check if pretrained checkpoint exists
@@ -25,19 +29,30 @@ if [ ! -f "$PRETRAINED_CKPT" ]; then
     exit 1
 fi
 
-# Run fine-tuning
+# Start training in background with nohup
+echo "Starting training..."
+echo "You can close SSH safely. Training will continue."
+
 if [ "$NUM_GPUS" -eq 1 ]; then
     echo "Running on single GPU..."
-    python scripts/train.py task=$TASK
+    nohup python scripts/train.py task=$TASK > "$LOG_FILE" 2>&1 &
 else
     echo "Running on $NUM_GPUS GPUs with DeepSpeed ZeRO-1..."
-    accelerate launch \
+    nohup accelerate launch \
         --config_file scripts/accelerate_configs/accelerate_zero1_ds.yaml \
         --num_processes=$NUM_GPUS \
         scripts/train.py \
-        task=$TASK
+        task=$TASK > "$LOG_FILE" 2>&1 &
 fi
 
+# SAVE PID TO FILE
+echo $! > "$PID_FILE"
+
 echo "==================================="
-echo "Fine-tuning completed!"
+echo "TRAINING STARTED!"
+echo "PID saved to: $PID_FILE"
+echo "PID: $(cat $PID_FILE)"
+echo ""
+echo "TO MONITOR LOGS:  tail -f $LOG_FILE"
+echo "TO STOP TRAINING: kill \$(cat $PID_FILE)"
 echo "==================================="

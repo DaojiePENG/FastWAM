@@ -23,9 +23,10 @@ finetune:
 # Training configuration
 learning_rate: 1.0e-5  # Smaller learning rate for fine-tuning
 batch_size: 30
-num_epochs: 5
-save_every: 1000
-eval_every: 200
+gradient_accumulation_steps: 1
+num_epochs: 3
+save_every: 500
+eval_every: 250
 log_every: 10
 
 # Must load pretrained checkpoint for fine-tuning

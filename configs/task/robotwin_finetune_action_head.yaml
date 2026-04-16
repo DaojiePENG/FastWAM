@@ -22,10 +22,11 @@ finetune:
 
 # Training configuration
 learning_rate: 5.0e-6  # Even smaller learning rate for RoboTwin fine-tuning
-batch_size: 16
-num_epochs: 3
-save_every: 1250
-eval_every: 250
+batch_size: 8
+gradient_accumulation_steps: 2
+num_epochs: 2
+save_every: 1000
+eval_every: 200
 log_every: 10
 
 # Must load pretrained checkpoint for fine-tuning
