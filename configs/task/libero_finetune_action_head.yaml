@@ -26,10 +26,19 @@ batch_size: 30
 num_epochs: 10
 save_every: 2000
 eval_every: 200
-log_every: 10
+log_every: 1
 
 # Must load pretrained checkpoint for fine-tuning
 resume: "./checkpoints/fastwam_release/libero_uncond_2cam224.pt"
 
 # Output directory
 output_dir: ./runs/finetune/libero_action_head/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+# Wandb logging for fine-tuning
+wandb:
+  enabled: true  # Enable wandb logging
+  workspace: pengdaojie-the-hong-kong-university-of-science-and-techn  # Set your wandb workspace/username here
+  project: fastwam-finetune
+  name: libero_finetune_action_head
+  group: finetune  # Group all fine-tuning runs together
+  mode: online

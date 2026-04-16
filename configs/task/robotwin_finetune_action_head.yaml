@@ -33,3 +33,12 @@ resume: "./checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt"
 
 # Output directory
 output_dir: ./runs/finetune/robotwin_action_head/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+# Wandb logging for fine-tuning
+wandb:
+  enabled: true  # Enable wandb logging
+  workspace: pengdaojie-the-hong-kong-university-of-science-and-techn  # Set your wandb workspace/username here
+  project: fastwam-finetune
+  name: robotwin_finetune_action_head
+  group: finetune  # Group all fine-tuning runs together
+  mode: online

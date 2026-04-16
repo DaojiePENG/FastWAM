@@ -1,5 +1,9 @@
 # @package _global_
 
+# Fine-tuning configuration template
+# NOTE: This is a reference template. Task configs (e.g., task/libero_finetune_action_head.yaml)
+#       do NOT inherit from this file. Copy settings from here to your task config as needed.
+
 defaults:
   - train
   - _self_
@@ -27,3 +31,12 @@ num_epochs: 1
 
 # Output directory for fine-tuning runs
 output_dir: ./runs/finetune/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+# Enable wandb logging for fine-tuning (recommended)
+wandb:
+  enabled: true
+  workspace: null  # Set your wandb workspace/username here
+  project: fast-wam
+  name: finetune
+  group: finetune
+  mode: online
