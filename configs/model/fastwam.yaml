@@ -56,3 +56,23 @@ action_scheduler:
 
 loss:
   lambda_action: 1.0
+
+  # Speed-weighted action loss configuration
+  # Core idea: Assign higher weights to slow-speed actions (fine-grained manipulation)
+  # and lower weights to fast-speed actions during training
+  use_weighted_action_loss: false  # Enable speed-based action loss weighting (default: disabled for backward compatibility)
+
+  # Weight computation strategy (only used if use_weighted_action_loss=true)
+  action_loss_weight_strategy: "inverse"  # Options: inverse, inverse_squared, exp_decay, log
+
+  # Weight clipping to avoid extreme values
+  action_loss_clip_max_weight: 2.0  # Maximum weight multiplier
+
+  # Exponential decay parameter (only for exp_decay strategy)
+  action_loss_alpha: 2.0
+
+  # Loss function type
+  action_loss_use_l1: true  # true: L1 loss (robust to outliers), false: MSE loss
+
+  # Weight normalization
+  action_loss_normalize_weights: true  # Normalize weights to have mean=1

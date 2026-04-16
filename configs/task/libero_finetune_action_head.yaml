@@ -23,13 +23,24 @@ finetune:
 # Training configuration
 learning_rate: 1.0e-5  # Smaller learning rate for fine-tuning
 batch_size: 30
-num_epochs: 10
-save_every: 2000
+num_epochs: 5
+save_every: 1000
 eval_every: 200
-log_every: 1
+log_every: 10
 
 # Must load pretrained checkpoint for fine-tuning
 resume: "./checkpoints/fastwam_release/libero_uncond_2cam224.pt"
+
+# Enable speed-weighted action loss for better fine-grained manipulation
+# Prioritizes slow-speed actions (critical for precise manipulation) during training
+model:
+  loss:
+    use_weighted_action_loss: true  # Enable speed-based weighting
+    action_loss_weight_strategy: "inverse"  # Options: inverse, inverse_squared, exp_decay, log
+    action_loss_clip_max_weight: 2.0  # Maximum weight multiplier to avoid extreme values
+    action_loss_alpha: 2.0  # Decay rate for exp_decay strategy
+    action_loss_use_l1: true  # L1 loss (more robust to outliers than MSE)
+    action_loss_normalize_weights: true  # Normalize weights to have mean=1
 
 # Output directory
 output_dir: ./runs/finetune/libero_action_head/${now:%Y-%m-%d}_${now:%H-%M-%S}

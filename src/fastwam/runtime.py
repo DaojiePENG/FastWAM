@@ -155,6 +155,13 @@ def create_fastwam(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        # Speed-weighted action loss configuration
+        use_weighted_action_loss=bool(loss.get("use_weighted_action_loss", False)),
+        action_loss_weight_strategy=str(loss.get("action_loss_weight_strategy", "inverse")),
+        action_loss_clip_max_weight=float(loss.get("action_loss_clip_max_weight", 2.0)),
+        action_loss_alpha=float(loss.get("action_loss_alpha", 2.0)),
+        action_loss_use_l1=bool(loss.get("action_loss_use_l1", True)),
+        action_loss_normalize_weights=bool(loss.get("action_loss_normalize_weights", True)),
     )
 
 

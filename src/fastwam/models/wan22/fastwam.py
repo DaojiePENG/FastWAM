@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from fastwam.utils.logging_config import get_logger
+from fastwam.losses.action_loss import compute_weighted_action_loss, compute_action_loss_token
 
 from .action_dit import ActionDiT
 from .helpers.loader import load_wan22_ti2v_5b_components
@@ -38,6 +39,13 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        # Speed-weighted action loss configuration
+        use_weighted_action_loss: bool = False,
+        action_loss_weight_strategy: str = "inverse",
+        action_loss_clip_max_weight: float = 2.0,
+        action_loss_alpha: float = 2.0,
+        action_loss_use_l1: bool = True,
+        action_loss_normalize_weights: bool = True,
     ):
         super().__init__()
         self.video_expert = video_expert
@@ -85,6 +93,14 @@ class FastWAM(torch.nn.Module):
         self.loss_lambda_video = float(loss_lambda_video)
         self.loss_lambda_action = float(loss_lambda_action)
 
+        # Speed-weighted action loss configuration
+        self.use_weighted_action_loss = use_weighted_action_loss
+        self.action_loss_weight_strategy = action_loss_weight_strategy
+        self.action_loss_clip_max_weight = action_loss_clip_max_weight
+        self.action_loss_alpha = action_loss_alpha
+        self.action_loss_use_l1 = action_loss_use_l1
+        self.action_loss_normalize_weights = action_loss_normalize_weights
+
         self.to(self.device)
 
     @classmethod
@@ -111,6 +127,13 @@ class FastWAM(torch.nn.Module):
         action_num_train_timesteps: int = 1000,
         loss_lambda_video: float = 1.0,
         loss_lambda_action: float = 1.0,
+        # Speed-weighted action loss configuration
+        use_weighted_action_loss: bool = False,
+        action_loss_weight_strategy: str = "inverse",
+        action_loss_clip_max_weight: float = 2.0,
+        action_loss_alpha: float = 2.0,
+        action_loss_use_l1: bool = True,
+        action_loss_normalize_weights: bool = True,
     ):
         if video_dit_config is None:
             raise ValueError("`video_dit_config` is required for FastWAM.from_wan22_pretrained().")
@@ -168,6 +191,12 @@ class FastWAM(torch.nn.Module):
             action_num_train_timesteps=action_num_train_timesteps,
             loss_lambda_video=loss_lambda_video,
             loss_lambda_action=loss_lambda_action,
+            use_weighted_action_loss=use_weighted_action_loss,
+            action_loss_weight_strategy=action_loss_weight_strategy,
+            action_loss_clip_max_weight=action_loss_clip_max_weight,
+            action_loss_alpha=action_loss_alpha,
+            action_loss_use_l1=action_loss_use_l1,
+            action_loss_normalize_weights=action_loss_normalize_weights,
         )
         model.model_paths = {
             "video_dit": components.dit_path,
@@ -547,13 +576,29 @@ class FastWAM(torch.nn.Module):
         )
         loss_video = (loss_video_per_sample * video_weight).mean()
 
-        action_loss_token = F.mse_loss(pred_action.float(), target_action.float(), reduction="none").mean(dim=2) # [B, T]
-        if action_is_pad is not None:
-            valid = (~action_is_pad).to(device=action_loss_token.device, dtype=action_loss_token.dtype)
-            valid_sum = valid.sum(dim=1).clamp(min=1.0)
-            action_loss_per_sample = (action_loss_token * valid).sum(dim=1) / valid_sum
+        # Compute action loss with optional speed-based weighting
+        if self.use_weighted_action_loss:
+            # Use speed-weighted loss (slow actions get higher weights)
+            action_loss_per_sample = compute_weighted_action_loss(
+                ground_truth_actions=action,  # Original actions for speed computation
+                predicted_actions=pred_action,
+                target_actions=target_action,
+                weight_strategy=self.action_loss_weight_strategy,
+                clip_max_weight=self.action_loss_clip_max_weight,
+                alpha=self.action_loss_alpha,
+                normalize_weights=self.action_loss_normalize_weights,
+                use_l1=self.action_loss_use_l1,
+                action_is_pad=action_is_pad,
+            )
         else:
-            action_loss_per_sample = action_loss_token.mean(dim=1)
+            # Use original MSE loss (backward compatible)
+            action_loss_token = F.mse_loss(pred_action.float(), target_action.float(), reduction="none").mean(dim=2) # [B, T]
+            if action_is_pad is not None:
+                valid = (~action_is_pad).to(device=action_loss_token.device, dtype=action_loss_token.dtype)
+                valid_sum = valid.sum(dim=1).clamp(min=1.0)
+                action_loss_per_sample = (action_loss_token * valid).sum(dim=1) / valid_sum
+            else:
+                action_loss_per_sample = action_loss_token.mean(dim=1)
 
         action_weight = self.train_action_scheduler.training_weight(timestep_action).to(
             action_loss_per_sample.device, dtype=action_loss_per_sample.dtype

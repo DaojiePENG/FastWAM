@@ -23,13 +23,24 @@ finetune:
 # Training configuration
 learning_rate: 5.0e-6  # Even smaller learning rate for RoboTwin fine-tuning
 batch_size: 16
-num_epochs: 5
-save_every: 2500
-eval_every: 500
+num_epochs: 3
+save_every: 1250
+eval_every: 250
 log_every: 10
 
 # Must load pretrained checkpoint for fine-tuning
 resume: "./checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt"
+
+# Enable speed-weighted action loss for better fine-grained manipulation
+# Prioritizes slow-speed actions (critical for precise manipulation) during training
+model:
+  loss:
+    use_weighted_action_loss: true  # Enable speed-based weighting
+    action_loss_weight_strategy: "inverse"  # Options: inverse, inverse_squared, exp_decay, log
+    action_loss_clip_max_weight: 2.0  # Maximum weight multiplier to avoid extreme values
+    action_loss_alpha: 2.0  # Decay rate for exp_decay strategy
+    action_loss_use_l1: true  # L1 loss (more robust to outliers than MSE)
+    action_loss_normalize_weights: true  # Normalize weights to have mean=1
 
 # Output directory
 output_dir: ./runs/finetune/robotwin_action_head/${now:%Y-%m-%d}_${now:%H-%M-%S}
