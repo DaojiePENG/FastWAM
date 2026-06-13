@@ -106,6 +106,7 @@ class MoT(nn.Module):
         scale_mlp: torch.Tensor,
         gate_mlp: torch.Tensor,
         context_payload: Optional[dict],
+        history_kv: Optional[tuple] = None,
     ) -> torch.Tensor:
         x = block.gate(residual_x, gate_msa, block.self_attn.o(mixed_attn_out))
 
@@ -116,6 +117,10 @@ class MoT(nn.Module):
                 if context_mask is not None and context_mask.dim() == 3:
                     context_mask = context_mask.unsqueeze(1)
                 x = x + block.cross_attn(block.norm3(x), context, ctx_mask=context_mask)
+
+        # History attention: (history_k, history_v) tuple → self-attn + cross-attn
+        if history_kv is not None and hasattr(block, 'history_cross_attn'):
+            x = x + block.history_cross_attn(block.norm3(x), history_kv)
 
         mlp_input = modulate(block.norm2(x), shift_mlp, scale_mlp)
         x = block.gate(x, gate_mlp, block.ffn(mlp_input))
@@ -194,6 +199,7 @@ class MoT(nn.Module):
         use_gradient_checkpointing: bool,
         mixed_slice: torch.Tensor,
         context_payload: Optional[dict],
+        history_kv: Optional[tuple] = None,
     ) -> torch.Tensor:
         """Apply post-attention computations, with optional checkpointing.
 
@@ -209,6 +215,8 @@ class MoT(nn.Module):
             context_payload: Optional dict for cross-attention.
                 - `context`: encoder states [B, L, D]
                 - `mask`: attention mask [B, S, L] or [B, 1, S, L]
+            history_kv: Optional tuple ``(history_k, history_v)``, each
+                ``[B, S_history, H*Dh]``.
 
         Returns:
             Updated expert tokens after self-attn residual, optional cross-attn, and MLP.
@@ -220,6 +228,7 @@ class MoT(nn.Module):
             _shift_mlp: torch.Tensor,
             _scale_mlp: torch.Tensor,
             _gate_mlp: torch.Tensor,
+            _history_kv: Optional[tuple] = None,
             _block=block,
             _context_payload=context_payload,
         ) -> torch.Tensor:
@@ -232,6 +241,7 @@ class MoT(nn.Module):
                 scale_mlp=_scale_mlp,
                 gate_mlp=_gate_mlp,
                 context_payload=_context_payload,
+                history_kv=_history_kv,
             )
 
         if use_gradient_checkpointing and self.training:
@@ -243,6 +253,7 @@ class MoT(nn.Module):
                 shift_mlp,
                 scale_mlp,
                 gate_mlp,
+                history_kv,
                 use_reentrant=False,
             )
         return _post_fn(
@@ -252,6 +263,7 @@ class MoT(nn.Module):
             shift_mlp,
             scale_mlp,
             gate_mlp,
+            history_kv,
         )
 
     def prefill_video_cache(
@@ -444,6 +456,116 @@ class MoT(nn.Module):
             )
         return x
 
+    def forward_action_with_history_cache(
+        self,
+        action_tokens: torch.Tensor,
+        action_freqs: torch.Tensor,
+        action_t_mod: torch.Tensor,
+        action_context_payload: Optional[dict],
+        video_kv_cache: list[dict[str, torch.Tensor]],
+        attention_mask: torch.Tensor,
+        video_seq_len: int,
+        history_kv_cache: Optional[list[tuple]] = None,
+        return_action_kv: bool = False,
+    ) -> torch.Tensor:
+        """Run action branch with cached video K/V AND full-history KV attention.
+
+        The standard mixed attention (action -> current-frame video + action)
+        remains unchanged.  After the post-block text cross-attention, the
+        ``history_cross_attn`` module on each ActionDiTBlock (if present)
+        runs (1) self-attention on history KVs then (2) cross-attention from
+        action to the refined history.
+
+        Args:
+            action_tokens: Action tokens before layer 0, shape [B, Sa, D].
+            action_freqs: Action RoPE frequencies.
+            action_t_mod: Action time modulation tensor.
+            action_context_payload: Dict for action text cross-attention.
+            video_kv_cache: Per-layer cached video K/V (current frame).
+            attention_mask: Joint [video+action] mask.
+            video_seq_len: Video token count for current frame.
+            history_kv_cache: Optional per-layer list of ``(history_k, history_v)``
+                tuples, each tensor shape ``[B, S_history, D]``.  When provided,
+                the ``history_cross_attn`` on ActionDiTBlocks will use them.
+            return_action_kv: If True, also return per-layer action ``(k, v)``
+                tuples for action-history accumulation.
+
+        Returns:
+            Updated action tokens, shape [B, Sa, D].
+            If ``return_action_kv=True``, returns ``(tokens, action_kv_list)``.
+        """
+        if "action" not in self.mixtures:
+            raise ValueError("MoT requires `action` expert for `forward_action_with_history_cache`.")
+        if len(video_kv_cache) != self.num_layers:
+            raise ValueError(
+                f"`video_kv_cache` must contain {self.num_layers} layers, got {len(video_kv_cache)}."
+            )
+
+        action_seq_len = int(action_tokens.shape[1])
+        total_seq_len = int(video_seq_len) + action_seq_len
+        action_attention_mask = attention_mask[video_seq_len:total_seq_len, :total_seq_len]
+
+        expert = self.mixtures["action"]
+        x = action_tokens
+        action_kv_list: list[tuple] = [] if return_action_kv else None
+        for layer_idx in range(self.num_layers):
+            block = expert.blocks[layer_idx]
+            (
+                q_action,
+                k_action,
+                v_action,
+                residual_x,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+                use_gradient_checkpointing,
+            ) = self._build_expert_attention_io(
+                expert=expert,
+                block=block,
+                x=x,
+                freqs=action_freqs,
+                t_mod=action_t_mod,
+            )
+
+            # Collect action K/V for action-history accumulation
+            if return_action_kv:
+                action_kv_list.append((k_action, v_action))
+
+            layer_cache = video_kv_cache[layer_idx]
+            k_video = layer_cache["k"]
+            v_video = layer_cache["v"]
+
+            k_cat = torch.cat([k_video, k_action], dim=1)
+            v_cat = torch.cat([v_video, v_action], dim=1)
+            mixed = self._mixed_attention(
+                q_cat=q_action,
+                k_cat=k_cat,
+                v_cat=v_cat,
+                attention_mask=action_attention_mask,
+            )
+
+            # Get history KV for this layer (if available)
+            layer_history_kv = None
+            if history_kv_cache is not None and layer_idx < len(history_kv_cache):
+                layer_history_kv = history_kv_cache[layer_idx]
+
+            x = self._apply_post_with_optional_checkpoint(
+                block=block,
+                residual_x=residual_x,
+                gate_msa=gate_msa,
+                shift_mlp=shift_mlp,
+                scale_mlp=scale_mlp,
+                gate_mlp=gate_mlp,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                mixed_slice=mixed,
+                context_payload=action_context_payload,
+                history_kv=layer_history_kv,
+            )
+        if return_action_kv:
+            return x, action_kv_list
+        return x
+
     def forward(
         self,
         embeds_all: Dict[str, torch.Tensor],
@@ -451,6 +573,9 @@ class MoT(nn.Module):
         freqs_all: Dict[str, torch.Tensor],
         context_all: Dict[str, Optional[dict]],
         t_mod_all: Dict[str, torch.Tensor],
+        history_kv_all: Optional[Dict[str, Optional[list]]] = None,
+        return_video_kv_cache: bool = False,
+        return_action_kv_cache: bool = False,
     ):
         missing = [k for k in self.expert_order if k not in embeds_all]
         if missing:
@@ -468,6 +593,8 @@ class MoT(nn.Module):
             raise ValueError(f"`attention_mask` must be square, got shape {tuple(attention_mask.shape)}")
 
         tokens_all = {k: v for k, v in embeds_all.items()}
+        video_kv_per_layer: list[tuple] = [] if return_video_kv_cache else None
+        action_kv_per_layer: list[tuple] = [] if return_action_kv_cache else None
 
         for layer_idx in range(self.num_layers):
             q_chunks = []
@@ -505,6 +632,13 @@ class MoT(nn.Module):
                 k_chunks.append(k)
                 v_chunks.append(v)
                 seq_lens.append(x.shape[1])
+
+                # Collect video expert K/V for history attention
+                if return_video_kv_cache and name == "video":
+                    video_kv_per_layer.append((k, v))  # (K_proj, V_proj)
+                # Collect action expert K/V for action-history attention
+                if return_action_kv_cache and name == "action":
+                    action_kv_per_layer.append((k, v))  # (K_proj, V_proj)
                 cached[name] = {
                     "block": block,
                     "residual_x": residual_x,
@@ -538,6 +672,13 @@ class MoT(nn.Module):
                 block = cached_expert["block"]
                 context_payload = context_all.get(name)
 
+                # Optional per-layer history KV for history cross-attention
+                layer_history_kv = None
+                if history_kv_all is not None:
+                    expert_history = history_kv_all.get(name)
+                    if expert_history is not None and layer_idx < len(expert_history):
+                        layer_history_kv = expert_history[layer_idx]
+
                 updated_tokens = self._apply_post_with_optional_checkpoint(
                     block=block,
                     residual_x=cached_expert["residual_x"],
@@ -548,9 +689,16 @@ class MoT(nn.Module):
                     use_gradient_checkpointing=cached_expert["use_gradient_checkpointing"],
                     mixed_slice=mixed_slice,
                     context_payload=context_payload,
+                    history_kv=layer_history_kv,
                 )
 
                 tokens_all[name] = updated_tokens
                 start = end
 
+        if return_video_kv_cache and return_action_kv_cache:
+            return tokens_all, video_kv_per_layer, action_kv_per_layer
+        if return_video_kv_cache:
+            return tokens_all, video_kv_per_layer
+        if return_action_kv_cache:
+            return tokens_all, action_kv_per_layer
         return tokens_all

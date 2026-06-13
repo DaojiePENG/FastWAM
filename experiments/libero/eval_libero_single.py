@@ -25,6 +25,27 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# Monkey-patch robosuite to disable file logging before any robosuite import.
+# On shared HPC clusters, /tmp is not writable. Robosuite hardcodes
+# FileHandler("/tmp/robosuite.log") in log_utils.py.  We load macos.py
+# directly from disk (bypassing the import system so that robosuite/__init__.py
+# never executes), patch FILE_LOGGING_LEVEL, and pre-register the module in
+# sys.modules so that downstream imports find our patched copy.
+import importlib.util as _importlib_util
+_macros_path = None
+for _p in sys.path:
+    _candidate = os.path.join(_p, "robosuite", "macros.py")
+    if os.path.isfile(_candidate):
+        _macros_path = _candidate
+        break
+if _macros_path is None:
+    raise ImportError("Cannot locate robosuite/macros.py on sys.path")
+_robosuite_macros_spec = _importlib_util.spec_from_file_location("robosuite.macros", _macros_path)
+_robosuite_macros = _importlib_util.module_from_spec(_robosuite_macros_spec)
+_robosuite_macros_spec.loader.exec_module(_robosuite_macros)
+_robosuite_macros.FILE_LOGGING_LEVEL = None
+sys.modules["robosuite.macros"] = _robosuite_macros
+
 from experiments.libero.libero_utils import (
     LIBERO_ENV_RESOLUTION,
     get_libero_dummy_action,
@@ -465,6 +486,11 @@ def run_single_episode(
 
     env.reset()
     obs = env.set_init_state(initial_state)
+
+    # Reset history cache for CasWAM models (full-history KV accumulation)
+    if hasattr(model, 'reset_history'):
+        model.reset_history()
+
     if use_action_ensembler:
         ensembler = ActionEnsembler()
         ensembler.reset()

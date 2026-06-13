@@ -82,7 +82,7 @@ class Wan22Trainer:
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
         self._apply_dit_only_train_mode(self.model)
-        trainable_params = list(self.model.dit.parameters())
+        trainable_params = self.model.get_trainable_parameters()
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
             trainable_params.extend(list(proprio_encoder.parameters()))
@@ -293,6 +293,10 @@ class Wan22Trainer:
         if proprio_encoder is not None:
             proprio_encoder.train()
             proprio_encoder.requires_grad_(True)
+        # CasWAM hook: re-freeze backbone params, keep only
+        # history_cross_attn + action_encoder/head trainable.
+        if hasattr(model, '_freeze_non_history_params'):
+            model._freeze_non_history_params()
 
     @staticmethod
     def _to_batched_eval_sample(sample):
@@ -374,6 +378,36 @@ class Wan22Trainer:
         }
 
     @torch.no_grad()
+    def _denormalize_action(self, raw_action, proprio):
+        """Denormalize a predicted or GT action using the val dataset processor."""
+        processor = self.val_dataset.lerobot_dataset.processor
+        action_meta = processor.shape_meta["action"]
+        state_meta = processor.shape_meta["state"]
+
+        if raw_action.ndim == 2:
+            action_btd = raw_action.unsqueeze(0)
+        elif raw_action.ndim == 3 and raw_action.shape[0] == 1:
+            action_btd = raw_action
+        else:
+            raise ValueError(
+                f"action must have shape [T, D] or [1, T, D], got {tuple(raw_action.shape)}"
+            )
+        action_btd = action_btd.detach().to(device="cpu", dtype=torch.float32)
+
+        batch = {"action": action_btd, "state": proprio}
+        batch = processor.action_state_merger.backward(batch)
+        batch = processor.normalizer.backward(batch)
+        merged = {
+            "action": {m["key"]: batch["action"][m["key"]].squeeze(0) for m in action_meta},
+            "state": {m["key"]: batch["state"][m["key"]].squeeze(0) for m in state_meta},
+        }
+        merged = processor.action_state_merger.forward(merged)
+        denorm = merged["action"].unsqueeze(0)
+        if denorm.ndim != 3 or denorm.shape[0] != 1:
+            raise ValueError(f"Denormalized action must be [1, T, D], got {tuple(denorm.shape)}")
+        return denorm
+
+    @torch.no_grad()
     def evaluate(self):
         if self.val_dataset is None:
             return None
@@ -400,6 +434,10 @@ class Wan22Trainer:
         _, num_frames, _, _ = video0.shape
 
         # 2. inference and video saving
+        # Reset history cache for CasWAM / CasWAMActHist
+        if hasattr(model, 'reset_history'):
+            model.reset_history()
+
         infer_kwargs = {
             "input_image": input_image,
             "num_frames": num_frames,
@@ -443,46 +481,10 @@ class Wan22Trainer:
         if action is not None and pred_action is not None:
             if sample["proprio"] is None:
                 raise ValueError("Eval sample must contain `proprio` for action denormalization.")
-            proprio = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
-            
-            processor = self.val_dataset.lerobot_dataset.processor
+            proprio_full = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
 
-            denorm_actions = {}
-            action_meta = processor.shape_meta["action"]
-            state_meta = processor.shape_meta["state"]
-            for action_name, raw_action in (("pred", pred_action), ("gt", action)):
-                if not isinstance(raw_action, torch.Tensor):
-                    raise TypeError(f"{action_name} action must be a torch.Tensor, got {type(raw_action)}")
-                if raw_action.ndim == 2:
-                    action_btd = raw_action.unsqueeze(0)
-                elif raw_action.ndim == 3 and raw_action.shape[0] == 1:
-                    action_btd = raw_action
-                else:
-                    raise ValueError(
-                        f"{action_name} action must have shape [T, D] or [1, T, D], got {tuple(raw_action.shape)}"
-                    )
-                action_btd = action_btd.detach().to(device="cpu", dtype=torch.float32)
-
-                batch = {
-                    "action": action_btd,
-                    "state": proprio,
-                }
-                batch = processor.action_state_merger.backward(batch)
-                batch = processor.normalizer.backward(batch)
-                merged_batch = {
-                    "action": {meta["key"]: batch["action"][meta["key"]].squeeze(0) for meta in action_meta},
-                    "state": {meta["key"]: batch["state"][meta["key"]].squeeze(0) for meta in state_meta},
-                }
-                merged_batch = processor.action_state_merger.forward(merged_batch)
-                denorm_action = merged_batch["action"].unsqueeze(0)
-                if denorm_action.ndim != 3 or denorm_action.shape[0] != 1:
-                    raise ValueError(
-                        f"Denormalized {action_name} action must have shape [1, T, D], got {tuple(denorm_action.shape)}"
-                    )
-                denorm_actions[action_name] = denorm_action
-
-            pred_action_denorm = denorm_actions["pred"]
-            gt_action_denorm = denorm_actions["gt"]
+            pred_action_denorm = self._denormalize_action(pred_action, proprio_full)
+            gt_action_denorm = self._denormalize_action(action, proprio_full)
 
             if pred_action_denorm.shape != gt_action_denorm.shape:
                 raise ValueError(
@@ -563,6 +565,113 @@ class Wan22Trainer:
         if action_l1_mean is not None:
             result["action_l1"] = float(action_l1_mean)
         return result
+
+    @torch.no_grad()
+    def evaluate_with_history(self):
+        """Multi-step history evaluation for CasWAM / CasWAMActHist.
+
+        Uses ``infer_action_sequence()`` to simulate autoregressive inference
+        with accumulating multi-frame history.  Each observation frame is fed
+        into the model sequentially, and the predicted action chunks are
+        compared against ground-truth actions.
+
+        Returns a dict with ``action_l1_hist`` and ``action_l2_hist`` metrics,
+        or None if the model does not support history-sequence inference.
+        """
+        if self.val_dataset is None:
+            return None
+
+        model = self.accelerator.unwrap_model(self.model)
+        if not hasattr(model, 'infer_action_sequence'):
+            return None
+
+        # Extract dataset parameters for multi-step eval.
+        dataset = self.val_dataset
+        freq_ratio = int(getattr(dataset, 'action_video_freq_ratio', 4))
+
+        model.eval()
+
+        # Random eval index (same seed strategy as evaluate()).
+        rng = torch.Generator(device="cpu").manual_seed(
+            self.global_step + self.accelerator.process_index + 1  # +1 to avoid same sample
+        )
+        eval_index = torch.randint(0, len(self.val_dataset), (1,), generator=rng).item()
+        raw_sample = self.val_dataset[eval_index]
+        sample = self._to_batched_eval_sample(raw_sample)
+
+        video0 = sample["video"][0]  # [3, T_obs, H, W] already subsampled to obs frames
+        action_gt = sample["action"][0] if "action" in sample and sample["action"] is not None else None
+        action_horizon = sample.get("action_horizon", None)
+
+        if action_gt is None or action_horizon is None:
+            return None
+
+        # The video in the eval sample has already been subsampled to
+        # observation frames (e.g. every 4th pixel frame).  We iterate
+        # over these frames directly with stride 1.
+        num_obs_frames = video0.shape[1]
+
+        # Compute action chunk size per observation frame.
+        # action_horizon = total action steps (e.g. 32)
+        # chunk_size = action_horizon / (num_obs_frames - 1) = 32 / 8 = 4
+        if num_obs_frames <= 1:
+            return None
+        chunk_size = action_horizon // (num_obs_frames - 1)
+
+        prompt = sample["prompt"][0] if sample["prompt"] is not None else None
+        proprio_full = sample["proprio"][0] if sample["proprio"] is not None else None  # [T_proprio, d]
+
+        # Build inference kwargs.
+        seq_kwargs = dict(
+            video=video0,
+            action_chunk_size=chunk_size,
+            num_obs_frames=num_obs_frames,
+            action_video_freq_ratio=1,  # frames already at obs stride
+            num_inference_steps=self.eval_num_inference_steps,
+            seed=42,
+            tiled=False,
+        )
+        if sample["context"] is not None:
+            seq_kwargs["prompt"] = None
+            seq_kwargs["context"] = sample["context"][0]
+            seq_kwargs["context_mask"] = sample["context_mask"][0]
+        else:
+            seq_kwargs["prompt"] = prompt
+        if proprio_full is not None:
+            seq_kwargs["proprio"] = proprio_full
+
+        # Run frame-by-frame inference with accumulating history.
+        pred_action_seq = model.infer_action_sequence(**seq_kwargs)
+        # pred_action_seq: [num_obs_frames * chunk_size, D]  (e.g. 9*4=36)
+        # GT action: [action_horizon, D]  (e.g. 32)
+        # Trim predictions to match GT length (last frame has no GT action).
+        pred_action_seq = pred_action_seq[:action_horizon]
+
+        if sample["proprio"] is None:
+            raise ValueError("History eval requires `proprio` for action denormalization.")
+        proprio_full_batch = sample["proprio"].detach().to(device="cpu", dtype=torch.float32)
+
+        pred_denorm = self._denormalize_action(pred_action_seq, proprio_full_batch)
+        gt_denorm = self._denormalize_action(action_gt, proprio_full_batch)
+
+        if pred_denorm.shape != gt_denorm.shape:
+            raise ValueError(
+                "History eval action shape mismatch: "
+                f"pred={tuple(pred_denorm.shape)} vs gt={tuple(gt_denorm.shape)}"
+            )
+
+        hist_diff = pred_denorm - gt_denorm
+        hist_l1 = float(hist_diff.abs().mean().item())
+        hist_l2 = float(hist_diff.pow(2).mean().item())
+
+        local_hist = torch.tensor(
+            [hist_l2, hist_l1], device=self.accelerator.device, dtype=torch.float32,
+        ).unsqueeze(0)
+        gathered_hist = self.accelerator.gather_for_metrics(local_hist)
+        return {
+            "action_l2_hist": float(gathered_hist[:, 0].mean().item()),
+            "action_l1_hist": float(gathered_hist[:, 1].mean().item()),
+        }
 
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
@@ -758,6 +867,23 @@ class Wan22Trainer:
                             if "action_l1" in metrics:
                                 eval_payload["eval/action_l1"] = float(metrics["action_l1"])
                             self._wandb_log(eval_payload)
+
+                        # History-aware multi-step evaluation (CasWAM / ActHist).
+                        # Kept as a separate call to avoid affecting the existing
+                        # single-frame eval metrics (which serve as a baseline).
+                        hist_metrics = self.evaluate_with_history()
+                        self.accelerator.wait_for_everyone()
+                        if hist_metrics is not None and self.accelerator.is_main_process:
+                            logger.info(
+                                "[eval_hist] step=%d action_l2_hist=%.4f action_l1_hist=%.4f",
+                                self.global_step,
+                                hist_metrics["action_l2_hist"],
+                                hist_metrics["action_l1_hist"],
+                            )
+                            self._wandb_log({
+                                "eval/action_l2_hist": hist_metrics["action_l2_hist"],
+                                "eval/action_l1_hist": hist_metrics["action_l1_hist"],
+                            })
 
                     if self.save_every > 0 and self.global_step % self.save_every == 0:
                         ckpt_info = self.save_checkpoint()

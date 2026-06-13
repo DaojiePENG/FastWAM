@@ -327,6 +327,7 @@ run_libero_eval() {
         local status_file="$TASK_STATUS_DIR/${suite}_task${task_id}.status"
         local result_file="$OUTPUT_DIR/$suite/gpu${gpu_id}_task${task_id}_results.json"
         local log_file="$TASK_LOG_DIR/${suite}_task${task_id}_gpu${gpu_id}.log"
+        local task_tmp="$TASK_LOG_DIR/tmp_${suite}_${task_id}"
         
         rm -f "$status_file"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching task: $suite task_id=$task_id on GPU$gpu_id pane $pane_info"
@@ -335,13 +336,16 @@ run_libero_eval() {
         # When the task exits, write a status file so the scheduler can detect failures promptly.
         tmux select-pane -t $SESSION_NAME:$pane_info 2>/dev/null
         tmux send-keys -t $SESSION_NAME:$pane_info "clear" C-m 2>/dev/null
-        tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && \
-            STATUS_FILE='$status_file' LOG_FILE='$log_file' RESULT_FILE='$result_file' && \
+        tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && conda activate $CONDA_DEFAULT_ENV && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && \
+            STATUS_FILE='$status_file' LOG_FILE='$log_file' RESULT_FILE='$result_file' TASK_TMP='$task_tmp' && \
+            mkdir -p \"\$TASK_TMP\" && \
+            export TMPDIR=\"\$TASK_TMP\" TEMP=\"\$TASK_TMP\" TMP=\"\$TASK_TMP\" && \
             CUDA_VISIBLE_DEVICES=$gpu_id python experiments/libero/eval_libero_single.py \
             task=$CONFIG ckpt=$CKPT \
             EVALUATION.task_suite_name=$suite EVALUATION.task_id=$task_id gpu_id=$gpu_id \
             EVALUATION.num_trials=$NUM_TRIALS EVALUATION.output_dir=$OUTPUT_DIR $EXTRA_ARGS > \"\$LOG_FILE\" 2>&1; \
             rc=\$?; \
+            rm -rf \"\$TASK_TMP\"; \
             if [ \$rc -eq 0 ] && [ -f \"\$RESULT_FILE\" ]; then \
                 echo \"SUCCESS|$gpu_id|\$rc|\$(date +%s)|\$LOG_FILE\" > \"\$STATUS_FILE\"; \
             else \

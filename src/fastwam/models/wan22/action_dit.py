@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 import torch.nn as nn
 from typing import Any, Dict, Optional
@@ -10,9 +11,193 @@ from .wan_video_dit import (
     DiTBlock,
     sinusoidal_embedding_1d,
     precompute_freqs_cis,
+    flash_attention,
+    modulate,
+    RMSNorm,
+    GateModule,
 )
 
 logger = get_logger(__name__)
+
+
+class HistoryAttention(nn.Module):
+    """Full-history self-attention + action→history cross-attention.
+
+    Step 1 — Self-attention on history KVs to learn temporal dependencies
+    between frames (Q/K from cached video K, V from cached video V).
+
+    Step 2 — Cross-attention from action tokens to the temporally-refined
+    history representation.  Output is added as a standard residual at the
+    block level (same pattern as ``cross_attn`` in ActionDiTBlock).
+
+    Args:
+        hidden_dim: Dimension of action tokens (e.g. 1024 for ActionDiT).
+        attn_head_dim: Per-head dimension.
+        num_heads: Number of attention heads.
+        max_history_len: Maximum number of history positions.
+        history_hidden_dim: Dimension of history video KV (e.g. 3072 for VideoDiT).
+            Defaults to ``hidden_dim`` for backward compatibility.
+    """
+
+    def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int,
+                 eps: float = 1e-6, max_history_len: int = 256,
+                 history_hidden_dim: int | None = None):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.history_hidden_dim = history_hidden_dim or hidden_dim
+        self.num_heads = num_heads
+        self.attn_head_dim = attn_head_dim
+        self.attn_hidden_dim = num_heads * attn_head_dim
+
+        # --- QK normalization (shared across both attention ops) ---
+        self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
+        self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
+
+        # --- Learnable temporal positional embedding ---
+        self.temporal_pos_emb = nn.Parameter(
+            torch.zeros(1, max_history_len, self.history_hidden_dim)
+        )
+        nn.init.trunc_normal_(self.temporal_pos_emb, std=0.02)
+
+        # ---- Step 1: Self-attention on history (learns temporal dependencies) ---
+        # Q/K from cached video K; V from cached video V
+        self.self_q = nn.Linear(self.history_hidden_dim, self.attn_hidden_dim)
+        self.self_k = nn.Linear(self.history_hidden_dim, self.attn_hidden_dim)
+        self.self_v = nn.Linear(self.history_hidden_dim, self.attn_hidden_dim)
+        self.self_o = nn.Linear(self.attn_hidden_dim, self.history_hidden_dim)
+
+        # ---- Step 2: Cross-attention from action → refined history ---
+        self.cross_q = nn.Linear(hidden_dim, self.attn_hidden_dim)
+        self.cross_k = nn.Linear(self.history_hidden_dim, self.attn_hidden_dim)
+        self.cross_v = nn.Linear(self.history_hidden_dim, self.attn_hidden_dim)
+        self.cross_o = nn.Linear(self.attn_hidden_dim, hidden_dim)
+
+        # Zero-initialize output projections so History Attention contributes
+        # nothing at initialization (same pattern as GPT-2 residual layers).
+        # The optimizer will learn non-zero weights as training progresses.
+        nn.init.zeros_(self.self_o.weight)
+        nn.init.zeros_(self.self_o.bias)
+        nn.init.zeros_(self.cross_o.weight)
+        nn.init.zeros_(self.cross_o.bias)
+
+    def forward(self, x: torch.Tensor,
+                history_kv: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            x: Action tokens, shape ``[B, S_action, hidden_dim]``.
+            history_kv: Tuple of (history_k, history_v), each
+                ``[B, S_history, history_hidden_dim]``.
+
+        Returns:
+            History attention output, shape ``[B, S_action, hidden_dim]``.
+        """
+        history_k, history_v = history_kv
+        seq_len = history_k.shape[1]
+        max_len = self.temporal_pos_emb.shape[1]
+        if seq_len > max_len:
+            raise ValueError(
+                f"History length {seq_len} exceeds max_history_len {max_len}"
+            )
+
+        # Add temporal positional encoding to both K and V
+        pos = self.temporal_pos_emb[:, :seq_len, :].to(dtype=history_k.dtype)
+        h_k = history_k + pos
+        h_v = history_v + pos
+
+        # Step 1: Self-attention — learn temporal dependencies between history frames
+        sq = self.norm_q(self.self_q(h_k))
+        sk = self.norm_k(self.self_k(h_k))
+        sv = self.self_v(h_v)
+        h_attn = flash_attention(q=sq, k=sk, v=sv, num_heads=self.num_heads)
+        h_refined = h_k + self.self_o(h_attn)
+
+        # Step 2: Cross-attention — action tokens attend to refined history
+        cq = self.norm_q(self.cross_q(x))
+        ck = self.norm_k(self.cross_k(h_refined))
+        cv = self.cross_v(h_refined)
+        out = flash_attention(q=cq, k=ck, v=cv, num_heads=self.num_heads)
+
+        return self.cross_o(out)
+
+
+class ActionDiTBlock(nn.Module):
+    """DiTBlock variant for ActionDiT with optional history attention.
+
+    When ``use_history_cross_attention=True``, each block gains a
+    ``history_cross_attn`` module that (1) runs self-attention on the
+    full-history video (K, V) cache to learn temporal dependencies, then
+    (2) runs cross-attention from action tokens to the refined history.
+    The output is added as a standard residual (same pattern as
+    ``cross_attn``).
+    """
+
+    def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int,
+                 ffn_dim: int, eps: float = 1e-6,
+                 use_history_cross_attention: bool = False,
+                 max_history_len: int = 256,
+                 history_hidden_dim: int | None = None):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.attn_head_dim = attn_head_dim
+        self.num_heads = num_heads
+        self.ffn_dim = ffn_dim
+        self.use_history_cross_attention = use_history_cross_attention
+
+        from .wan_video_dit import SelfAttention, CrossAttention
+
+        self.self_attn = SelfAttention(hidden_dim, attn_head_dim, num_heads, eps)
+        self.cross_attn = CrossAttention(hidden_dim, attn_head_dim, num_heads, eps)
+        self.norm1 = nn.LayerNorm(hidden_dim, eps=eps, elementwise_affine=False)
+        self.norm2 = nn.LayerNorm(hidden_dim, eps=eps, elementwise_affine=False)
+        self.norm3 = nn.LayerNorm(hidden_dim, eps=eps)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, ffn_dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(ffn_dim, hidden_dim),
+        )
+        self.modulation = nn.Parameter(torch.randn(1, 6, hidden_dim) / hidden_dim**0.5)
+        self.gate = GateModule()
+
+        if use_history_cross_attention:
+            self.history_cross_attn = HistoryAttention(
+                hidden_dim=hidden_dim,
+                attn_head_dim=attn_head_dim,
+                num_heads=num_heads,
+                eps=eps,
+                max_history_len=max_history_len,
+                history_hidden_dim=history_hidden_dim,
+            )
+
+    def forward(self, x, context, t_mod, freqs, context_mask=None,
+                self_attn_mask=None, history_kv=None):
+        """
+        Args:
+            history_kv: Optional tuple ``(history_k, history_v)``, each
+                ``[B, S_history, history_hidden_dim]``.
+        """
+        if context_mask is not None and context_mask.dim() == 3:
+            context_mask = context_mask.unsqueeze(1)
+        has_seq = len(t_mod.shape) == 4
+        chunk_dim = 2 if has_seq else 1
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod
+        ).chunk(6, dim=chunk_dim)
+        if has_seq:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+                shift_msa.squeeze(2), scale_msa.squeeze(2), gate_msa.squeeze(2),
+                shift_mlp.squeeze(2), scale_mlp.squeeze(2), gate_mlp.squeeze(2),
+            )
+        input_x = modulate(self.norm1(x), shift_msa, scale_msa)
+        x = self.gate(x, gate_msa, self.self_attn(input_x, freqs, self_attn_mask=self_attn_mask))
+        x = x + self.cross_attn(self.norm3(x), context, ctx_mask=context_mask)
+
+        # History attention: self-attn on history + cross-attn action→history
+        if self.use_history_cross_attention and history_kv is not None:
+            x = x + self.history_cross_attn(self.norm3(x), history_kv)
+
+        input_x = modulate(self.norm2(x), shift_mlp, scale_mlp)
+        x = self.gate(x, gate_mlp, self.ffn(input_x))
+        return x
 
 
 class ActionHead(nn.Module):
@@ -54,6 +239,9 @@ class ActionDiT(nn.Module):
         attn_head_dim: int,
         num_layers: int,
         use_gradient_checkpointing: bool = False,
+        use_history_cross_attention: bool = False,
+        max_history_len: int = 256,
+        history_hidden_dim: int | None = None,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -63,6 +251,9 @@ class ActionDiT(nn.Module):
         self.freq_dim = freq_dim
         self.num_heads = num_heads
         self.attn_head_dim = attn_head_dim
+        self.use_history_cross_attention = use_history_cross_attention
+        self.max_history_len = max_history_len
+        self.history_hidden_dim = history_hidden_dim
 
         if num_heads <= 0:
             raise ValueError(f"`num_heads` must be > 0, got {num_heads}")
@@ -83,18 +274,36 @@ class ActionDiT(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim, hidden_dim * 6))
-        self.blocks = nn.ModuleList(
-            [
-                DiTBlock(
-                    hidden_dim=hidden_dim,
-                    attn_head_dim=attn_head_dim,
-                    num_heads=num_heads,
-                    ffn_dim=ffn_dim,
-                    eps=eps,
-                )
-                for _ in range(num_layers)
-            ]
-        )
+
+        if use_history_cross_attention:
+            self.blocks = nn.ModuleList(
+                [
+                    ActionDiTBlock(
+                        hidden_dim=hidden_dim,
+                        attn_head_dim=attn_head_dim,
+                        num_heads=num_heads,
+                        ffn_dim=ffn_dim,
+                        eps=eps,
+                        use_history_cross_attention=True,
+                        max_history_len=max_history_len,
+                        history_hidden_dim=history_hidden_dim,
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
+        else:
+            self.blocks = nn.ModuleList(
+                [
+                    DiTBlock(
+                        hidden_dim=hidden_dim,
+                        attn_head_dim=attn_head_dim,
+                        num_heads=num_heads,
+                        ffn_dim=ffn_dim,
+                        eps=eps,
+                    )
+                    for _ in range(num_layers)
+                ]
+            )
         self.head = nn.Linear(hidden_dim, action_dim)
         self.freqs = precompute_freqs_cis(attn_head_dim, end=1024)
 
@@ -189,38 +398,77 @@ class ActionDiT(nn.Module):
             )
 
         provided_keys = set(backbone_state_dict.keys())
-        missing_keys = sorted(expected_backbone_keys - provided_keys)
-        unexpected_keys = sorted(provided_keys - expected_backbone_keys)
-        if missing_keys or unexpected_keys:
-            raise ValueError(
-                "Action backbone key mismatch in preprocessed payload. "
-                f"missing={missing_keys[:10]}{'...' if len(missing_keys) > 10 else ''}, "
-                f"unexpected={unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}"
+
+        use_history = bool(action_cfg.get("use_history_cross_attention", False))
+
+        if use_history:
+            # History cross-attention params are not in the pretrained backbone;
+            # load only matching keys and keep the rest randomly initialised.
+            common_keys = expected_backbone_keys & provided_keys
+            extra_model_keys = expected_backbone_keys - provided_keys
+            unexpected_keys = sorted(provided_keys - expected_backbone_keys)
+            if unexpected_keys:
+                raise ValueError(
+                    "Unexpected keys in pretrained backbone: "
+                    f"{unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}"
+                )
+
+            merged_state = dict(action_state)
+            for key in common_keys:
+                value = backbone_state_dict[key]
+                if not isinstance(value, torch.Tensor):
+                    raise ValueError(
+                        f"`backbone_state_dict[{key}]` must be torch.Tensor, got {type(value)}"
+                    )
+                target = merged_state[key]
+                if tuple(value.shape) != tuple(target.shape):
+                    raise ValueError(
+                        f"Shape mismatch for `{key}` in {action_dit_pretrained_path}: "
+                        f"expected {tuple(target.shape)}, got {tuple(value.shape)}"
+                    )
+                merged_state[key] = value.to(device=target.device, dtype=target.dtype)
+
+            action_expert.load_state_dict(merged_state, strict=True)
+            logger.info(
+                "Loaded ActionDiT backbone from %s (loaded=%d; history_new=%d; random_kept_prefixes=%s).",
+                action_dit_pretrained_path,
+                len(common_keys),
+                len(extra_model_keys),
+                list(cls.ACTION_BACKBONE_SKIP_PREFIXES),
             )
-
-        merged_state = dict(action_state)
-        for key in expected_backbone_keys:
-            value = backbone_state_dict[key]
-            if not isinstance(value, torch.Tensor):
+        else:
+            missing_keys = sorted(expected_backbone_keys - provided_keys)
+            unexpected_keys = sorted(provided_keys - expected_backbone_keys)
+            if missing_keys or unexpected_keys:
                 raise ValueError(
-                    f"`backbone_state_dict[{key}]` must be torch.Tensor in {action_dit_pretrained_path}, "
-                    f"got {type(value)}"
+                    "Action backbone key mismatch in preprocessed payload. "
+                    f"missing={missing_keys[:10]}{'...' if len(missing_keys) > 10 else ''}, "
+                    f"unexpected={unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}"
                 )
-            target = merged_state[key]
-            if tuple(value.shape) != tuple(target.shape):
-                raise ValueError(
-                    f"Shape mismatch for `{key}` in {action_dit_pretrained_path}: "
-                    f"expected {tuple(target.shape)}, got {tuple(value.shape)}"
-                )
-            merged_state[key] = value.to(device=target.device, dtype=target.dtype)
 
-        action_expert.load_state_dict(merged_state, strict=True)
-        logger.info(
-            "Loaded ActionDiT backbone from %s (keys=%d; random_kept_prefixes=%s).",
-            action_dit_pretrained_path,
-            len(expected_backbone_keys),
-            list(cls.ACTION_BACKBONE_SKIP_PREFIXES),
-        )
+            merged_state = dict(action_state)
+            for key in expected_backbone_keys:
+                value = backbone_state_dict[key]
+                if not isinstance(value, torch.Tensor):
+                    raise ValueError(
+                        f"`backbone_state_dict[{key}]` must be torch.Tensor in {action_dit_pretrained_path}, "
+                        f"got {type(value)}"
+                    )
+                target = merged_state[key]
+                if tuple(value.shape) != tuple(target.shape):
+                    raise ValueError(
+                        f"Shape mismatch for `{key}` in {action_dit_pretrained_path}: "
+                        f"expected {tuple(target.shape)}, got {tuple(value.shape)}"
+                    )
+                merged_state[key] = value.to(device=target.device, dtype=target.dtype)
+
+            action_expert.load_state_dict(merged_state, strict=True)
+            logger.info(
+                "Loaded ActionDiT backbone from %s (keys=%d; random_kept_prefixes=%s).",
+                action_dit_pretrained_path,
+                len(expected_backbone_keys),
+                list(cls.ACTION_BACKBONE_SKIP_PREFIXES),
+            )
         return action_expert.to(device=device, dtype=torch_dtype)
 
     def pre_dit(
@@ -307,6 +555,7 @@ class ActionDiT(nn.Module):
         timestep: torch.Tensor,
         context: torch.Tensor,
         context_mask: Optional[torch.Tensor] = None,
+        history_kv: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         pre_state = self.pre_dit(
             action_tokens=action_tokens,
@@ -321,17 +570,33 @@ class ActionDiT(nn.Module):
         context_mask = pre_state["context_mask"]
 
         for block in self.blocks:
-            if self.use_gradient_checkpointing:
-                x = gradient_checkpoint_forward(
-                    block,
-                    self.use_gradient_checkpointing,
-                    x,
-                    context,
-                    t_mod,
-                    freqs,
-                    context_mask=context_mask,
-                )
+            if self.use_history_cross_attention:
+                if self.use_gradient_checkpointing:
+                    x = gradient_checkpoint_forward(
+                        block,
+                        self.use_gradient_checkpointing,
+                        x,
+                        context,
+                        t_mod,
+                        freqs,
+                        context_mask=context_mask,
+                        history_kv=history_kv,
+                    )
+                else:
+                    x = block(x, context, t_mod, freqs,
+                              context_mask=context_mask, history_kv=history_kv)
             else:
-                x = block(x, context, t_mod, freqs, context_mask=context_mask)
+                if self.use_gradient_checkpointing:
+                    x = gradient_checkpoint_forward(
+                        block,
+                        self.use_gradient_checkpointing,
+                        x,
+                        context,
+                        t_mod,
+                        freqs,
+                        context_mask=context_mask,
+                    )
+                else:
+                    x = block(x, context, t_mod, freqs, context_mask=context_mask)
 
         return self.post_dit(x, pre_state)

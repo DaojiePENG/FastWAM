@@ -18,6 +18,25 @@ from .utils import misc
 
 logger = get_logger(__name__)
 
+# FastWAM project root: src/fastwam/runtime.py → src/fastwam → src → project_root
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_project_relative(path: str | None) -> str | None:
+    """Resolve a relative path against the FastWAM project root.
+
+    When RoboTwin evaluation subprocesses run with CWD=third_party/RoboTwin
+    (a symlink to an external installation), relative paths from the Hydra
+    config break. This helper transparently resolves them.
+    """
+    if path is None or os.path.isabs(path):
+        return path
+    resolved = _PROJECT_ROOT / path
+    if resolved.exists():
+        return str(resolved)
+    # Fall back to original relative path (may still work if CWD is correct).
+    return path
+
 
 def _normalize_mixed_precision(mixed_precision: str) -> str:
     if not isinstance(mixed_precision, str):
@@ -92,6 +111,9 @@ def create_fastwam(
     device: str = "cuda",
 ):
     from .models.wan22.fastwam import FastWAM
+
+    # Resolve relative paths (CWD may differ when running from symlinked RoboTwin).
+    action_dit_pretrained_path = _resolve_project_relative(action_dit_pretrained_path)
 
     if isinstance(video_dit_config, DictConfig):
         video_dit_config = OmegaConf.to_container(video_dit_config, resolve=True)
@@ -178,6 +200,9 @@ def create_fastwam_joint(
 ):
     from .models.wan22.fastwam_joint import FastWAMJoint
 
+    # Resolve relative paths (CWD may differ when running from symlinked RoboTwin).
+    action_dit_pretrained_path = _resolve_project_relative(action_dit_pretrained_path)
+
     if isinstance(video_dit_config, DictConfig):
         video_dit_config = OmegaConf.to_container(video_dit_config, resolve=True)
     if not isinstance(video_dit_config, dict):
@@ -243,6 +268,190 @@ def create_fastwam_joint(
     )
 
 
+def create_caswam(
+    model_id: str,
+    tokenizer_model_id: str,
+    video_dit_config,
+    tokenizer_max_len: int = 512,
+    load_text_encoder: bool = True,
+    proprio_dim: int | None = None,
+    action_dit_config=None,
+    action_dit_pretrained_path: str | None = None,
+    skip_dit_load_from_pretrain: bool = False,
+    video_scheduler=None,
+    action_scheduler=None,
+    loss=None,
+    mot_checkpoint_mixed_attn: bool = True,
+    redirect_common_files: bool = True,
+    max_history_len: int = 256,
+    fastwam_pretrained_path: str | None = None,
+    n_unfrozen_ffn_layers: int = 0,
+    model_dtype: torch.dtype = torch.bfloat16,
+    device: str = "cuda",
+):
+    from .models.wan22.caswam import CasWAM
+
+    # Resolve relative paths (CWD may differ when running from symlinked RoboTwin).
+    action_dit_pretrained_path = _resolve_project_relative(action_dit_pretrained_path)
+    fastwam_pretrained_path = _resolve_project_relative(fastwam_pretrained_path)
+
+    if isinstance(video_dit_config, DictConfig):
+        video_dit_config = OmegaConf.to_container(video_dit_config, resolve=True)
+    if not isinstance(video_dit_config, dict):
+        raise ValueError(f"`video_dit_config` must resolve to a dict, got {type(video_dit_config)}")
+
+    if isinstance(action_dit_config, DictConfig):
+        action_dit_config = OmegaConf.to_container(action_dit_config, resolve=True)
+    if action_dit_config is None:
+        action_dit_config = {}
+    if not isinstance(action_dit_config, dict):
+        raise ValueError(f"`action_dit_config` must resolve to a dict, got {type(action_dit_config)}")
+
+    if isinstance(video_scheduler, DictConfig):
+        video_scheduler = OmegaConf.to_container(video_scheduler, resolve=True)
+    if video_scheduler is None:
+        video_scheduler = {}
+    if not isinstance(video_scheduler, dict):
+        raise ValueError(f"`video_scheduler` must be dict-like, got {type(video_scheduler)}")
+
+    if isinstance(action_scheduler, DictConfig):
+        action_scheduler = OmegaConf.to_container(action_scheduler, resolve=True)
+    if action_scheduler is None:
+        raise ValueError("`action_scheduler` is required for CasWAM.")
+    if not isinstance(action_scheduler, dict):
+        raise ValueError(f"`action_scheduler` must be dict-like, got {type(action_scheduler)}")
+    required_keys = {"train_shift", "infer_shift", "num_train_timesteps"}
+    missing_keys = required_keys - set(action_scheduler.keys())
+    if missing_keys:
+        raise ValueError(f"`action_scheduler` missing required keys: {sorted(missing_keys)}.")
+
+    if isinstance(loss, DictConfig):
+        loss = OmegaConf.to_container(loss, resolve=True)
+    if loss is None:
+        loss = {}
+    if not isinstance(loss, dict):
+        raise ValueError(f"`loss` must be dict-like, got {type(loss)}")
+
+    return CasWAM.from_wan22_pretrained(
+        device=device,
+        torch_dtype=model_dtype,
+        model_id=model_id,
+        tokenizer_model_id=tokenizer_model_id,
+        tokenizer_max_len=int(tokenizer_max_len),
+        load_text_encoder=bool(load_text_encoder),
+        proprio_dim=(None if proprio_dim is None else int(proprio_dim)),
+        redirect_common_files=bool(redirect_common_files),
+        video_dit_config=video_dit_config,
+        action_dit_config=action_dit_config,
+        action_dit_pretrained_path=action_dit_pretrained_path,
+        skip_dit_load_from_pretrain=bool(skip_dit_load_from_pretrain),
+        mot_checkpoint_mixed_attn=bool(mot_checkpoint_mixed_attn),
+        max_history_len=int(max_history_len),
+        fastwam_pretrained_path=fastwam_pretrained_path,
+        video_train_shift=float(video_scheduler.get("train_shift", 5.0)),
+        video_infer_shift=float(video_scheduler.get("infer_shift", 5.0)),
+        video_num_train_timesteps=int(video_scheduler.get("num_train_timesteps", 1000)),
+        action_train_shift=float(action_scheduler["train_shift"]),
+        action_infer_shift=float(action_scheduler["infer_shift"]),
+        action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
+        loss_lambda_video=float(loss.get("lambda_video", 1.0)),
+        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        n_unfrozen_ffn_layers=int(n_unfrozen_ffn_layers),
+    )
+
+
+def create_caswam_acthist(
+    model_id: str,
+    tokenizer_model_id: str,
+    video_dit_config,
+    tokenizer_max_len: int = 512,
+    load_text_encoder: bool = True,
+    proprio_dim: int | None = None,
+    action_dit_config=None,
+    action_dit_pretrained_path: str | None = None,
+    skip_dit_load_from_pretrain: bool = False,
+    video_scheduler=None,
+    action_scheduler=None,
+    loss=None,
+    mot_checkpoint_mixed_attn: bool = True,
+    redirect_common_files: bool = True,
+    max_history_len: int = 256,
+    fastwam_pretrained_path: str | None = None,
+    n_unfrozen_ffn_layers: int = 0,
+    model_dtype: torch.dtype = torch.bfloat16,
+    device: str = "cuda",
+):
+    from .models.wan22.caswam_acthist import CasWAMActHist
+
+    # Resolve relative paths (CWD may differ when running from symlinked RoboTwin).
+    action_dit_pretrained_path = _resolve_project_relative(action_dit_pretrained_path)
+    fastwam_pretrained_path = _resolve_project_relative(fastwam_pretrained_path)
+
+    if isinstance(video_dit_config, DictConfig):
+        video_dit_config = OmegaConf.to_container(video_dit_config, resolve=True)
+    if not isinstance(video_dit_config, dict):
+        raise ValueError(f"`video_dit_config` must resolve to a dict, got {type(video_dit_config)}")
+
+    if isinstance(action_dit_config, DictConfig):
+        action_dit_config = OmegaConf.to_container(action_dit_config, resolve=True)
+    if action_dit_config is None:
+        action_dit_config = {}
+    if not isinstance(action_dit_config, dict):
+        raise ValueError(f"`action_dit_config` must resolve to a dict, got {type(action_dit_config)}")
+
+    if isinstance(video_scheduler, DictConfig):
+        video_scheduler = OmegaConf.to_container(video_scheduler, resolve=True)
+    if video_scheduler is None:
+        video_scheduler = {}
+    if not isinstance(video_scheduler, dict):
+        raise ValueError(f"`video_scheduler` must be dict-like, got {type(video_scheduler)}")
+
+    if isinstance(action_scheduler, DictConfig):
+        action_scheduler = OmegaConf.to_container(action_scheduler, resolve=True)
+    if action_scheduler is None:
+        raise ValueError("`action_scheduler` is required for CasWAMActHist.")
+    if not isinstance(action_scheduler, dict):
+        raise ValueError(f"`action_scheduler` must be dict-like, got {type(action_scheduler)}")
+    required_keys = {"train_shift", "infer_shift", "num_train_timesteps"}
+    missing_keys = required_keys - set(action_scheduler.keys())
+    if missing_keys:
+        raise ValueError(f"`action_scheduler` missing required keys: {sorted(missing_keys)}.")
+
+    if isinstance(loss, DictConfig):
+        loss = OmegaConf.to_container(loss, resolve=True)
+    if loss is None:
+        loss = {}
+    if not isinstance(loss, dict):
+        raise ValueError(f"`loss` must be dict-like, got {type(loss)}")
+
+    return CasWAMActHist.from_wan22_pretrained(
+        device=device,
+        torch_dtype=model_dtype,
+        model_id=model_id,
+        tokenizer_model_id=tokenizer_model_id,
+        tokenizer_max_len=int(tokenizer_max_len),
+        load_text_encoder=bool(load_text_encoder),
+        proprio_dim=(None if proprio_dim is None else int(proprio_dim)),
+        redirect_common_files=bool(redirect_common_files),
+        video_dit_config=video_dit_config,
+        action_dit_config=action_dit_config,
+        action_dit_pretrained_path=action_dit_pretrained_path,
+        skip_dit_load_from_pretrain=bool(skip_dit_load_from_pretrain),
+        mot_checkpoint_mixed_attn=bool(mot_checkpoint_mixed_attn),
+        max_history_len=int(max_history_len),
+        fastwam_pretrained_path=fastwam_pretrained_path,
+        video_train_shift=float(video_scheduler.get("train_shift", 5.0)),
+        video_infer_shift=float(video_scheduler.get("infer_shift", 5.0)),
+        video_num_train_timesteps=int(video_scheduler.get("num_train_timesteps", 1000)),
+        action_train_shift=float(action_scheduler["train_shift"]),
+        action_infer_shift=float(action_scheduler["infer_shift"]),
+        action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
+        loss_lambda_video=float(loss.get("lambda_video", 1.0)),
+        loss_lambda_action=float(loss.get("lambda_action", 1.0)),
+        n_unfrozen_ffn_layers=int(n_unfrozen_ffn_layers),
+    )
+
+
 def create_fastwam_idm(
     model_id: str,
     tokenizer_model_id: str,
@@ -264,6 +473,9 @@ def create_fastwam_idm(
     from .models.wan22.fastwam_idm import (
         FastWAMIDM,
     )
+
+    # Resolve relative paths (CWD may differ when running from symlinked RoboTwin).
+    action_dit_pretrained_path = _resolve_project_relative(action_dit_pretrained_path)
 
     if isinstance(video_dit_config, DictConfig):
         video_dit_config = OmegaConf.to_container(video_dit_config, resolve=True)

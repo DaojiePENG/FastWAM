@@ -309,6 +309,9 @@ class WorldActionRobotWinPolicy:
         self.episode_count += 1
         self.step_count = 0
         self.reset_timing_rollout()
+        # Reset history cache for CasWAM / CasWAMActHist
+        if hasattr(self.model, 'reset_history'):
+            self.model.reset_history()
 
 
 def encode_obs(observation: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

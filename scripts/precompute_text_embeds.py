@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 DEFAULT_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B"
 DEFAULT_TOKENIZER_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B"
 DEFAULT_CONTEXT_LEN = 128
-DEFAULT_BATCH_SIZE = 16
+DEFAULT_BATCH_SIZE = 256
 
 
 def _init_distributed():
@@ -238,6 +238,13 @@ def main(cfg: DictConfig):
         torch_dtype=torch_dtype,
         device=device,
     ).eval()
+    # torch.compile can 2-3x speedup on A100/A800 for text encoding
+    if hasattr(torch, 'compile'):
+        try:
+            text_encoder = torch.compile(text_encoder, mode="reduce-overhead")
+            logger.info("Applied torch.compile to text_encoder.")
+        except Exception as e:
+            logger.warning("torch.compile not available, continuing without it: %s", e)
     tokenizer = HuggingfaceTokenizer(
         name=tokenizer_config.path,
         seq_len=context_len,

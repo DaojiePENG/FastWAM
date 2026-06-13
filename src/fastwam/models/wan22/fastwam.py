@@ -87,6 +87,14 @@ class FastWAM(torch.nn.Module):
 
         self.to(self.device)
 
+    def get_trainable_parameters(self):
+        """Return list of trainable parameters for the optimizer.
+
+        Subclasses (e.g. CasWAM) may override this to restrict training
+        to a subset of parameters (e.g. only history_cross_attn layers).
+        """
+        return list(self.dit.parameters())
+
     @classmethod
     def from_wan22_pretrained(
         cls,
