@@ -19,16 +19,22 @@ export PYTHONWARNINGS="ignore"
 
 TASK_SUITE=libero_spatial
 TASK_IDX=0
+TASK_NAME=libero_caswam_acthist_uncond_2cam224_5e-5
+CKPT=runs/${TASK_NAME}/2026-06-13_17-45-57/checkpoints/weights/step_001800.pt
+
 # ── Step 1: Capture rollout with attention + video predictions (GPU) ──
 # Runs full episodes (until done or max_steps), repeated --num_trials times.
 python scripts/capture_history_attention_rollout.py \
-  --ckpt runs/libero_caswam_acthist_uncond_2cam224_1e-4/2026-06-08_12-57-00/checkpoints/weights/step_006600.pt \
+  --ckpt ${CKPT} \
+  --task ${TASK_NAME} \
   --task_suite ${TASK_SUITE} \
   --task_idx ${TASK_IDX} \
-  --num_trials 4
+  --num_trials 2
 
 # ── Step 2: Run analysis (CPU) on each trial ──
-LATEST_BASE=$(ls -dt evaluate_results/attention_analysis/libero_caswam_acthist_uncond_2cam224_1e-4/${TASK_SUITE}/${TASK_IDX}/ | head -1)
+# Pick the latest timestamp directory under {TASK_NAME}/{TASK_SUITE}/{TASK_IDX}/
+TASK_BASE=evaluate_results/attention_analysis/${TASK_NAME}/${TASK_SUITE}/${TASK_IDX}
+LATEST_BASE=$(ls -dt ${TASK_BASE}/[0-9]*_[0-9]*/ | head -1)
 echo "Analyzing trials in: ${LATEST_BASE}"
 
 for TRIAL_DIR in "${LATEST_BASE}"trial_*/; do

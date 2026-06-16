@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 # dataloading
-batch_size: 16
+batch_size: 36
 num_workers: 7
 
 model:
@@ -14,7 +14,7 @@ model:
 
 # scheduler
 lr_scheduler_type: "cosine"
-learning_rate: 1e-4
+learning_rate: 2e-4
 num_epochs: 5
 max_steps: null
 log_every: 5
@@ -22,7 +22,7 @@ save_every: 200
 eval_every: 10
 
 # training
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 1
 weight_decay: 1e-2
 resume: null
 
@@ -31,6 +31,6 @@ wandb:
   enabled: true
   workspace: null
   project: fast-wam
-  name: caswam_acthist_libero_uncond_2cam224_1e-4
+  name: caswam_acthist_libero_uncond_2cam224_2e-4
   group: null
   mode: online

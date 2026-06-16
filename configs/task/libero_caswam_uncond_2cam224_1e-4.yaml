@@ -10,10 +10,7 @@ batch_size: 16
 num_workers: 7
 
 model:
-  mot_checkpoint_mixed_attn: false
-  # --- ActionDiT fine-tuning scope (override model YAML default) ---
-  # 0 = modulation-only (safe), 6-12 = more trainable capacity
-  n_unfrozen_ffn_layers: 6
+  mot_checkpoint_mixed_attn: true
 
 # scheduler
 lr_scheduler_type: "cosine"

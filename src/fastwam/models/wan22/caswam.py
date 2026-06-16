@@ -4,12 +4,10 @@ Adds full-history KV cache with temporal positional encoding and history
 cross-attention to the ActionDiT, enabling the action expert to attend to
 all past video observations for improved long-horizon robotic control.
 
-VideoDiT remains fully frozen.  ActionDiT is partially fine-tuned:
-the new ``history_cross_attn`` layers, per-block AdaLN modulation
-(all layers), plus the action encoder/head are trained by default.
-ActionDiT FFN can optionally be unfrozen via ``_n_unfrozen_ffn_layers``
-(0 = safe, modulation-only; 6-12 = more capacity, needs GPU headroom).
-ActionDiT self-attention and text cross-attention stay frozen.
+VideoDiT remains fully frozen.  ActionDiT is fully trainable (~3B params
+with history_cross_attn): self-attention, text cross-attention, FFN,
+modulation, encoder, head, and the new history_cross_attn layers.
+Memory-safe with ZeRO-1 on 4 GPUs (~12 GB/GPU optimizer states).
 """
 
 from typing import Any, Optional
@@ -42,7 +40,6 @@ class CasWAM(FastWAM):
     def from_wan22_pretrained(cls, max_history_len: int = 256, **kwargs):
         # Extract CasWAM-specific kwargs before passing to parent.
         fastwam_pretrained_path = kwargs.pop("fastwam_pretrained_path", None)
-        n_unfrozen_ffn_layers = kwargs.pop("n_unfrozen_ffn_layers", 0)
 
         # Inject history cross-attention into ActionDiT config.
         action_dit_config = dict(kwargs.get("action_dit_config", {}) or {})
@@ -69,49 +66,29 @@ class CasWAM(FastWAM):
             logger.info("Loading FastWAM pretrained checkpoint: %s", fastwam_pretrained_path)
             model.load_checkpoint(fastwam_pretrained_path)
 
-        # Freeze everything except history_cross_attn + action encoder/head.
+        # Freeze VideoDiT only.  ActionDiT is fully trainable.
         # Must happen AFTER super().from_wan22_pretrained() and checkpoint load
         # because both construct/overwrite MoT parameters.
-        model._n_unfrozen_ffn_layers = int(n_unfrozen_ffn_layers)
         model._freeze_non_history_params()
         return model
 
     def get_trainable_parameters(self):
-        """Return history_cross_attn + action encoder/head + selected ActionDiT params.
+        """Return all ActionDiT params + VideoDiT frozen.
 
-        The FFN and modulation in the last ``n_unfrozen_ffn_layers`` ActionDiT
-        blocks are unfrozen because the history_cross_attn output flows through
-        them at every block.  Keeping all FFNs frozen prevents learning;
-        unfreezing all 30 exceeds 80 GB Adam state.
+        ActionDiT is fully trainable (self-attn, cross-attn, FFN, modulation,
+        encoder, head, history_cross_attn).  With 30 layers, hidden_dim=1024,
+        history_hidden_dim=3072: ~3B trainable params.
+        AdamW optimizer states: ~48 GB (fp32 momentum + variance).
+        ZeRO-1 on 4 GPUs: ~12 GB/GPU for optimizer states.
+        DDP on 4x80GB: ~48 GB/GPU optimizer + ~16 GB model + gradients,
+        leaving ~16 GB for activations.
 
-        The last layers are closest to the output head and most impactful for
-        transforming history-enriched representations.
-
-        VideoDiT (self-attn, FFN, modulation) and ActionDiT self-attn /
-        text cross-attn remain frozen.
+        VideoDiT (all video expert params) remains frozen.
         """
-        n_unfrozen = getattr(self, '_n_unfrozen_ffn_layers', 0)  # 0 = modulation only, safe default
         params = []
         for name, param in self.mot.named_parameters():
-            if 'mixtures.action' not in name:
-                continue
-            if ('history_cross_attn' in name
-                    or name.startswith('mixtures.action.action_encoder')
-                    or name.startswith('mixtures.action.head')):
+            if 'mixtures.action' in name:
                 params.append(param)
-                continue
-            # Unfreeze modulation for ALL action blocks (negligible ~180K params)
-            if '.modulation' in name and '.blocks.' in name:
-                params.append(param)
-                continue
-            # Unfreeze FFN only for the last N blocks (memory-constrained)
-            if '.ffn.' in name and '.blocks.' in name:
-                try:
-                    layer_idx = int(name.split('.blocks.')[1].split('.')[0])
-                except (ValueError, IndexError):
-                    continue
-                if layer_idx >= 30 - n_unfrozen:  # e.g. layers 18-29 for n=12
-                    params.append(param)
         return params
 
     def _freeze_non_history_params(self):
@@ -162,20 +139,22 @@ class CasWAM(FastWAM):
     def training_loss(self, sample, tiled: bool = False):
         """Memory-efficient training loss for CasWAM.
 
-        **Strategy** (VideoDiT frozen, only history_cross_attn trained):
+        Uses per-step ``.backward()`` to free each step's computation graph
+        immediately, avoiding OOM from accumulating all 8 steps' activations.
 
-        1. Under ``torch.no_grad()``: run standard MoT forward to collect
-           per-layer video K tensors (used as history signal).
-        2. Under ``torch.no_grad()``: run video cache prefill on the first
-           frame to populate ``video_kv_cache`` for the current step.
-        3. **With gradients**: run ``forward_action_with_history_cache``
-           so that history_cross_attn layers receive training signal.
-        4. Loss = history-augmented action MSE loss (trained).
-           Video MSE loss is also computed (no-grad, monitoring only).
+        **Strategy** (VideoDiT frozen, ActionDiT fully trainable):
 
-        This keeps peak memory close to a single MoT forward with gradient
-        tracking, plus two no-grad passes that only store forward activations
-        (no backward graph).
+        1. Under ``torch.no_grad()``: run joint video+action MoT forward
+           with noised latents to compute video loss (monitoring only).
+        2. For each replan step i (under no_grad): video-only prefill with
+           ``[real_frame_i, noise_1, ..., noise_8]`` → full 9-frame KV
+           as current context.  Slice frame i's KV for history.
+        3. **With gradients**: autoregressive loop over ``num_replans`` steps.
+           Each step: current = full 9-frame KV (real + noise future),
+           history = real frames [0..i-1].
+        4. History KV (video-only, detached, real frame only) accumulates.
+        5. Returns: action MSE loss (with gradients).
+           Video MSE loss (no-grad, monitoring only).
         """
         inputs = self.build_inputs(sample, tiled=tiled)
         input_latents = inputs["input_latents"]
@@ -199,153 +178,6 @@ class CasWAM(FastWAM):
         if first_frame_latents is None:
             first_frame_latents = input_latents[:, :, 0:1]
 
-        # ==================================================================
-        # STEP 1 — Collect history video KV (no gradients)
-        # ==================================================================
-        with torch.no_grad():
-            noise_video = torch.randn_like(input_latents)
-            timestep_video = self.train_video_scheduler.sample_training_t(
-                batch_size=batch_size, device=self.device, dtype=input_latents.dtype,
-            )
-            latents = self.train_video_scheduler.add_noise(input_latents, noise_video, timestep_video)
-            if inputs["first_frame_latents"] is not None:
-                latents[:, :, 0:1] = inputs["first_frame_latents"]
-
-            video_pre = self.video_expert.pre_dit(
-                x=latents,
-                timestep=timestep_video,
-                context=context,
-                context_mask=context_mask,
-                action=action,
-                fuse_vae_embedding_in_latents=fuse_flag,
-            )
-            action_pre_no_grad = self.action_expert.pre_dit(
-                action_tokens=noisy_action,
-                timestep=timestep_action,
-                context=context,
-                context_mask=context_mask,
-            )
-            attention_mask = self._build_mot_attention_mask(
-                video_seq_len=video_pre["tokens"].shape[1],
-                action_seq_len=action_pre_no_grad["tokens"].shape[1],
-                video_tokens_per_frame=int(video_pre["meta"]["tokens_per_frame"]),
-                device=video_pre["tokens"].device,
-            )
-            tokens_out, video_kv_per_layer = self.mot(
-                embeds_all={"video": video_pre["tokens"], "action": action_pre_no_grad["tokens"]},
-                attention_mask=attention_mask,
-                freqs_all={"video": video_pre["freqs"], "action": action_pre_no_grad["freqs"]},
-                context_all={
-                    "video": {"context": video_pre["context"], "mask": video_pre["context_mask"]},
-                    "action": {"context": action_pre_no_grad["context"], "mask": action_pre_no_grad["context_mask"]},
-                },
-                t_mod_all={"video": video_pre["t_mod"], "action": action_pre_no_grad["t_mod"]},
-                return_video_kv_cache=True,
-            )
-            # Detach and trim history KV to max_history_len tokens.
-            # ``video_kv_per_layer`` is a list of ``(k, v)`` tuples, one per
-            # layer.  During training, the full multi-frame sequence may
-            # exceed ``max_history_len``; we keep only the most recent tokens.
-            history_kv_list = []
-            for k, v in video_kv_per_layer:
-                k_det, v_det = k.detach(), v.detach()
-                if k_det.shape[1] > self.max_history_len:
-                    k_det = k_det[:, -self.max_history_len:]
-                    v_det = v_det[:, -self.max_history_len:]
-                history_kv_list.append((k_det, v_det))
-
-            # ---- video loss monitoring (no-grad, VideoDiT frozen) -------
-            target_video = self.train_video_scheduler.training_target(
-                input_latents, noise_video, timestep_video,
-            )
-            pred_video = self.video_expert.post_dit(tokens_out["video"], video_pre)
-
-            include_initial_video_step = inputs["first_frame_latents"] is None
-            if inputs["first_frame_latents"] is not None:
-                pred_video = pred_video[:, :, 1:]
-                target_video = target_video[:, :, 1:]
-
-            loss_video_per_sample = self._compute_video_loss_per_sample(
-                pred_video=pred_video,
-                target_video=target_video,
-                image_is_pad=image_is_pad,
-                include_initial_video_step=include_initial_video_step,
-            )
-            video_weight = self.train_video_scheduler.training_weight(timestep_video).to(
-                device=loss_video_per_sample.device, dtype=loss_video_per_sample.dtype,
-            )
-            loss_video_monitor = float((loss_video_per_sample * video_weight).mean().item())
-
-            del video_pre, action_pre_no_grad, attention_mask, latents
-            del noise_video, timestep_video, video_kv_per_layer, tokens_out
-            del pred_video, target_video, loss_video_per_sample, video_weight
-
-        # ==================================================================
-        # STEP 2 — Video cache prefill (no gradients, first frame only)
-        # ==================================================================
-        with torch.no_grad():
-            timestep_video_zero = torch.zeros(
-                batch_size, dtype=first_frame_latents.dtype, device=self.device,
-            )
-            video_pre_cache = self.video_expert.pre_dit(
-                x=first_frame_latents,
-                timestep=timestep_video_zero,
-                context=context,
-                context_mask=context_mask,
-                action=None,
-                fuse_vae_embedding_in_latents=fuse_flag,
-            )
-            cache_video_seq_len = int(video_pre_cache["tokens"].shape[1])
-
-        # Action expert pre_dit (WITH gradients — feeds into history forward)
-        action_pre = self.action_expert.pre_dit(
-            action_tokens=noisy_action,
-            timestep=timestep_action,
-            context=context,
-            context_mask=context_mask,
-        )
-
-        cache_attn_mask = self._build_mot_attention_mask(
-            video_seq_len=cache_video_seq_len,
-            action_seq_len=action_pre["tokens"].shape[1],
-            video_tokens_per_frame=int(video_pre_cache["meta"]["tokens_per_frame"]),
-            device=video_pre_cache["tokens"].device,
-        )
-
-        with torch.no_grad():
-            video_kv_cache = self.mot.prefill_video_cache(
-                video_tokens=video_pre_cache["tokens"],
-                video_freqs=video_pre_cache["freqs"],
-                video_t_mod=video_pre_cache["t_mod"],
-                video_context_payload={
-                    "context": video_pre_cache["context"],
-                    "mask": video_pre_cache["context_mask"],
-                },
-                video_attention_mask=cache_attn_mask[:cache_video_seq_len, :cache_video_seq_len],
-            )
-            del video_pre_cache
-
-        # ==================================================================
-        # STEP 3 — Action forward with history cache (WITH gradients)
-        # ==================================================================
-        action_tokens_hist = self.mot.forward_action_with_history_cache(
-            action_tokens=action_pre["tokens"],
-            action_freqs=action_pre["freqs"],
-            action_t_mod=action_pre["t_mod"],
-            action_context_payload={
-                "context": action_pre["context"],
-                "mask": action_pre["context_mask"],
-            },
-            video_kv_cache=video_kv_cache,
-            attention_mask=cache_attn_mask,
-            video_seq_len=cache_video_seq_len,
-            history_kv_cache=history_kv_list,
-        )
-        pred_action_history = self.action_expert.post_dit(action_tokens_hist, action_pre)
-
-        # ==================================================================
-        # STEP 4 — Loss (action only — VideoDiT is frozen)
-        # ==================================================================
         import torch.nn.functional as F
 
         def _action_loss(pred_a, target_a, pad_mask):
@@ -356,21 +188,211 @@ class CasWAM(FastWAM):
                 return (token_loss * valid).sum(dim=1) / valid_sum
             return token_loss.mean(dim=1)
 
-        action_weight = self.train_action_scheduler.training_weight(timestep_action).to(
-            device=pred_action_history.device, dtype=pred_action_history.dtype,
-        )
-        loss_action = (_action_loss(pred_action_history, target_action, action_is_pad) * action_weight).mean()
+        # ==================================================================
+        # STEP 1 — Joint MoT forward (no_grad): video loss monitoring
+        # ==================================================================
+        num_latent_frames = int(input_latents.shape[2])
+        tokens_per_frame = None
 
+        with torch.no_grad():
+            noise_video = torch.randn_like(input_latents)
+            timestep_video = self.train_video_scheduler.sample_training_t(
+                batch_size=batch_size, device=self.device, dtype=input_latents.dtype,
+            )
+            latents = self.train_video_scheduler.add_noise(input_latents, noise_video, timestep_video)
+            if inputs["first_frame_latents"] is not None:
+                latents[:, :, 0:1] = inputs["first_frame_latents"]
+
+            video_pre_joint = self.video_expert.pre_dit(
+                x=latents, timestep=timestep_video,
+                context=context, context_mask=context_mask,
+                action=action, fuse_vae_embedding_in_latents=fuse_flag,
+            )
+            action_pre_ng = self.action_expert.pre_dit(
+                action_tokens=noisy_action, timestep=timestep_action,
+                context=context, context_mask=context_mask,
+            )
+            attn_mask_joint = self._build_mot_attention_mask(
+                video_seq_len=video_pre_joint["tokens"].shape[1],
+                action_seq_len=action_pre_ng["tokens"].shape[1],
+                video_tokens_per_frame=int(video_pre_joint["meta"]["tokens_per_frame"]),
+                device=video_pre_joint["tokens"].device,
+            )
+            tokens_out_joint = self.mot(
+                embeds_all={"video": video_pre_joint["tokens"], "action": action_pre_ng["tokens"]},
+                attention_mask=attn_mask_joint,
+                freqs_all={"video": video_pre_joint["freqs"], "action": action_pre_ng["freqs"]},
+                context_all={
+                    "video": {"context": video_pre_joint["context"], "mask": video_pre_joint["context_mask"]},
+                    "action": {"context": action_pre_ng["context"], "mask": action_pre_ng["context_mask"]},
+                },
+                t_mod_all={"video": video_pre_joint["t_mod"], "action": action_pre_ng["t_mod"]},
+                return_video_kv_cache=False,
+            )
+            target_video = self.train_video_scheduler.training_target(input_latents, noise_video, timestep_video)
+            pred_video = self.video_expert.post_dit(tokens_out_joint["video"], video_pre_joint)
+            if inputs["first_frame_latents"] is not None:
+                pred_video = pred_video[:, :, 1:]
+                target_video = target_video[:, :, 1:]
+            loss_vid = self._compute_video_loss_per_sample(
+                pred_video, target_video, image_is_pad,
+                include_initial_video_step=(inputs["first_frame_latents"] is None),
+            )
+            vw = self.train_video_scheduler.training_weight(timestep_video).to(
+                device=loss_vid.device, dtype=loss_vid.dtype)
+            loss_video_monitor = float((loss_vid * vw).mean().item())
+            del video_pre_joint, action_pre_ng, attn_mask_joint, latents, noise_video
+            del timestep_video, pred_video, target_video, loss_vid, vw, tokens_out_joint
+
+            # Pre-compute tokens_per_frame for mask building
+            _dummy = input_latents[:, :, 0:1]
+            _dummy_pre = self.video_expert.pre_dit(
+                x=_dummy, timestep=torch.zeros(batch_size, device=self.device, dtype=input_latents.dtype),
+                context=context, context_mask=context_mask,
+                action=action, fuse_vae_embedding_in_latents=fuse_flag,
+            )
+            tokens_per_frame = int(_dummy_pre["meta"]["tokens_per_frame"])
+            del _dummy, _dummy_pre
+
+        # ==================================================================
+        # STEP 2 — Autoregressive action training loop
+        # Each step i: video-only prefill [real_frame_i, noise_1, ..., noise_8]
+        # → full 9-frame KV = current context (with predicted future).
+        # History accumulates ONLY real frame i's KV (sliced from the 9-frame KV).
+        # ==================================================================
+        action_horizon = int(action.shape[1])
+        num_replans = num_latent_frames - 1
+        actions_per_replan = action_horizon // num_replans
+
+        history_kv = None
+        loss_values = []
+        _per_step_backward = self.training
+        # DeepSpeed: raw .backward() interacts badly with DS gradient hooks.
+        if _per_step_backward and getattr(self, '_using_deepspeed', False):
+            _per_step_backward = False
+
+        for step_i in range(num_replans):
+            a_start = step_i * actions_per_replan
+            a_end = (step_i + 1) * actions_per_replan
+            noisy_chunk = noisy_action[:, a_start:a_end]
+            target_chunk = target_action[:, a_start:a_end]
+            pad_chunk = action_is_pad[:, a_start:a_end] if action_is_pad is not None else None
+
+            # — Video-only prefill: [real_frame_i, noise_1, ..., noise_8] —
+            with torch.no_grad():
+                noise_video = torch.randn_like(input_latents)
+                timestep_video = self.train_video_scheduler.sample_training_t(
+                    batch_size=batch_size, device=self.device, dtype=input_latents.dtype,
+                )
+                latents_pf = self.train_video_scheduler.add_noise(
+                    input_latents, noise_video, timestep_video,
+                )
+                # Set frame i to real, all others stay noisy
+                latents_pf[:, :, step_i:step_i+1] = input_latents[:, :, step_i:step_i+1]
+
+                video_pre = self.video_expert.pre_dit(
+                    x=latents_pf, timestep=timestep_video,
+                    context=context, context_mask=context_mask,
+                    action=action, fuse_vae_embedding_in_latents=fuse_flag,
+                )
+                video_svl = int(video_pre["tokens"].shape[1])
+                joint_mask_tmp = self._build_mot_attention_mask(
+                    video_seq_len=video_svl,
+                    action_seq_len=actions_per_replan,
+                    video_tokens_per_frame=tokens_per_frame,
+                    device=video_pre["tokens"].device,
+                )
+                video_attn_mask = joint_mask_tmp[:video_svl, :video_svl]
+                full_video_kv = self.mot.prefill_video_cache(
+                    video_tokens=video_pre["tokens"],
+                    video_freqs=video_pre["freqs"],
+                    video_t_mod=video_pre["t_mod"],
+                    video_context_payload={
+                        "context": video_pre["context"],
+                        "mask": video_pre["context_mask"],
+                    },
+                    video_attention_mask=video_attn_mask,
+                )
+                # Slice frame i's KV for history (real frame only)
+                start_tok = step_i * tokens_per_frame
+                end_tok = start_tok + tokens_per_frame
+                frame_i_kv = [
+                    (kv["k"][:, start_tok:end_tok].detach().clone(),
+                     kv["v"][:, start_tok:end_tok].detach().clone())
+                    for kv in full_video_kv
+                ]
+                del latents_pf, noise_video, video_pre, joint_mask_tmp, video_attn_mask
+
+            # — Attention mask (9 video frames + action chunk) —
+            attn_mask = self._build_mot_attention_mask(
+                video_seq_len=video_svl,
+                action_seq_len=actions_per_replan,
+                video_tokens_per_frame=tokens_per_frame,
+                device=full_video_kv[0]["k"].device,
+            )
+
+            # ── WITH GRADIENTS (every step) ──────────────────────────
+            action_pre = self.action_expert.pre_dit(
+                action_tokens=noisy_chunk, timestep=timestep_action,
+                context=context, context_mask=context_mask,
+            )
+            act_out = self.mot.forward_action_with_history_cache(
+                action_tokens=action_pre["tokens"],
+                action_freqs=action_pre["freqs"],
+                action_t_mod=action_pre["t_mod"],
+                action_context_payload={
+                    "context": action_pre["context"],
+                    "mask": action_pre["context_mask"],
+                },
+                video_kv_cache=full_video_kv,  # full 9-frame KV as current context
+                attention_mask=attn_mask,
+                video_seq_len=video_svl,
+                history_kv_cache=history_kv,
+                return_action_kv=True,
+            )
+            act_tokens, act_kv_grad = act_out
+            pred_a = self.action_expert.post_dit(act_tokens, action_pre)
+            aw = self.train_action_scheduler.training_weight(timestep_action).to(
+                device=pred_a.device, dtype=pred_a.dtype)
+            li = (_action_loss(pred_a, target_chunk, pad_chunk) * aw).mean()
+
+            # Per-step backward: free graph immediately to avoid OOM
+            if _per_step_backward:
+                (li / num_replans).backward()
+                loss_values.append(float(li.detach().item()))
+                del action_pre, act_out, act_tokens, act_kv_grad, pred_a, aw, li, attn_mask
+            else:
+                loss_values.append(li)
+
+            # — Append frame i's video KV to history (real frame only) —
+            with torch.no_grad():
+                if history_kv is None:
+                    history_kv = [(k, v) for k, v in frame_i_kv]
+                else:
+                    new_hist = []
+                    for (ek, ev), (nk, nv) in zip(history_kv, frame_i_kv):
+                        ck = torch.cat([ek, nk], dim=1)
+                        cv = torch.cat([ev, nv], dim=1)
+                        if ck.shape[1] > self.max_history_len:
+                            ck = ck[:, -self.max_history_len:]
+                            cv = cv[:, -self.max_history_len:]
+                        new_hist.append((ck, cv))
+                    history_kv = new_hist
+
+        if _per_step_backward:
+            loss_dict = {
+                "loss_action": sum(loss_values) / max(len(loss_values), 1),
+                "loss_video": loss_video_monitor,
+            }
+            return torch.tensor(0.0, device=self.device), loss_dict
+
+        loss_action = sum(loss_values) / max(len(loss_values), 1)
         loss_total = self.loss_lambda_action * loss_action
         loss_dict = {
             "loss_action": float(loss_action.detach().item()),
             "loss_video": loss_video_monitor,
         }
         return loss_total, loss_dict
-
-    # ------------------------------------------------------------------
-    # Inference
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def infer_action(
@@ -463,12 +485,24 @@ class CasWAM(FastWAM):
                 context=context, context_mask=context_mask, proprio=proprio,
             )
 
-        # -- VideoDiT prefill (current frame only) --------------------------
-        timestep_video = torch.zeros(
-            (first_frame_latents.shape[0],), dtype=first_frame_latents.dtype, device=self.device,
+        # -- VideoDiT prefill: [real_f0, noise_1, ..., noise_8] -----------
+        # Matches training: 9-frame prefill with noise-based "predicted future".
+        # Only frame 0's KV goes into history; full 9-frame KV is current context.
+        num_latent_frames = 9  # matches VAE temporal factor (33 px → 9 latent)
+        B = first_frame_latents.shape[0]
+        latents_9 = torch.randn(
+            B, *first_frame_latents.shape[1:2], num_latent_frames,
+            *first_frame_latents.shape[3:],
+            device=self.device, dtype=first_frame_latents.dtype,
         )
+        latents_9[:, :, 0:1] = first_frame_latents  # frame 0 = real observation
+        timestep_video = torch.full(
+            (B,), self.train_video_scheduler.num_train_timesteps - 1,
+            device=self.device, dtype=first_frame_latents.dtype,
+        )  # max noise for future frames, matching training semantics
+
         video_pre = self.video_expert.pre_dit(
-            x=first_frame_latents,
+            x=latents_9,
             timestep=timestep_video,
             context=context,
             context_mask=context_mask,
@@ -476,10 +510,11 @@ class CasWAM(FastWAM):
             fuse_vae_embedding_in_latents=fuse_flag,
         )
         video_seq_len = int(video_pre["tokens"].shape[1])
+        tokens_per_frame = int(video_pre["meta"]["tokens_per_frame"])
         attention_mask = self._build_mot_attention_mask(
             video_seq_len=video_seq_len,
             action_seq_len=latents_action.shape[1],
-            video_tokens_per_frame=int(video_pre["meta"]["tokens_per_frame"]),
+            video_tokens_per_frame=tokens_per_frame,
             device=video_pre["tokens"].device,
         )
         video_kv_cache = self.mot.prefill_video_cache(
@@ -492,12 +527,10 @@ class CasWAM(FastWAM):
             video_attention_mask=attention_mask[:video_seq_len, :video_seq_len],
         )
 
-        # -- accumulate history ---------------------------------------------
-        # Extract per-layer (k, v) tensors from the prefill cache.
-        new_kv = [(layer_cache["k"], layer_cache["v"]) for layer_cache in video_kv_cache]
-        self._append_to_history(new_kv)
-
         # -- action denoising with history ----------------------------------
+        # NOTE: Do NOT append current frame to history before denoising!
+        # The current frame is already in video_kv_cache; appending it to
+        # history would cause it to appear TWICE in the attention.
         infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
             num_inference_steps=num_inference_steps,
             device=self.device, dtype=latents_action.dtype, shift_override=sigma_shift,
@@ -517,6 +550,17 @@ class CasWAM(FastWAM):
                 history_kv_cache=self._history_kv_cache,
             )
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
+
+        # -- accumulate history AFTER denoising (only frame 0's KV) ---------
+        # Slice frame 0's KV from the 9-frame cache for history.
+        f0_start = 0
+        f0_end = tokens_per_frame
+        frame0_kv = [
+            (layer_cache["k"][:, f0_start:f0_end],
+             layer_cache["v"][:, f0_start:f0_end])
+            for layer_cache in video_kv_cache
+        ]
+        self._append_to_history(frame0_kv)
 
         return {
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),

@@ -47,6 +47,9 @@ def load_rollout(data_dir: str):
         ├── kv_cache/replan_XXX.pt
         └── video_pred/replan_XXX/{frame_NNN.png, pred_video.mp4}
 
+    Also loads ``analysis_meta.json`` (from trial dir or parent) to
+    correctly handle CasWAMActHist joint (video+action) history layout.
+
     Returns:
         meta: dict with task_name, success, num_replans, ...
         replans: list of dicts per replan
@@ -61,6 +64,21 @@ def load_rollout(data_dir: str):
     else:
         meta = {"task_name": "unknown", "success": False, "num_replans": 0}
 
+    # Load analysis metadata (model class, token layout).
+    # Check data_dir first, then parent (output_base level).
+    analysis_meta = {}
+    for candidate in [data_dir / "analysis_meta.json",
+                      data_dir.parent / "analysis_meta.json"]:
+        if candidate.exists():
+            with open(candidate) as f:
+                analysis_meta = json.load(f)
+            break
+
+    is_acthist = bool(analysis_meta.get("is_acthist", False))
+    action_tpf = int(analysis_meta.get("action_tokens_per_frame", 0))
+    meta["is_acthist"] = is_acthist
+    meta["action_tokens_per_frame"] = action_tpf
+
     obs_frames_dir = data_dir / "obs_frames"
     step_frames_dir = data_dir / "step_frames"
     action_chunks_dir = data_dir / "action_chunks"
@@ -74,6 +92,7 @@ def load_rollout(data_dir: str):
 
     replans = []
     tokens_per_frame = None
+    tokens_per_step = None  # total history tokens per replan step
 
     for ridx in replan_indices:
         # Observation frame
@@ -106,13 +125,12 @@ def load_rollout(data_dir: str):
         # Compute hist_len from attention tensor shape
         hist_len = 0
         if attention and "cross_attn" in attention:
-            # cross_attn shape: [n_layers, S_q, S_k] (new) or list[n_heads, S_q, S_k] (legacy)
             ca = attention["cross_attn"]
             hist_len = ca.shape[-1] if not isinstance(ca, list) else ca[0].shape[-1]
-            if tokens_per_frame is None and ridx >= 1:
-                # At replan ridx, history has exactly `ridx` frames (R0..R(ridx-1)).
-                # hist_len / ridx gives tokens per frame.
-                tokens_per_frame = hist_len // ridx
+            if tokens_per_step is None and ridx >= 1:
+                # At replan ridx, history has exactly `ridx` replan steps.
+                # hist_len / ridx gives total tokens per step.
+                tokens_per_step = hist_len // ridx
 
         replans.append({
             "replan_idx": ridx,
@@ -125,7 +143,23 @@ def load_rollout(data_dir: str):
             "has_video_pred": has_video_pred,
         })
 
-    meta["tokens_per_frame"] = tokens_per_frame or 130  # fallback estimate
+    # tokens_per_frame = VIDEO tokens per frame only (for spatial mapping).
+    # For CasWAM: history is video-only → tokens_per_step == video_tpf.
+    # For CasWAMActHist: history is joint → subtract action_tpf.
+    if tokens_per_step is not None:
+        if is_acthist and action_tpf > 0:
+            tokens_per_frame = tokens_per_step - action_tpf
+        else:
+            tokens_per_frame = tokens_per_step
+    else:
+        tokens_per_frame = 130  # fallback estimate
+
+    meta["tokens_per_frame"] = tokens_per_frame
+    meta["tokens_per_step"] = tokens_per_step or tokens_per_frame
+
+    if is_acthist:
+        print(f"  CasWAMActHist: tokens_per_step={meta['tokens_per_step']}, "
+              f"action_tpf={action_tpf}, video_tpf={tokens_per_frame}")
 
     return meta, replans
 
@@ -239,12 +273,8 @@ def plot_timeline(meta, replans, output_dir):
 
     fig, axes = plt.subplots(n_rows * 2, n_cols,
                              figsize=(3 * n_cols, 5 * n_rows))
-    if n_rows == 1:
-        # axes is (2, n_cols); split into list of two 1D rows so
-        # axes[row*2][col] returns a single Axes, not a row-slice.
-        axes = [axes[0], axes[1]]
-    elif n_rows * 2 == 2:
-        axes = [axes[:n_cols], axes[n_cols:]]
+    if n_cols == 1:
+        axes = axes.reshape(n_rows * 2, 1)
 
     for idx, r in enumerate(captured):
         row, col = divmod(idx, n_cols)
@@ -285,6 +315,7 @@ def plot_key_nodes(meta, replans, output_dir, top_n=5):
         return [], []
 
     top_results = []
+    tps = meta["tokens_per_step"]  # total tokens per replan step (video+action for ActHist)
 
     for r in captured:
         ca = avg_attention(r["attention"])
@@ -377,6 +408,7 @@ def plot_global_top_frames(meta, replans, output_dir, data_dir, top_n=5):
     attn_sum = np.zeros(max_frame, dtype=np.float64)
     attn_count = np.zeros(max_frame, dtype=np.int32)
 
+    tps = meta["tokens_per_step"]
     for r in captured:
         ca = avg_attention(r["attention"])
         mean_attn = ca.mean(0)  # [S_k]
@@ -483,7 +515,7 @@ def plot_relative_position_attention(meta, replans, output_dir):
         if n_frames <= 1:
             continue
         S_k = mean_attn.shape[0]
-        chunk = S_k // n_frames
+        chunk = S_k // n_frames  # tokens per step
         clipped = mean_attn[:n_frames * chunk]
         frame_attn = clipped.reshape(n_frames, chunk).mean(dim=1).numpy()
         profiles.append(frame_attn)
@@ -746,7 +778,7 @@ def plot_action_alignment(meta, replans, output_dir):
         print("  Skipping Action Alignment: no captured replans")
         return
 
-    tpf = meta["tokens_per_frame"]
+    tpf = meta["tokens_per_step"]  # chunk size per replan step
     fig, axes = plt.subplots(len(captured), 1, figsize=(14, 3 * len(captured)), sharex=False)
     if len(captured) == 1:
         axes = [axes]
@@ -794,7 +826,7 @@ def plot_action_alignment(meta, replans, output_dir):
 
     # CSV: per-frame attention with action phases
     csv_rows = []
-    tpf = meta["tokens_per_frame"]
+    tpf = meta["tokens_per_step"]  # chunk size per replan step
     for r in captured:
         ca = avg_attention(r["attention"])
         hist_attn = ca.mean(0).numpy()
@@ -833,9 +865,15 @@ def discover_grid(tokens_per_frame):
 
 
 def plot_spatial(meta, replans, output_dir):
-    """Plot spatial attention maps (which image regions are attended to)."""
+    """Plot spatial attention maps (which image regions are attended to).
+
+    For CasWAMActHist, each replan step contains both video and action
+    tokens.  Only the first ``tokens_per_frame`` tokens per step are
+    video tokens (mappable to spatial image regions).
+    """
     captured = get_captured_replans(replans)
-    tpf = meta["tokens_per_frame"]
+    tpf = meta["tokens_per_frame"]   # video-only tokens (spatial grid)
+    tps = meta["tokens_per_step"]    # total tokens per replan step
     gh, gw = discover_grid(tpf)
 
     # Use last replan (most history)
@@ -843,35 +881,35 @@ def plot_spatial(meta, replans, output_dir):
     ca = avg_attention(last["attention"])
     hist_attn = ca.mean(0).numpy()
 
-    # Per-frame spatial maps
-    nf = len(hist_attn) // tpf
+    # Per-frame spatial maps: chunk by tps, take first tpf (video) tokens
+    nf = len(hist_attn) // tps
     if nf == 0:
         return
 
     n_cols = min(6, nf)
     n_rows = (nf + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-    if n_rows == 1:
-        axes = [axes]
+    axes = np.atleast_2d(axes)
 
     # Global range for consistent coloring
     all_maps = []
     for f in range(nf):
-        sm = hist_attn[f * tpf: f * tpf + gh * gw].reshape(gh, gw)
+        # Video tokens start at f * tps, take first tpf (= gh*gw) tokens
+        sm = hist_attn[f * tps: f * tps + gh * gw].reshape(gh, gw)
         all_maps.append(sm)
     vmin = min(m.min() for m in all_maps)
     vmax = max(m.max() for m in all_maps)
 
     for f in range(nf):
         row, col = divmod(f, n_cols)
-        ax = axes[row][col] if n_rows > 1 else axes[col]
+        ax = axes[row][col]
         im = ax.imshow(all_maps[f], cmap="hot", interpolation="bilinear", vmin=vmin, vmax=vmax)
         ax.set_title(f"Frame {f}", fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
         plt.colorbar(im, ax=ax, fraction=0.046)
     for f in range(nf, n_rows * n_cols):
         row, col = divmod(f, n_cols)
-        ax = axes[row][col] if n_rows > 1 else axes[col]
+        ax = axes[row][col]
         ax.axis("off")
 
     fig.suptitle(f"Spatial Attention (Replan {last['replan_idx']}, Grid {gh}×{gw})", fontsize=13)
@@ -906,14 +944,18 @@ def plot_kv_probing(meta, replans, output_dir):
         print("  Skipping KV probing: no kv_cache.pt found")
         return
 
-    tpf = meta["tokens_per_frame"]
+    tps = meta["tokens_per_step"]  # total tokens per replan step (for chunking)
     last = kv_replans[-1]
 
     # kv_cache is list of (K, V) per layer. Use last layer.
     last_layer_kv = last["kv_cache"][-1]
     raw_k = last_layer_kv[0]  # [S_hist, hidden_dim]
     n_tokens = raw_k.shape[0]
-    n_frames = n_tokens // tpf if tpf > 0 else n_tokens
+    n_frames = n_tokens // tps if tps > 0 else n_tokens
+
+    if n_tokens < 6:
+        print(f"  Skipping KV probing: only {n_tokens} tokens (need >= 6 for t-SNE)")
+        return
 
     try:
         from sklearn.manifold import TSNE
@@ -923,7 +965,7 @@ def plot_kv_probing(meta, replans, output_dir):
         return
 
     # t-SNE
-    perplexity = min(30, max(5, n_tokens // 4))
+    perplexity = min(30, max(2, n_tokens // 4), n_tokens - 1)
     print(f"  Running t-SNE on {n_tokens} tokens (perplexity={perplexity})...")
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, max_iter=1000)
     tsne_2d = tsne.fit_transform(raw_k.numpy())
@@ -937,7 +979,7 @@ def plot_kv_probing(meta, replans, output_dir):
     elif len(mean_attn) > n_tokens:
         mean_attn = mean_attn[:n_tokens]
 
-    frame_ids = np.array([i // tpf for i in range(n_tokens)])
+    frame_ids = np.array([i // tps for i in range(n_tokens)])
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -971,8 +1013,8 @@ def plot_kv_probing(meta, replans, output_dir):
     im = ax.imshow(sim, cmap="RdBu_r", vmin=-1, vmax=1)
     ax.set_title(f"History Token Cosine Similarity (R{last['replan_idx']})")
     for f in range(1, n_frames):
-        ax.axhline(y=f * tpf, color="white", lw=0.5, alpha=0.5)
-        ax.axvline(x=f * tpf, color="white", lw=0.5, alpha=0.5)
+        ax.axhline(y=f * tps, color="white", lw=0.5, alpha=0.5)
+        ax.axvline(x=f * tps, color="white", lw=0.5, alpha=0.5)
     plt.colorbar(im, ax=ax, label="Cosine similarity")
     fig.tight_layout()
     fig.savefig(output_dir / "fig_cosine_similarity.png", dpi=150, bbox_inches="tight")

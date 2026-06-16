@@ -40,7 +40,8 @@ Output structure:
 Usage:
     # Phase 1: capture on GPU
     python scripts/capture_history_attention_rollout.py \
-        --ckpt <checkpoint_path> --task_idx 0 --num_trials 10
+        --ckpt <checkpoint_path> --task <task_config_name> \
+        --task_idx 0 --num_trials 10
 
     # Phase 2: analyze on CPU
     python scripts/analyze_history_attention.py \
@@ -469,6 +470,9 @@ def parse_args():
         description="Capture rollouts with attention, KV cache, and video predictions"
     )
     parser.add_argument("--ckpt", type=str, required=True, help="Path to checkpoint file (.pt)")
+    parser.add_argument("--task", type=str, default=None,
+                        help="Task config name (e.g. libero_caswam_acthist_uncond_2cam224_5e-5). "
+                             "Auto-derived from --ckpt path if omitted.")
     parser.add_argument("--task_suite", type=str, default="libero_10",
                         help="LIBERO task suite name")
     parser.add_argument("--task_idx", type=int, default=0)
@@ -490,10 +494,13 @@ def main():
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    # Derive run_name from checkpoint path
-    ckpt_dir = os.path.dirname(ckpt_path)  # .../checkpoints/weights
-    run_dir = os.path.dirname(os.path.dirname(os.path.dirname(ckpt_dir)))
-    run_name = os.path.basename(run_dir)
+    # Derive run_name from checkpoint path (or use explicit --task)
+    if args.task:
+        run_name = args.task
+    else:
+        ckpt_dir = os.path.dirname(ckpt_path)  # .../checkpoints/weights
+        run_dir = os.path.dirname(os.path.dirname(os.path.dirname(ckpt_dir)))
+        run_name = os.path.basename(run_dir)
 
     # Output directory
     if args.output_dir:
@@ -579,6 +586,27 @@ def main():
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 10))
     binarize_gripper = bool(cfg.EVALUATION.get("binarize_gripper", True))
     max_steps = 600  # LIBERO standard
+
+    # --- Save analysis metadata (model class, token layout) ---
+    model_class = type(model).__name__
+    is_acthist = "ActHist" in model_class
+    action_tokens_per_frame = 0
+    if is_acthist:
+        _ah = int(cfg.data.train.num_frames) - 1  # action_horizon
+        _nf = _ah // int(cfg.data.train.action_video_freq_ratio) + 1  # num_obs_frames
+        _nr = _nf - 1  # num_replans
+        action_tokens_per_frame = _ah // _nr if _nr > 0 else 0
+
+    analysis_meta = {
+        "model_class": model_class,
+        "is_acthist": is_acthist,
+        "action_tokens_per_frame": action_tokens_per_frame,
+        "action_horizon": action_horizon,
+    }
+    with open(os.path.join(output_base, "analysis_meta.json"), "w") as f:
+        json.dump(analysis_meta, f, indent=2)
+    print(f"  analysis_meta: model_class={model_class}, is_acthist={is_acthist}, "
+          f"action_tokens_per_frame={action_tokens_per_frame}")
 
     # --- Run trials ---
     all_results = []

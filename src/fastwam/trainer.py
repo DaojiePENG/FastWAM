@@ -62,10 +62,15 @@ class Wan22Trainer:
             step_scheduler_with_optimizer=False,
         )
         
+        ds_plugin = getattr(self.accelerator.state, "deepspeed_plugin", None)
+        self._using_deepspeed = ds_plugin is not None
+        zero_stage = "none"
+        if ds_plugin is not None:
+            zero_stage = ds_plugin.deepspeed_config.get("zero_optimization", {}).get("stage", "unknown")
         logger.info(
             "Accelerate training: distributed_type=%s zero_stage=%s world_size=%d process_index=%d cfg_mixed_precision=%s accelerator_mixed_precision=%s grad_accum=%d grad_clip=%.4f",
             self.accelerator.distributed_type,
-            self.accelerator.state.deepspeed_plugin.deepspeed_config.get("zero_optimization", {}).get("stage", "unknown"),
+            zero_stage,
             self.accelerator.num_processes,
             self.accelerator.process_index,
             self.mixed_precision,
@@ -83,6 +88,13 @@ class Wan22Trainer:
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
         self._apply_dit_only_train_mode(self.model)
         trainable_params = self.model.get_trainable_parameters()
+        trainable_param_count = sum(p.numel() for p in trainable_params)
+        total_param_count = sum(p.numel() for p in self.model.parameters())
+        logger.info(
+            "Trainable parameters: %d / %d (%.2f%%)",
+            trainable_param_count, total_param_count,
+            100.0 * trainable_param_count / max(total_param_count, 1),
+        )
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
             trainable_params.extend(list(proprio_encoder.parameters()))
@@ -117,10 +129,32 @@ class Wan22Trainer:
         ensure_dir(self.state_dir)
         ensure_dir(self.eval_dir)
 
+        # Mark model with DeepSpeed flag BEFORE prepare(), so training_loss
+        # can detect DS and skip per-step .backward() (which interacts badly
+        # with DeepSpeed's internal gradient hooks).
+        self.model._using_deepspeed = self._using_deepspeed
+
+
         self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
             self.model, self.optimizer, self.train_loader, self.scheduler
         )
         self.optimizer.zero_grad(set_to_none=True)
+
+        # Verify optimizer only tracks trainable params (not frozen VideoDiT).
+        opt_param_count = sum(p.numel() for group in self.optimizer.param_groups for p in group["params"])
+        total_model_params = sum(p.numel() for p in self.accelerator.unwrap_model(self.model).parameters())
+        if opt_param_count == total_model_params and total_model_params > 2e9:
+            logger.warning(
+                "Optimizer tracking ALL %d params (%.2f B) — frozen VideoDiT may NOT be excluded! "
+                "This will cause OOM with DeepSpeed. Check freeze logic.",
+                opt_param_count, opt_param_count / 1e9,
+            )
+        else:
+            logger.info(
+                "Optimizer tracking %d / %d params (%.2f%%) — frozen params correctly excluded.",
+                opt_param_count, total_model_params,
+                100.0 * opt_param_count / max(total_model_params, 1),
+            )
         self.wandb_run = None
         self._init_wandb()
         self._resume_or_load_checkpoint()
@@ -784,11 +818,18 @@ class Wan22Trainer:
                 self.accelerator.backward(loss)
 
                 if self.accelerator.sync_gradients:
-                    grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    self.optimizer.step()
+                    if self._using_deepspeed:
+                        # DeepSpeed engine.step() already called inside accelerator.backward():
+                        # gradients all-reduced, optimizer stepped, gradients zeroed.
+                        # Don't double-step or clip already-zero'd gradients.
+                        grad_norm = 0.0
+                    else:
+                        grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                        self.optimizer.step()
                     if not self.accelerator.optimizer_step_was_skipped:
                         self.scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=True)
+                    if not self._using_deepspeed:
+                        self.optimizer.zero_grad(set_to_none=True)
                     self.global_step += 1
                     global_loss = float(
                         self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()

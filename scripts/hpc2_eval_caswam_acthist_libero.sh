@@ -63,7 +63,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ── Run evaluation ──
 python experiments/libero/run_libero_manager.py \
-  task=libero_caswam_acthist_uncond_2cam224_1e-4 \
+  task=libero_caswam_acthist_uncond_2cam224_5e-5 \
   ckpt="$CKPT" \
   EVALUATION.dataset_stats_path=./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json \
   MULTIRUN.num_gpus="$NUM_GPUS" \

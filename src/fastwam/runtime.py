@@ -285,7 +285,6 @@ def create_caswam(
     redirect_common_files: bool = True,
     max_history_len: int = 256,
     fastwam_pretrained_path: str | None = None,
-    n_unfrozen_ffn_layers: int = 0,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
 ):
@@ -356,7 +355,6 @@ def create_caswam(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
-        n_unfrozen_ffn_layers=int(n_unfrozen_ffn_layers),
     )
 
 
@@ -377,7 +375,6 @@ def create_caswam_acthist(
     redirect_common_files: bool = True,
     max_history_len: int = 256,
     fastwam_pretrained_path: str | None = None,
-    n_unfrozen_ffn_layers: int = 0,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
 ):
@@ -448,7 +445,6 @@ def create_caswam_acthist(
         action_num_train_timesteps=int(action_scheduler["num_train_timesteps"]),
         loss_lambda_video=float(loss.get("lambda_video", 1.0)),
         loss_lambda_action=float(loss.get("lambda_action", 1.0)),
-        n_unfrozen_ffn_layers=int(n_unfrozen_ffn_layers),
     )
 
 

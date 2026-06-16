@@ -9,9 +9,6 @@ mot_checkpoint_mixed_attn: true
 action_dit_pretrained_path: checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
 skip_dit_load_from_pretrain: false
 max_history_len: 1024
-# Number of ActionDiT FFN layers (counting from the last) to unfreeze.
-# 0 = modulation-only (safe, ~180K params), 6-12 = more capacity.
-n_unfrozen_ffn_layers: 0
 # Load joint MoT weights from the pretrained FastWAM release checkpoint.
 # This gives the ActionDiT self-attn/FFN weights from joint training with
 # VideoDiT, which is a better starting point than the linear-interp backbone.
