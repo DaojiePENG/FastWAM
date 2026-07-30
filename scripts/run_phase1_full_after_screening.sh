@@ -156,6 +156,11 @@ fi
 
 log "all full-training workers complete; starting formal 10x10 evaluation"
 log "formal evaluation GPUs: $FINAL_EVAL_GPU_IDS_CSV"
+# The screening gate has already strictly validated this identical profiled
+# release baseline (same tasks, trials, initial states, and evaluator). Reuse it
+# so the formal stage spends its rollout budget on the three trained variants.
+mkdir -p "$EVAL_ROOT/fastwam_release"
+cp -a "$SCREEN_EVAL_ROOT/fastwam_release/." "$EVAL_ROOT/fastwam_release/"
 TRAIN_ROOT="$TRAIN_ROOT" \
 EVAL_ROOT="$EVAL_ROOT" \
 FINAL_STEP="$FINAL_STEP" \
