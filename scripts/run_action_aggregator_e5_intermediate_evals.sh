@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-STAGE1_CURVE_ROOT="${STAGE1_CURVE_ROOT:-$ROOT_DIR/evaluate_results/phase1_h8_d30_e1_bs32_curve2}"
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/action_aggregator_h8_e5_bs72_lr2e5}"
 EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/action_aggregator_h8_e5_bs72_lr2e5_curve2}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
@@ -15,10 +14,6 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-stage1_curve_complete() {
-    [[ -s "$STAGE1_CURVE_ROOT/step_000669/pareto/pareto.json" ]]
-}
-
 checkpoint_ready() {
     local step="$1"
     local tag
@@ -28,10 +23,7 @@ checkpoint_ready() {
 }
 
 mkdir -p "$EVAL_ROOT"
-while ! stage1_curve_complete; do
-    log "waiting for stage-1 intermediate queue to release GPUs 6-7"
-    sleep "$POLL_SECONDS"
-done
+log "GPUs 6-7 reserved for action_aggregator learning-curve evaluation"
 
 for epoch in $(seq 1 "$NUM_EPOCHS"); do
     step=$((epoch * STEPS_PER_EPOCH))
