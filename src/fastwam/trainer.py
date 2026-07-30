@@ -132,6 +132,8 @@ class Wan22Trainer:
         self.global_step = 0
         self.epoch = 0
         self.batch_in_epoch = 0
+        self.metric_ema_beta = 0.98
+        self.metric_ema: dict[str, float] = {}
 
         self.checkpoint_root = os.path.join(self.output_dir, "checkpoints")
         self.weights_dir = os.path.join(self.checkpoint_root, "weights")
@@ -184,6 +186,7 @@ class Wan22Trainer:
                     * self.gradient_accumulation_steps
                 ),
                 "derived/optimizer_steps": self.max_steps,
+                "derived/loss_ema_beta": self.metric_ema_beta,
             },
             allow_val_change=True,
         )
@@ -742,6 +745,13 @@ class Wan22Trainer:
                         global_loss_metrics[key] = float(
                             self.accelerator.gather(metric_tensor).mean().item()
                         )
+                    ema_inputs = {"loss": global_loss, **global_loss_metrics}
+                    for key, value in ema_inputs.items():
+                        previous = self.metric_ema.get(key, value)
+                        self.metric_ema[key] = (
+                            self.metric_ema_beta * previous
+                            + (1.0 - self.metric_ema_beta) * value
+                        )
                     grad_norm_tensor = torch.tensor(grad_norm, device=loss.device, dtype=torch.float32)
                     global_grad_norm = float(self.accelerator.gather(grad_norm_tensor).mean().item())
 
@@ -784,6 +794,8 @@ class Wan22Trainer:
                             wandb_payload[f"train/lr_{group_name}"] = float(group["lr"])
                         for key, value in global_loss_metrics.items():
                             wandb_payload[f"train/{key}"] = value
+                        for key, value in self.metric_ema.items():
+                            wandb_payload[f"train/{key}_ema"] = value
                         self._wandb_log(wandb_payload)
 
                     if (

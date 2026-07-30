@@ -384,4 +384,7 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     for depth, (_, video_loss, action_loss) in losses.items():
         metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(video_loss.detach())
         metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(action_loss.detach())
+    metrics["history_blocks_mean"] = float(
+        history_valid.sum(dim=1).float().mean().detach()
+    )
     return total, metrics
