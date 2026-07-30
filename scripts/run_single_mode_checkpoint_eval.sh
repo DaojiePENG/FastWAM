@@ -16,8 +16,10 @@ MEMORY_ENABLED="${MEMORY_ENABLED:-true}"
 MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
 RETAINED_HISTORY_BLOCKS="${RETAINED_HISTORY_BLOCKS:-full}"
 EXIT_DEPTH="${EXIT_DEPTH:-30}"
+EXPECTED_TRAINED_EXIT_DEPTHS="${EXPECTED_TRAINED_EXIT_DEPTHS:-30}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 CHECKPOINT="$TRAIN_ROOT/$MODE/checkpoints/weights/$FINAL_STEP_TAG.pt"
+RUN_CONTRACT_FILE="$TRAIN_ROOT/$MODE/run_contract.txt"
 
 IFS=',' read -r -a GPU_IDS <<<"$GPU_IDS_CSV"
 NUM_WORKERS="${#GPU_IDS[@]}"
@@ -29,6 +31,29 @@ if [[ ! -s "$CHECKPOINT" ]]; then
     printf 'Checkpoint not ready: %s\n' "$CHECKPOINT" >&2
     exit 2
 fi
+if [[ ! -s "$RUN_CONTRACT_FILE" ]]; then
+    printf 'Training run contract missing: %s\n' "$RUN_CONTRACT_FILE" >&2
+    exit 2
+fi
+EXPECTED_RUN_CONTRACT_SHA256="$(awk -F= '$1 == "run_contract_sha256" {print $2}' "$RUN_CONTRACT_FILE")"
+EXPECTED_CODE_COMMIT="$(awk -F= '$1 == "code_commit" {print $2}' "$RUN_CONTRACT_FILE")"
+if [[ ! "$EXPECTED_RUN_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [[ ! "$EXPECTED_CODE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'Invalid training identity in %s\n' "$RUN_CONTRACT_FILE" >&2
+    exit 2
+fi
+mkdir -p "$EVAL_ROOT/.checkpoint_validation"
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+    "$CHECKPOINT" \
+    --expected-step "$FINAL_STEP" \
+    --expected-mode "$MODE" \
+    --expected-trained-exit-depths "$EXPECTED_TRAINED_EXIT_DEPTHS" \
+    --expected-history-vae-batch-chunk-size 1 \
+    --expected-run-contract-sha256 "$EXPECTED_RUN_CONTRACT_SHA256" \
+    --expected-code-commit "$EXPECTED_CODE_COMMIT" \
+    --state-dir "$TRAIN_ROOT/$MODE/checkpoints/state/$FINAL_STEP_TAG" \
+    --output "$EVAL_ROOT/.checkpoint_validation/${MODE}_step${FINAL_STEP}.json" \
+    >/dev/null
 case "$EXIT_DEPTH" in
     8|16|24|30) ;;
     *)
@@ -145,7 +170,7 @@ run_task() {
     log "start mode=$MODE step=$FINAL_STEP task=$task_id gpu=$gpu"
     if env -u CUDA_VISIBLE_DEVICES \
         MUJOCO_GL=egl \
-        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
         PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \

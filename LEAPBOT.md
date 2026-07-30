@@ -98,11 +98,10 @@ SELECTED_LR=1.0e-4 INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
   bash scripts/run_causal_full_bptt_comparison.sh
 
 # Phase 2: initialize from the winning D30 history checkpoint and train exits.
-accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
-  resume=<winner.pt> model.causal_mode=<winner> \
-  model.history_training_mode=incremental_full_bptt \
-  data.train.full_episode_history=true \
-  model.training_exit_depths='[8,16,24,30]'
+SOURCE_TRAIN_ROOT=/path/to/d30_root MODE=<winner> SOURCE_STEP=<step> \
+  MULTI_EXIT_LR=<selected-lr> MAX_STEPS=<steps> \
+  INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
+  bash scripts/run_multi_exit_training.sh
 ```
 
 Short 0-8 or 0-16 windows are optional controlled ablations, not the main
@@ -128,14 +127,27 @@ python experiments/libero/eval_libero_single.py \
   EVALUATION.memory.exit_depth=16
 
 python experiments/leapbot/pareto.py evaluate_results/leapbot
+
+# After training the winning four-exit checkpoint, run the complete
+# D={8,16,24,30} x H={0,8,16,32,full} grid with isolated result trees.
+TRAIN_ROOT=/path/to/multi_exit_run MODE=<winner> FINAL_STEP=<step> \
+  bash scripts/run_depth_history_pareto.sh
 ```
 
 Run all 10 `libero_10` tasks with 10 trials for development, then 50 trials per
-task for the final table. The evaluator records observation prefill, action
-denoising, executed-action commit, cache bytes, peak allocated GPU memory, and
-control steps. The Pareto tool keeps all non-dominated success/latency/memory
-configurations and applies the one-percentage-point plus overlapping-confidence
-interval default-selection rule.
+task for the final table. Replan latency is a closed raw-observation-to-command
+measurement: input preprocessing, context conditioning, real-observation
+prefill, action-history materialization/setup, action denoising, command
+postprocessing, and executed-action KV commit are retained separately. Cache
+peaks include the temporary post-observation/pre-commit state. The result
+fingerprint hashes the LeapBot worktree, LIBERO revision, simulator package
+versions, task BDDL, initial states, runtime configuration, and checkpoint.
+
+The Pareto tool keeps the overall non-dominated success/latency/memory frontier,
+including FastWAM as a comparator. The default LeapBot configuration is chosen
+only from memory-enabled LeapBot rows using the one-percentage-point plus
+overlapping-confidence-interval rule; FastWAM can never be mislabeled as the
+LeapBot default.
 
 ## Verification
 

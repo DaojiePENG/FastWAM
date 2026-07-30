@@ -3,12 +3,12 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-ACTION_TRAIN_ROOT="${ACTION_TRAIN_ROOT:-$ROOT_DIR/runs/action_aggregator_full_prefix_temporal_rope_v2_h70_e5_bs128_lr2e5}"
-REMAINING_TRAIN_ROOT="${REMAINING_TRAIN_ROOT:-$ROOT_DIR/runs/remaining_modes_full_prefix_temporal_rope_v2_h70_e5_bs128_lr2e5}"
+ACTION_TRAIN_ROOT="${ACTION_TRAIN_ROOT:?ACTION_TRAIN_ROOT is required}"
+REMAINING_TRAIN_ROOT="${REMAINING_TRAIN_ROOT:?REMAINING_TRAIN_ROOT is required}"
 EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/correct_full_prefix_comparison/temporal_rope_v2/final_50_trials}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
-FINAL_STEP="${FINAL_STEP:-1115}"
+FINAL_STEP="${FINAL_STEP:?FINAL_STEP is required}"
 NUM_TRIALS="${NUM_TRIALS:-50}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
@@ -59,6 +59,37 @@ if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
     printf 'FastWAM release checkpoint missing: %s\n' "$RELEASE_CHECKPOINT" >&2
     exit 2
 fi
+mkdir -p "$EVAL_ROOT/.checkpoint_validation"
+for mode in action_aggregator interleaved vision_causal; do
+    if [[ "$mode" == "action_aggregator" ]]; then
+        mode_train_root="$ACTION_TRAIN_ROOT"
+    else
+        mode_train_root="$REMAINING_TRAIN_ROOT"
+    fi
+    run_contract_file="$mode_train_root/$mode/run_contract.txt"
+    if [[ ! -s "$run_contract_file" ]]; then
+        printf 'Training run contract missing: %s\n' "$run_contract_file" >&2
+        exit 2
+    fi
+    expected_run_contract_sha256="$(awk -F= '$1 == "run_contract_sha256" {print $2}' "$run_contract_file")"
+    expected_code_commit="$(awk -F= '$1 == "code_commit" {print $2}' "$run_contract_file")"
+    if [[ ! "$expected_run_contract_sha256" =~ ^[0-9a-f]{64}$ ]] \
+        || [[ ! "$expected_code_commit" =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'Invalid training identity in %s\n' "$run_contract_file" >&2
+        exit 2
+    fi
+    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+        "$(mode_checkpoint "$mode")" \
+        --expected-step "$FINAL_STEP" \
+        --expected-mode "$mode" \
+        --expected-trained-exit-depths 30 \
+        --expected-history-vae-batch-chunk-size 1 \
+        --expected-run-contract-sha256 "$expected_run_contract_sha256" \
+        --expected-code-commit "$expected_code_commit" \
+        --state-dir "$mode_train_root/$mode/checkpoints/state/$FINAL_TAG" \
+        --output "$EVAL_ROOT/.checkpoint_validation/${mode}_${FINAL_TAG}.json" \
+        >/dev/null
+done
 
 CHECKPOINT_BY_MODE[fastwam_release]="$RELEASE_CHECKPOINT"
 for mode in action_aggregator interleaved vision_causal; do
@@ -219,7 +250,7 @@ run_task() {
     log "start final mode=$mode task=$task_id trials=$NUM_TRIALS gpu=$gpu"
     if env -u CUDA_VISIBLE_DEVICES \
         MUJOCO_GL=egl \
-        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
         PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \

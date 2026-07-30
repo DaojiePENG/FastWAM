@@ -59,6 +59,43 @@ def test_default_uses_fastest_overlapping_within_one_point():
     assert pareto.choose_default(rows)["config"] == "fast"
 
 
+def test_leapbot_default_excludes_faster_overlapping_fastwam_baseline():
+    rows = [
+        {
+            "config": "fastwam_release/rt-a/ckpt-a",
+            "model_family": "fastwam_release",
+            "memory_enabled": False,
+            "success_rate": 0.899,
+            "ci_low": 0.86,
+            "ci_high": 0.93,
+            "p50_latency_s": 0.1,
+        },
+        {
+            "config": "interleaved/d30/h70/cap70/rt-b/ckpt-b",
+            "model_family": "leapbot_memory",
+            "memory_enabled": True,
+            "success_rate": 0.90,
+            "ci_low": 0.86,
+            "ci_high": 0.93,
+            "p50_latency_s": 2.0,
+        },
+        {
+            "config": "action_aggregator/d16/h8/cap70/rt-c/ckpt-c",
+            "model_family": "leapbot_memory",
+            "memory_enabled": True,
+            "success_rate": 0.895,
+            "ci_low": 0.85,
+            "ci_high": 0.93,
+            "p50_latency_s": 1.0,
+        },
+    ]
+
+    assert pareto.choose_default(rows)["model_family"] == "fastwam_release"
+    leapbot_default = pareto.choose_leapbot_default(rows)
+    assert leapbot_default["config"].startswith("action_aggregator/")
+    assert leapbot_default["memory_enabled"] is True
+
+
 def test_non_dominated_keeps_speed_success_tradeoff():
     rows = [
         {"config": "a", "success_rate": 0.9, "p50_latency_s": 2.0, "peak_gpu_gib": 10.0},
@@ -90,8 +127,16 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
                     {
                         "timing": {
                             "total_inference_s": 0.5,
+                            "input_preprocess_s": 0.0,
+                            "model_inference_s": 0.5,
+                            "action_postprocess_s": 0.0,
+                            "latency_residual_s": 0.0,
+                            "conditioning_s": 0.0,
                             "observation_prefill_s": 0.1,
+                            "action_setup_s": 0.0,
                             "action_denoise_s": 0.4,
+                            "causal_model_s": 0.5,
+                            "causal_model_residual_s": 0.0,
                         },
                         "memory": {
                             "completed_blocks": 4,
@@ -112,10 +157,16 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     path.write_text(json.dumps(payload))
 
     row = pareto.aggregate([path])[0]
+    assert row["model_family"] == "leapbot_memory"
+    assert row["memory_enabled"] is True
     assert row["mean_completion_steps"] == 150
     assert row["p50_latency_s"] == 0.55
+    assert row["p50_model_inference_s"] == 0.5
+    assert row["p50_conditioning_s"] == 0.0
     assert row["p50_observation_prefill_s"] == 0.1
+    assert row["p50_action_setup_s"] == 0.0
     assert row["p50_action_denoise_s"] == 0.4
+    assert row["p50_causal_model_s"] == 0.5
     assert row["p50_action_commit_s"] == 0.05
     assert row["peak_cache_gib"] == 1
     assert row["peak_gpu_gib"] == 3

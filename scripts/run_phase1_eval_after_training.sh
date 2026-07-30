@@ -78,6 +78,32 @@ if [[ "$INCLUDE_BASELINE" == "true" && ! -s "$RELEASE_CHECKPOINT" ]]; then
     printf 'FastWAM release checkpoint missing: %s\n' "$RELEASE_CHECKPOINT" >&2
     exit 2
 fi
+mkdir -p "$EVAL_ROOT/.checkpoint_validation"
+for mode in "${MODES[@]}"; do
+    run_contract_file="$TRAIN_ROOT/$mode/run_contract.txt"
+    if [[ ! -s "$run_contract_file" ]]; then
+        printf 'Training run contract missing: %s\n' "$run_contract_file" >&2
+        exit 2
+    fi
+    expected_run_contract_sha256="$(awk -F= '$1 == "run_contract_sha256" {print $2}' "$run_contract_file")"
+    expected_code_commit="$(awk -F= '$1 == "code_commit" {print $2}' "$run_contract_file")"
+    if [[ ! "$expected_run_contract_sha256" =~ ^[0-9a-f]{64}$ ]] \
+        || [[ ! "$expected_code_commit" =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'Invalid training identity in %s\n' "$run_contract_file" >&2
+        exit 2
+    fi
+    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+        "$(mode_checkpoint "$mode")" \
+        --expected-step "$FINAL_STEP" \
+        --expected-mode "$mode" \
+        --expected-trained-exit-depths 30 \
+        --expected-history-vae-batch-chunk-size 1 \
+        --expected-run-contract-sha256 "$expected_run_contract_sha256" \
+        --expected-code-commit "$expected_code_commit" \
+        --state-dir "$TRAIN_ROOT/$mode/checkpoints/state/$FINAL_STEP_TAG" \
+        --output "$EVAL_ROOT/.checkpoint_validation/${mode}_${FINAL_STEP_TAG}.json" \
+        >/dev/null
+done
 CHECKPOINT_BY_MODE[fastwam_release]="$RELEASE_CHECKPOINT"
 for mode in "${MODES[@]}"; do
     CHECKPOINT_BY_MODE[$mode]="$(mode_checkpoint "$mode")"
@@ -209,7 +235,7 @@ run_task() {
     log "start mode=$mode task=$task_id gpu=$gpu"
     if env -u CUDA_VISIBLE_DEVICES \
         MUJOCO_GL=egl \
-        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
         PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \

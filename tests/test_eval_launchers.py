@@ -20,6 +20,19 @@ LAUNCHERS = (
 EXPECTED_FINGERPRINT = {"schema_version": 3, "identity": "expected"}
 
 
+@pytest.mark.parametrize(
+    "launcher",
+    (
+        "run_single_mode_checkpoint_eval.sh",
+        "run_phase1_eval_after_training.sh",
+        "run_final_50_trial_comparison.sh",
+    ),
+)
+def test_memory_eval_rejects_non_runtime_isomorphic_history_vae_chunk(launcher):
+    source = (REPO_ROOT / "scripts" / launcher).read_text()
+    assert "--expected-history-vae-batch-chunk-size 1" in source
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
@@ -31,11 +44,20 @@ def _write_checkpoint(path: Path) -> None:
     path.write_bytes(f"checkpoint:{path}".encode())
 
 
+def _write_run_contract(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"run_contract_sha256={'a' * 64}\ncode_commit={'b' * 40}\n",
+        encoding="utf-8",
+    )
+
+
 def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str], Path]:
     root = tmp_path / "fake-root"
     eval_root = tmp_path / "eval"
     python_log = tmp_path / "python-calls.jsonl"
     evaluator_marker = tmp_path / "evaluator-called"
+    evaluator_env_log = tmp_path / "evaluator-env.jsonl"
     gpu_marker = tmp_path / "gpu-probed"
     fake_bin = tmp_path / "bin"
     stats = root / "checkpoints/fastwam_release/dataset_stats.json"
@@ -75,6 +97,12 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
 
         if argv and argv[0].endswith("eval_libero_single.py"):
             Path(os.environ["FAKE_EVALUATOR_MARKER"]).touch()
+            with open(os.environ["FAKE_EVALUATOR_ENV_LOG"], "a", encoding="utf-8") as stream:
+                stream.write(json.dumps({{
+                    "argv": argv,
+                    "cuda_visible_devices_present": "CUDA_VISIBLE_DEVICES" in os.environ,
+                    "mujoco_egl_device_id": os.environ.get("MUJOCO_EGL_DEVICE_ID"),
+                }}) + "\\n")
         raise SystemExit(0)
         """,
     )
@@ -83,7 +111,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
         """
         #!/usr/bin/env bash
         : >"$FAKE_GPU_MARKER"
-        printf '0\n'
+        printf '0\n%.0s' {{1..8}}
         """,
     )
 
@@ -94,13 +122,15 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
             "EVAL_ROOT": str(eval_root),
             "LEAPBOT_DATASET_STATS": str(stats),
             "RELEASE_CHECKPOINT": str(release),
-            "GPU_IDS_CSV": "0",
+            "GPU_IDS_CSV": "3",
             "NUM_TRIALS": "1",
             "POLL_SECONDS": "1",
             "FINAL_STEP": "1",
             "FAKE_PYTHON_LOG": str(python_log),
             "FAKE_EVALUATOR_MARKER": str(evaluator_marker),
+            "FAKE_EVALUATOR_ENV_LOG": str(evaluator_env_log),
             "FAKE_GPU_MARKER": str(gpu_marker),
+            "CUDA_VISIBLE_DEVICES": "7",
             "PATH": f"{fake_bin}:{env['PATH']}",
         }
     )
@@ -110,6 +140,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
         _write_checkpoint(
             train_root / "action_aggregator/checkpoints/weights/step_000001.pt"
         )
+        _write_run_contract(train_root / "action_aggregator/run_contract.txt")
         env.update(
             {
                 "TRAIN_ROOT": str(train_root),
@@ -120,6 +151,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
         train_root = tmp_path / "phase1-train"
         for mode in ("interleaved", "vision_causal", "action_aggregator"):
             _write_checkpoint(train_root / mode / "checkpoints/weights/step_000001.pt")
+            _write_run_contract(train_root / mode / "run_contract.txt")
         env.update(
             {
                 "TRAIN_ROOT": str(train_root),
@@ -133,10 +165,12 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
         _write_checkpoint(
             action_root / "action_aggregator/checkpoints/weights/step_000001.pt"
         )
+        _write_run_contract(action_root / "action_aggregator/run_contract.txt")
         for mode in ("interleaved", "vision_causal"):
             _write_checkpoint(
                 remaining_root / mode / "checkpoints/weights/step_000001.pt"
             )
+            _write_run_contract(remaining_root / mode / "run_contract.txt")
         env.update(
             {
                 "ACTION_TRAIN_ROOT": str(action_root),
@@ -271,3 +305,29 @@ def test_builder_and_evaluator_use_identical_behavior_overrides(tmp_path, launch
         actual_by_run[run_key] = overrides
 
     assert actual_by_run == expected_by_run
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+def test_evaluator_model_and_egl_use_same_physical_gpu(tmp_path, launcher):
+    completed, env = _run_launcher(tmp_path, launcher, result_kind=None)
+    assert completed.returncode == 0, completed.stdout
+    records = [
+        json.loads(line)
+        for line in Path(env["FAKE_EVALUATOR_ENV_LOG"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert records
+    for record in records:
+        assert not record["cuda_visible_devices_present"]
+        assert record["mujoco_egl_device_id"] == "3"
+        assert "gpu_id=3" in record["argv"]
+        assert "EVALUATION.device=cuda:3" in record["argv"]
+
+
+def test_depth_history_launcher_covers_full_grid_with_isolated_result_roots():
+    source = (REPO_ROOT / "scripts" / "run_depth_history_pareto.sh").read_text()
+    assert 'DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"' in source
+    assert 'HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"' in source
+    assert 'config_root="$GRID_ROOT/configs/d${depth}_h${history_cap}"' in source
+    assert "--expected-trained-exit-depths 8,16,24,30" in source

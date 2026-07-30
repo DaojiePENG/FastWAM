@@ -212,6 +212,16 @@ def test_trained_multi_exit_checkpoint_preserves_exit_heads(tmp_path):
     assert memory.config.exit_depth == 8
 
 
+def test_checkpoint_embeds_training_source_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEAPBOT_RUN_CONTRACT_SHA256", "a" * 64)
+    monkeypatch.setenv("LEAPBOT_CODE_COMMIT", "b" * 40)
+    path = tmp_path / "identified.pt"
+    _model().save_checkpoint(path)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert payload["run_contract_sha256"] == "a" * 64
+    assert payload["code_commit"] == "b" * 40
+
+
 def test_detached_history_training_is_rejected():
     model = _model()
     with pytest.raises(ValueError, match="do not match runtime BF16 execution"):

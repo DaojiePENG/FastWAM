@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 import time
 from collections.abc import Mapping
 from typing import Any, Optional, Sequence, Union
@@ -557,9 +558,13 @@ class LeapBotVA(FastWAM):
         if not bool(torch.isfinite(input_image).all().item()):
             raise ValueError("input_image contains non-finite values")
 
+        if profile and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        model_start = time.perf_counter()
         snapshot = memory.snapshot()
         timings: dict[str, float] = {}
         try:
+            conditioning_start = time.perf_counter()
             memory.bind_prompt(
                 self._prompt_fingerprint(prompt, context, context_mask)
             )
@@ -570,6 +575,9 @@ class LeapBotVA(FastWAM):
                 context_mask=context_mask,
                 proprio=proprio,
             )
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            timings["conditioning_s"] = time.perf_counter() - conditioning_start
 
             t0 = time.perf_counter()
             input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
@@ -616,6 +624,7 @@ class LeapBotVA(FastWAM):
                 torch.cuda.synchronize(self.device)
             timings["observation_prefill_s"] = time.perf_counter() - t0
 
+            action_setup_start = time.perf_counter()
             generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
             latents_action = torch.randn(
                 (1, action_horizon, self.action_expert.action_dim),
@@ -626,6 +635,9 @@ class LeapBotVA(FastWAM):
             history_kv = memory.materialize(memory.selected_segments_for_action())
             if history_kv is None:
                 raise RuntimeError("current real observation was not committed to memory")
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            timings["action_setup_s"] = time.perf_counter() - action_setup_start
 
             t1 = time.perf_counter()
             infer_timesteps, infer_deltas = self.infer_action_scheduler.build_inference_schedule(
@@ -669,6 +681,21 @@ class LeapBotVA(FastWAM):
         except Exception:
             memory.rollback(snapshot)
             raise
+
+        timings["causal_model_s"] = time.perf_counter() - model_start
+        timings["causal_model_residual_s"] = max(
+            0.0,
+            timings["causal_model_s"]
+            - sum(
+                timings[name]
+                for name in (
+                    "conditioning_s",
+                    "observation_prefill_s",
+                    "action_setup_s",
+                    "action_denoise_s",
+                )
+            ),
+        )
 
         return {
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
@@ -793,6 +820,12 @@ class LeapBotVA(FastWAM):
             "step": step,
             "torch_dtype": str(self.torch_dtype),
         }
+        run_contract = os.environ.get("LEAPBOT_RUN_CONTRACT_SHA256")
+        code_commit = os.environ.get("LEAPBOT_CODE_COMMIT")
+        if run_contract:
+            payload["run_contract_sha256"] = run_contract
+        if code_commit:
+            payload["code_commit"] = code_commit
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()
         if optimizer is not None:

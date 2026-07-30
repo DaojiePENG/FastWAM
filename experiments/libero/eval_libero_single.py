@@ -58,9 +58,11 @@ from leapbot_va.libero import (
 )
 from action_ensembler import ActionEnsembler
 
-OmegaConf.register_new_resolver("eval", eval)
-OmegaConf.register_new_resolver("max", lambda x: max(x))
-OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)])
+OmegaConf.register_new_resolver("eval", eval, replace=True)
+OmegaConf.register_new_resolver("max", lambda x: max(x), replace=True)
+OmegaConf.register_new_resolver(
+    "split", lambda s, idx: s.split("/")[int(idx)], replace=True
+)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -358,6 +360,10 @@ def _predict_action_chunk(
     model_device: str,
     memory=None,
 ) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], dict[str, Any]]:
+    if str(model_device).startswith("cuda"):
+        torch.cuda.synchronize(torch.device(model_device))
+    total_start = time.perf_counter()
+    preprocess_start = total_start
     num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
     if num_inference_steps_cfg is None:
         num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
@@ -407,7 +413,8 @@ def _predict_action_chunk(
 
     if str(model_device).startswith("cuda"):
         torch.cuda.synchronize(torch.device(model_device))
-    inference_start = time.perf_counter()
+    preprocess_end = time.perf_counter()
+    model_start = preprocess_end
     with torch.no_grad():
         if visualize_future_video:
             pred = model.infer_joint(**infer_kwargs)
@@ -416,7 +423,8 @@ def _predict_action_chunk(
             pred = model.infer_action(**infer_kwargs)
     if str(model_device).startswith("cuda"):
         torch.cuda.synchronize(torch.device(model_device))
-    total_inference_s = time.perf_counter() - inference_start
+    model_end = time.perf_counter()
+    postprocess_start = model_end
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -427,8 +435,21 @@ def _predict_action_chunk(
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
+    postprocess_end = time.perf_counter()
+    total_inference_s = postprocess_end - total_start
+    input_preprocess_s = preprocess_end - preprocess_start
+    model_inference_s = model_end - model_start
+    action_postprocess_s = postprocess_end - postprocess_start
     timing = dict(pred.get("timing", {}))
+    timing["input_preprocess_s"] = input_preprocess_s
+    timing["model_inference_s"] = model_inference_s
+    timing["action_postprocess_s"] = action_postprocess_s
     timing["total_inference_s"] = total_inference_s
+    timing["latency_residual_s"] = max(
+        0.0,
+        total_inference_s
+        - (input_preprocess_s + model_inference_s + action_postprocess_s),
+    )
     return action, imgs, predicted_future_frames, {
         "timing": timing,
         "memory": pred.get("memory", {}),
@@ -542,6 +563,12 @@ def run_single_episode(
             )
             current_executed_actions = []
             memory_metrics["replans"].append(inference_metrics)
+            observation_cache_bytes = int(
+                inference_metrics.get("memory", {}).get("cache_bytes", 0)
+            )
+            memory_metrics["peak_cache_bytes"] = max(
+                int(memory_metrics["peak_cache_bytes"]), observation_cache_bytes
+            )
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {

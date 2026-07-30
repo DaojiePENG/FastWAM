@@ -11,6 +11,7 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
+INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-$RELEASE_CHECKPOINT}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
@@ -23,6 +24,7 @@ LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-1}"
+TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29971}"
 MAX_PREFLIGHT_USED_MIB="${MAX_PREFLIGHT_USED_MIB:-2048}"
@@ -34,6 +36,7 @@ SEED="${SEED:-42}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-false}"
 ALLOW_CROSS_CONTRACT_RESUME="${ALLOW_CROSS_CONTRACT_RESUME:-false}"
 ALLOW_EXISTING_UNCONTRACTED="${ALLOW_EXISTING_UNCONTRACTED:-false}"
+REQUIRE_SELF_IDENTIFYING_CHECKPOINT="${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}"
 
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 LR_TAG="${LEARNING_RATE//./p}"
@@ -86,6 +89,17 @@ if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
     log "missing FastWAM release checkpoint: $RELEASE_CHECKPOINT"
     exit 1
 fi
+if [[ ! -s "$INITIAL_CHECKPOINT" ]]; then
+    log "missing initialization checkpoint: $INITIAL_CHECKPOINT"
+    exit 1
+fi
+case "$TRAINING_EXIT_DEPTHS_CSV" in
+    30|8,16,24,30) ;;
+    *)
+        log "training exits must be 30 or 8,16,24,30; got $TRAINING_EXIT_DEPTHS_CSV"
+        exit 1
+        ;;
+esac
 case "$MODE" in
     interleaved|vision_causal|action_aggregator) ;;
     *)
@@ -120,10 +134,16 @@ fi
 
 CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
+INITIAL_CHECKPOINT_SHA256="$(sha256sum "$INITIAL_CHECKPOINT" | awk '{print $1}')"
 DATASET_STATS_SHA256="$(sha256sum "$DATASET_STATS" | awk '{print $1}')"
-CONTRACT_PAYLOAD="$(printf '%s\n' \
+contract_fields=( \
     "code_commit=$CODE_COMMIT" \
     "release_checkpoint_sha256=$RELEASE_CHECKPOINT_SHA256" \
+)
+if [[ "$INITIAL_CHECKPOINT_SHA256" != "$RELEASE_CHECKPOINT_SHA256" ]]; then
+    contract_fields+=("initial_checkpoint_sha256=$INITIAL_CHECKPOINT_SHA256")
+fi
+contract_fields+=( \
     "dataset_stats_sha256=$DATASET_STATS_SHA256" \
     "mode=$MODE" \
     "num_processes=$NUM_PROCESSES" \
@@ -143,9 +163,11 @@ CONTRACT_PAYLOAD="$(printf '%s\n' \
     "max_history_blocks=70" \
     "replan_steps=10" \
     "action_horizon=32" \
-    "training_exit_depths=30" \
+    "training_exit_depths=$TRAINING_EXIT_DEPTHS_CSV" \
     "mixed_precision=bf16" \
-    "optimizer=adamw_beta0.9_0.95_wd0.01_clip1.0")"
+    "optimizer=adamw_beta0.9_0.95_wd0.01_clip1.0" \
+)
+CONTRACT_PAYLOAD="$(printf '%s\n' "${contract_fields[@]}")"
 RUN_CONTRACT_SHA256="$(printf '%s' "$CONTRACT_PAYLOAD" | sha256sum | awk '{print $1}')"
 RUN_CONTRACT_FILE="$OUTPUT_DIR/run_contract.txt"
 
@@ -182,7 +204,7 @@ fi
 
 RESUME_PATH="$(latest_state)"
 if [[ -z "$RESUME_PATH" ]]; then
-    RESUME_PATH="$RELEASE_CHECKPOINT"
+    RESUME_PATH="$INITIAL_CHECKPOINT"
     : >"$LOG_FILE"
 else
     log "resume from full trainer state: $RESUME_PATH" >>"$LOG_FILE"
@@ -226,7 +248,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     data.train.min_history_blocks=0 \
     data.train.max_history_blocks=70 \
     "data.train.initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
-    'model.training_exit_depths=[30]' \
+    "model.training_exit_depths=[$TRAINING_EXIT_DEPTHS_CSV]" \
     "max_steps=$MAX_STEPS" \
     num_epochs=100 \
     "learning_rate=$LEARNING_RATE" \
@@ -250,12 +272,22 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "resume=$RESUME_PATH" \
     >>"$LOG_FILE" 2>&1
 
+checkpoint_identity_args=()
+if [[ "${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}" == "true" ]]; then
+    checkpoint_identity_args=(
+        --expected-run-contract-sha256 "$RUN_CONTRACT_SHA256"
+        --expected-code-commit "$CODE_COMMIT"
+    )
+fi
+expected_training_exit_depths="${TRAINING_EXIT_DEPTHS_CSV:-30}"
 "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
     "$FINAL_CHECKPOINT" \
     --expected-step "$MAX_STEPS" \
     --expected-mode "$MODE" \
+    --expected-trained-exit-depths "$expected_training_exit_depths" \
     --expected-video-lora-multiplier "$VIDEO_LORA_MULTIPLIER" \
     --expected-history-vae-batch-chunk-size "$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    "${checkpoint_identity_args[@]}" \
     --state-dir "$OUTPUT_DIR/checkpoints/state/$FINAL_TAG" \
     --output "$OUTPUT_DIR/checkpoint_validation.json" \
     >>"$LOG_FILE" 2>&1

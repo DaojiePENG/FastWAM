@@ -93,7 +93,7 @@ run_task() {
     log "start baseline task=$task_id gpu=$gpu"
     env -u CUDA_VISIBLE_DEVICES \
         MUJOCO_GL=egl \
-        MUJOCO_EGL_DEVICE_ID=0 \
+        MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
         PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \

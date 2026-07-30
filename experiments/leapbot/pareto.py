@@ -71,14 +71,36 @@ def config_key(payload: dict, path: Path) -> str:
     return f"{family}/rt-{runtime_tag}/ckpt-{checkpoint_tag}"
 
 
+def model_family(payload: dict) -> str:
+    """Return the explicit model family used by formal model selection."""
+
+    fingerprint = normalize_evaluation_fingerprint(
+        payload["evaluation_fingerprint"]
+    )
+    runtime = fingerprint["runtime_contract"]
+    if runtime["memory"]["enabled"]:
+        return "leapbot_memory"
+    if str(runtime["config"]["name"]) == "sim_libero":
+        return "fastwam_release"
+    return "leapbot_no_memory"
+
+
 def _new_group() -> dict:
     return {
+        "model_family": None,
+        "memory_enabled": None,
         "successes": 0,
         "episodes": 0,
         "completion_steps": [],
         "latency": [],
+        "input_preprocess": [],
+        "model_inference": [],
+        "action_postprocess": [],
+        "conditioning": [],
         "observation_prefill": [],
+        "action_setup": [],
         "action_denoise": [],
+        "causal_model": [],
         "action_commit": [],
         "cache": [],
         "gpu": [],
@@ -91,6 +113,14 @@ def aggregate(paths: list[Path]) -> list[dict]:
         payload = json.loads(path.read_text())
         key = config_key(payload, path)
         group = groups[key]
+        family = model_family(payload)
+        memory_enabled = family == "leapbot_memory"
+        if group["model_family"] not in (None, family):
+            raise ValueError(f"{key}: mixed model families in one aggregate group")
+        if group["memory_enabled"] not in (None, memory_enabled):
+            raise ValueError(f"{key}: mixed memory contracts in one aggregate group")
+        group["model_family"] = family
+        group["memory_enabled"] = memory_enabled
         group["successes"] += int(payload.get("successes", 0))
         group["episodes"] += int(payload.get("total_episodes", 0))
         group["completion_steps"].extend(
@@ -102,6 +132,16 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 group["gpu"].append(float(episode["peak_gpu_bytes"]))
             for replan in episode.get("replans", []):
                 timing = replan.get("timing", {})
+                for field, target in (
+                    ("input_preprocess_s", "input_preprocess"),
+                    ("model_inference_s", "model_inference"),
+                    ("action_postprocess_s", "action_postprocess"),
+                    ("conditioning_s", "conditioning"),
+                    ("action_setup_s", "action_setup"),
+                    ("causal_model_s", "causal_model"),
+                ):
+                    if field in timing:
+                        group[target].append(float(timing[field]))
                 observation = float(timing.get("observation_prefill_s", 0))
                 denoise = float(timing.get("action_denoise_s", 0))
                 commit = float(replan.get("commit", {}).get("commit_s", 0))
@@ -123,6 +163,8 @@ def aggregate(paths: list[Path]) -> list[dict]:
         rows.append(
             {
                 "config": key,
+                "model_family": values["model_family"],
+                "memory_enabled": values["memory_enabled"],
                 "successes": values["successes"],
                 "episodes": values["episodes"],
                 "success_rate": rate,
@@ -137,10 +179,22 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 "p95_completion_steps": percentile(values["completion_steps"], 0.95),
                 "p50_latency_s": percentile(values["latency"], 0.50),
                 "p95_latency_s": percentile(values["latency"], 0.95),
+                "p50_input_preprocess_s": optional_percentile(values["input_preprocess"], 0.50),
+                "p95_input_preprocess_s": optional_percentile(values["input_preprocess"], 0.95),
+                "p50_model_inference_s": optional_percentile(values["model_inference"], 0.50),
+                "p95_model_inference_s": optional_percentile(values["model_inference"], 0.95),
+                "p50_action_postprocess_s": optional_percentile(values["action_postprocess"], 0.50),
+                "p95_action_postprocess_s": optional_percentile(values["action_postprocess"], 0.95),
+                "p50_conditioning_s": optional_percentile(values["conditioning"], 0.50),
+                "p95_conditioning_s": optional_percentile(values["conditioning"], 0.95),
                 "p50_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.50),
                 "p95_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.95),
+                "p50_action_setup_s": optional_percentile(values["action_setup"], 0.50),
+                "p95_action_setup_s": optional_percentile(values["action_setup"], 0.95),
                 "p50_action_denoise_s": optional_percentile(values["action_denoise"], 0.50),
                 "p95_action_denoise_s": optional_percentile(values["action_denoise"], 0.95),
+                "p50_causal_model_s": optional_percentile(values["causal_model"], 0.50),
+                "p95_causal_model_s": optional_percentile(values["causal_model"], 0.95),
                 "p50_action_commit_s": optional_percentile(values["action_commit"], 0.50),
                 "p95_action_commit_s": optional_percentile(values["action_commit"], 0.95),
                 "peak_cache_gib": max(values["cache"], default=0) / 2**30,
@@ -199,8 +253,14 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
             "samples": 0,
             "cache_after_observation": [],
             "cache_after_commit": [],
+            "input_preprocess": [],
+            "model_inference": [],
+            "action_postprocess": [],
+            "conditioning": [],
             "observation_prefill": [],
+            "action_setup": [],
             "action_denoise": [],
+            "causal_model": [],
             "action_commit": [],
             "total_replan": [],
             "episode_blocks": [],
@@ -241,6 +301,16 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
 
                 timing = replan.get("timing", {})
                 commit = replan.get("commit", {})
+                for field, target in (
+                    ("input_preprocess_s", "input_preprocess"),
+                    ("model_inference_s", "model_inference"),
+                    ("action_postprocess_s", "action_postprocess"),
+                    ("conditioning_s", "conditioning"),
+                    ("action_setup_s", "action_setup"),
+                    ("causal_model_s", "causal_model"),
+                ):
+                    if field in timing:
+                        group[target].append(float(timing[field]))
                 if "cache_bytes" in commit:
                     group["cache_after_commit"].append(float(commit["cache_bytes"]))
                 if "observation_prefill_s" in timing:
@@ -289,17 +359,53 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
                 "p95_cache_after_commit_gib": cache_percentile(
                     values["cache_after_commit"], 0.95
                 ),
+                "p50_input_preprocess_s": optional_percentile(
+                    values["input_preprocess"], 0.50
+                ),
+                "p95_input_preprocess_s": optional_percentile(
+                    values["input_preprocess"], 0.95
+                ),
+                "p50_model_inference_s": optional_percentile(
+                    values["model_inference"], 0.50
+                ),
+                "p95_model_inference_s": optional_percentile(
+                    values["model_inference"], 0.95
+                ),
+                "p50_action_postprocess_s": optional_percentile(
+                    values["action_postprocess"], 0.50
+                ),
+                "p95_action_postprocess_s": optional_percentile(
+                    values["action_postprocess"], 0.95
+                ),
+                "p50_conditioning_s": optional_percentile(
+                    values["conditioning"], 0.50
+                ),
+                "p95_conditioning_s": optional_percentile(
+                    values["conditioning"], 0.95
+                ),
                 "p50_observation_prefill_s": optional_percentile(
                     values["observation_prefill"], 0.50
                 ),
                 "p95_observation_prefill_s": optional_percentile(
                     values["observation_prefill"], 0.95
                 ),
+                "p50_action_setup_s": optional_percentile(
+                    values["action_setup"], 0.50
+                ),
+                "p95_action_setup_s": optional_percentile(
+                    values["action_setup"], 0.95
+                ),
                 "p50_action_denoise_s": optional_percentile(
                     values["action_denoise"], 0.50
                 ),
                 "p95_action_denoise_s": optional_percentile(
                     values["action_denoise"], 0.95
+                ),
+                "p50_causal_model_s": optional_percentile(
+                    values["causal_model"], 0.50
+                ),
+                "p95_causal_model_s": optional_percentile(
+                    values["causal_model"], 0.95
                 ),
                 "p50_action_commit_s": optional_percentile(
                     values["action_commit"], 0.50
@@ -426,6 +532,49 @@ def validate_inputs(
                         f"{key}/task{task_id}/episode{episode_index}: "
                         f"{missing}/{len(replans)} replans lack total_inference_s"
                     )
+                for timing_field in (
+                    "input_preprocess_s",
+                    "model_inference_s",
+                    "action_postprocess_s",
+                    "latency_residual_s",
+                ):
+                    missing_stage = sum(
+                        timing_field not in replan.get("timing", {})
+                        for replan in replans
+                    )
+                    if missing_stage:
+                        errors.append(
+                            f"{key}/task{task_id}/episode{episode_index}: "
+                            f"{missing_stage}/{len(replans)} replans lack {timing_field}"
+                        )
+                for replan_index, replan in enumerate(replans):
+                    timing = replan.get("timing", {})
+                    outer_fields = (
+                        "total_inference_s",
+                        "input_preprocess_s",
+                        "model_inference_s",
+                        "action_postprocess_s",
+                        "latency_residual_s",
+                    )
+                    if all(field in timing for field in outer_fields):
+                        values = {field: float(timing[field]) for field in outer_fields}
+                        if any(not math.isfinite(value) or value < 0 for value in values.values()):
+                            errors.append(
+                                f"{key}/task{task_id}/episode{episode_index}/"
+                                f"replan{replan_index}: invalid outer latency value"
+                            )
+                        else:
+                            stage_sum = sum(
+                                values[field]
+                                for field in outer_fields
+                                if field != "total_inference_s"
+                            )
+                            tolerance = max(1e-6, values["total_inference_s"] * 1e-5)
+                            if abs(values["total_inference_s"] - stage_sum) > tolerance:
+                                errors.append(
+                                    f"{key}/task{task_id}/episode{episode_index}/"
+                                    f"replan{replan_index}: outer latency stages do not close"
+                                )
                 if memory_enabled:
                     missing_prefill = sum(
                         "observation_prefill_s" not in replan.get("timing", {})
@@ -449,6 +598,57 @@ def validate_inputs(
                             f"{key}/task{task_id}/episode{episode_index}: "
                             f"{missing_denoise}/{len(replans)} replans lack action_denoise_s"
                         )
+                    for timing_field in (
+                        "conditioning_s",
+                        "action_setup_s",
+                        "causal_model_s",
+                        "causal_model_residual_s",
+                    ):
+                        missing_stage = sum(
+                            timing_field not in replan.get("timing", {})
+                            for replan in replans
+                        )
+                        if missing_stage:
+                            errors.append(
+                                f"{key}/task{task_id}/episode{episode_index}: "
+                                f"{missing_stage}/{len(replans)} replans lack {timing_field}"
+                            )
+                    for replan_index, replan in enumerate(replans):
+                        timing = replan.get("timing", {})
+                        causal_fields = (
+                            "causal_model_s",
+                            "conditioning_s",
+                            "observation_prefill_s",
+                            "action_setup_s",
+                            "action_denoise_s",
+                            "causal_model_residual_s",
+                        )
+                        if all(field in timing for field in causal_fields):
+                            values = {
+                                field: float(timing[field]) for field in causal_fields
+                            }
+                            if any(
+                                not math.isfinite(value) or value < 0
+                                for value in values.values()
+                            ):
+                                errors.append(
+                                    f"{key}/task{task_id}/episode{episode_index}/"
+                                    f"replan{replan_index}: invalid causal latency value"
+                                )
+                            else:
+                                stage_sum = sum(
+                                    values[field]
+                                    for field in causal_fields
+                                    if field != "causal_model_s"
+                                )
+                                tolerance = max(
+                                    1e-6, values["causal_model_s"] * 1e-5
+                                )
+                                if abs(values["causal_model_s"] - stage_sum) > tolerance:
+                                    errors.append(
+                                        f"{key}/task{task_id}/episode{episode_index}/"
+                                        f"replan{replan_index}: causal latency stages do not close"
+                                    )
                     if missing_commit:
                         errors.append(
                             f"{key}/task{task_id}/episode{episode_index}: "
@@ -512,6 +712,18 @@ def choose_default(rows: list[dict]) -> dict | None:
     return min(eligible, key=lambda row: row["p50_latency_s"])
 
 
+def choose_leapbot_default(rows: list[dict]) -> dict | None:
+    """Choose the default only from memory-enabled LeapBot configurations."""
+
+    leapbot_rows = [
+        row
+        for row in rows
+        if row.get("model_family") == "leapbot_memory"
+        and row.get("memory_enabled") is True
+    ]
+    return choose_default(leapbot_rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("inputs", nargs="+", type=Path)
@@ -533,7 +745,7 @@ def main() -> None:
     per_task_rows = aggregate_per_task(paths)
     history_rows = aggregate_by_history(paths)
     frontier = non_dominated(rows)
-    default = choose_default(rows)
+    leapbot_default = choose_leapbot_default(rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with (args.output_dir / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else ["config"])
@@ -558,10 +770,23 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(history_rows)
     (args.output_dir / "pareto.json").write_text(
-        json.dumps({"default": default, "frontier": frontier, "all": rows}, indent=2)
+        json.dumps(
+            {
+                "leapbot_default": leapbot_default,
+                "overall_frontier": frontier,
+                # Compatibility aliases for existing report consumers.
+                "default": leapbot_default,
+                "frontier": frontier,
+                "all": rows,
+            },
+            indent=2,
+        )
     )
-    print("default:", None if default is None else default["config"])
-    print("non-dominated:", len(frontier), "of", len(rows))
+    print(
+        "LeapBot default:",
+        None if leapbot_default is None else leapbot_default["config"],
+    )
+    print("overall non-dominated:", len(frontier), "of", len(rows))
 
 
 if __name__ == "__main__":

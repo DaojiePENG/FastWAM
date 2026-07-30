@@ -218,6 +218,20 @@ def _is_complete_timing(value: Any) -> bool:
     )
 
 
+def _timing_group_closes(
+    timing: Mapping[str, Any],
+    *,
+    total_field: str,
+    component_fields: Sequence[str],
+) -> bool:
+    fields = (total_field, *component_fields)
+    if not all(_is_complete_timing(timing.get(field)) for field in fields):
+        return False
+    total = float(timing[total_field])
+    component_sum = sum(float(timing[field]) for field in component_fields)
+    return abs(total - component_sum) <= max(1e-6, total * 1e-5)
+
+
 def _result_contract_trials(fingerprint: Mapping[str, Any]) -> int:
     trials = fingerprint["result_contract"].get("trials")
     if isinstance(trials, bool) or not isinstance(trials, int) or trials <= 0:
@@ -289,14 +303,29 @@ def result_matches_fingerprint(
             if not isinstance(replan, Mapping):
                 return False
             timing = replan.get("timing")
-            if not isinstance(timing, Mapping) or not _is_complete_timing(
-                timing.get("total_inference_s")
+            if not isinstance(timing, Mapping) or not _timing_group_closes(
+                timing,
+                total_field="total_inference_s",
+                component_fields=(
+                    "input_preprocess_s",
+                    "model_inference_s",
+                    "action_postprocess_s",
+                    "latency_residual_s",
+                ),
             ):
                 return False
             if memory_enabled:
-                if not _is_complete_timing(timing.get("observation_prefill_s")):
-                    return False
-                if not _is_complete_timing(timing.get("action_denoise_s")):
+                if not _timing_group_closes(
+                    timing,
+                    total_field="causal_model_s",
+                    component_fields=(
+                        "conditioning_s",
+                        "observation_prefill_s",
+                        "action_setup_s",
+                        "action_denoise_s",
+                        "causal_model_residual_s",
+                    ),
+                ):
                     return False
                 commit = replan.get("commit")
                 if not isinstance(commit, Mapping) or not _is_complete_timing(

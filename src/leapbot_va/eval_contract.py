@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import os
 import subprocess
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -82,7 +85,79 @@ def _git_source_identity(source_root: str | Path) -> dict[str, Any]:
 
     revision = _git("rev-parse", "HEAD")
     dirty_output = _git("status", "--porcelain", "--untracked-files=normal")
-    return {"revision": revision, "dirty": bool(dirty_output)}
+    worktree_digest = hashlib.sha256()
+    worktree_digest.update(
+        subprocess.run(
+            ["git", "-C", str(root), "diff", "--binary", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+    )
+    untracked_raw = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+    for relative_raw in sorted(filter(None, untracked_raw.split(b"\0"))):
+        relative = relative_raw.decode("utf-8", errors="surrogateescape")
+        path = root / relative
+        worktree_digest.update(relative_raw)
+        worktree_digest.update(b"\0")
+        if path.is_symlink():
+            worktree_digest.update(os.readlink(path).encode("utf-8"))
+        elif path.is_file():
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    worktree_digest.update(chunk)
+        worktree_digest.update(b"\0")
+    return {
+        "revision": revision,
+        "dirty": bool(dirty_output),
+        "worktree_sha256": worktree_digest.hexdigest(),
+    }
+
+
+def _dependency_identity(module_name: str, distribution_name: str) -> dict[str, Any]:
+    """Identify simulator code without importing modules with side effects."""
+
+    try:
+        package_version = metadata.version(distribution_name)
+    except metadata.PackageNotFoundError:
+        package_version = None
+    spec = importlib.util.find_spec(module_name)
+    origin = None
+    if spec is not None and spec.origin is not None:
+        origin = Path(spec.origin).resolve()
+    elif spec is not None and spec.submodule_search_locations:
+        origin = Path(next(iter(spec.submodule_search_locations))).resolve()
+    identity: dict[str, Any] = {
+        "version": package_version,
+        "module_origin": None if origin is None else str(origin),
+    }
+    if origin is not None and origin.is_file():
+        identity["module_sha256"] = sha256_file(origin)
+    if module_name == "libero" and origin is not None:
+        git_start = origin if origin.is_dir() else origin.parent
+        completed = subprocess.run(
+            ["git", "-C", str(git_start), "rev-parse", "--show-toplevel"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.returncode == 0:
+            identity["source"] = _git_source_identity(completed.stdout.strip())
+    return identity
 
 
 def _task_choice_from_mapping(hydra_choices: Mapping[str, Any] | None) -> str:
@@ -149,6 +224,11 @@ def build_runtime_contract(
             "task_choice": _task_choice_from_mapping(hydra_choices),
         },
         "source": _git_source_identity(source_root),
+        "simulator_dependencies": {
+            "libero": _dependency_identity("libero", "libero"),
+            "bddl": _dependency_identity("bddl", "bddl"),
+            "robosuite": _dependency_identity("robosuite", "robosuite"),
+        },
         "seed": None if cfg.get("seed") is None else int(cfg.seed),
         "inference": {
             "num_inference_steps": inference_steps,
@@ -221,14 +301,28 @@ def build_result_contract(
     if trials <= 0:
         raise ValueError("EVALUATION.num_trials must be positive")
     initial_states = Path(initial_states_path).resolve()
+    bddl_file = getattr(task, "bddl_file", None)
+    bddl_path = None
+    if bddl_file is not None:
+        from libero.libero import get_libero_path
+
+        bddl_path = (
+            Path(get_libero_path("bddl_files"))
+            / str(task.problem_folder)
+            / str(bddl_file)
+        ).resolve()
+        if not bddl_path.is_file():
+            raise FileNotFoundError(f"LIBERO BDDL file does not exist: {bddl_path}")
     contract = {
         "suite": str(cfg.EVALUATION.task_suite_name),
         "task": {
             "id": int(cfg.EVALUATION.task_id),
             "problem_folder": str(task.problem_folder),
             "init_states_file": str(task.init_states_file),
+            "bddl_file": None if bddl_file is None else str(bddl_file),
         },
         "trials": trials,
         "initial_states_sha256": sha256_file(initial_states),
+        "bddl_sha256": None if bddl_path is None else sha256_file(bddl_path),
     }
     return normalize_json_value(contract)

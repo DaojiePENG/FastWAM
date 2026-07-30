@@ -45,6 +45,9 @@ def validate_checkpoint(
     expected_replan_steps: int = 10,
     expected_action_horizon: int = 32,
     expected_history_vae_batch_chunk_size: int | None = None,
+    expected_trained_exit_depths: tuple[int, ...] = (30,),
+    expected_run_contract_sha256: str | None = None,
+    expected_code_commit: str | None = None,
 ) -> dict[str, Any]:
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
@@ -75,6 +78,17 @@ def validate_checkpoint(
                 f"checkpoint metadata mismatch for {key}: expected={expected!r} "
                 f"actual={actual!r}"
             )
+    for key, expected in (
+        ("run_contract_sha256", expected_run_contract_sha256),
+        ("code_commit", expected_code_commit),
+    ):
+        if expected is not None and payload.get(key) != expected:
+            raise ValueError(
+                f"checkpoint metadata mismatch for {key}: expected={expected!r} "
+                f"actual={payload.get(key)!r}"
+            )
+        if expected is not None:
+            expected_metadata[key] = expected
     if expected_history_vae_batch_chunk_size is not None:
         expected_chunk = int(expected_history_vae_batch_chunk_size)
         actual_chunk = payload.get("history_vae_batch_chunk_size")
@@ -85,16 +99,23 @@ def validate_checkpoint(
             )
         expected_metadata["history_vae_batch_chunk_size"] = expected_chunk
 
+    expected_exits = tuple(int(depth) for depth in expected_trained_exit_depths)
+    if not expected_exits or any(depth not in (8, 16, 24, 30) for depth in expected_exits):
+        raise ValueError(
+            "expected_trained_exit_depths must be a non-empty subset of (8,16,24,30)"
+        )
     exit_depths = tuple(int(depth) for depth in payload.get("training_exit_depths", ()))
-    if exit_depths != (30,):
-        raise ValueError(f"expected training_exit_depths=(30,), got {exit_depths}")
+    if exit_depths != expected_exits:
+        raise ValueError(
+            f"expected training_exit_depths={expected_exits}, got {exit_depths}"
+        )
     trained_exit_depths = tuple(
         int(depth) for depth in payload.get("trained_exit_depths", exit_depths)
     )
-    if trained_exit_depths != (30,):
+    if trained_exit_depths != expected_exits:
         raise ValueError(
-            "checkpoint unexpectedly advertises shallow exits in the D30 phase: "
-            f"{trained_exit_depths}"
+            "checkpoint trained_exit_depths mismatch: "
+            f"expected={expected_exits} actual={trained_exit_depths}"
         )
 
     video_lora = payload.get("video_lora_config")
@@ -144,6 +165,15 @@ def validate_checkpoint(
                 "trainer state/checkpoint step mismatch: "
                 f"expected={expected_step} trainer_state={trainer_state}"
             )
+        for key, expected in (
+            ("run_contract_sha256", expected_run_contract_sha256),
+            ("code_commit", expected_code_commit),
+        ):
+            if expected is not None and trainer_state.get(key) != expected:
+                raise ValueError(
+                    f"trainer state mismatch for {key}: expected={expected!r} "
+                    f"actual={trainer_state.get(key)!r}"
+                )
         state_summary = _directory_summary(state_dir)
         if state_summary["file_count"] <= 1 or state_summary["bytes"] <= 0:
             raise ValueError(f"trainer state is incomplete: {state_summary}")
@@ -174,9 +204,15 @@ def main() -> None:
     parser.add_argument("--expected-replan-steps", type=int, default=10)
     parser.add_argument("--expected-action-horizon", type=int, default=32)
     parser.add_argument("--expected-history-vae-batch-chunk-size", type=int)
+    parser.add_argument("--expected-trained-exit-depths", default="30")
+    parser.add_argument("--expected-run-contract-sha256")
+    parser.add_argument("--expected-code-commit")
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    expected_trained_exit_depths = tuple(
+        int(value) for value in args.expected_trained_exit_depths.split(",")
+    )
 
     result = validate_checkpoint(
         args.checkpoint,
@@ -191,6 +227,9 @@ def main() -> None:
         expected_history_vae_batch_chunk_size=(
             args.expected_history_vae_batch_chunk_size
         ),
+        expected_trained_exit_depths=expected_trained_exit_depths,
+        expected_run_contract_sha256=args.expected_run_contract_sha256,
+        expected_code_commit=args.expected_code_commit,
     )
     output = (
         args.output

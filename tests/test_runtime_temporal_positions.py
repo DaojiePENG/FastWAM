@@ -166,8 +166,15 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
         seed=77,
         memory=None,
     )["action"]
+
+    def forbidden_video_path(*args, **kwargs):
+        raise AssertionError("memory action inference entered a future-video path")
+
+    model.infer_joint = types.MethodType(forbidden_video_path, model)
+    model._decode_latents = types.MethodType(forbidden_video_path, model)
+    model._video_head_at_depth = types.MethodType(forbidden_video_path, model)
     memory = model.create_memory(exit_depth=8, max_history_blocks=2)
-    memory_action = model.infer_action(
+    memory_result = model.infer_action(
         prompt=None,
         input_image=image,
         action_horizon=4,
@@ -177,8 +184,28 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
         num_inference_steps=2,
         seed=77,
         memory=memory,
-    )["action"]
+        profile=True,
+    )
+    memory_action = memory_result["action"]
     assert torch.equal(memory_action, memoryless_action)
+    timing = memory_result["timing"]
+    assert set(timing) == {
+        "conditioning_s",
+        "observation_prefill_s",
+        "action_setup_s",
+        "action_denoise_s",
+        "causal_model_s",
+        "causal_model_residual_s",
+    }
+    assert all(value >= 0 for value in timing.values())
+    assert timing["causal_model_s"] == pytest.approx(
+        timing["conditioning_s"]
+        + timing["observation_prefill_s"]
+        + timing["action_setup_s"]
+        + timing["action_denoise_s"]
+        + timing["causal_model_residual_s"],
+        abs=1e-9,
+    )
 
 
 def test_memory_inference_requires_finite_training_conditioning_inputs():

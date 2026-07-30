@@ -3,13 +3,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from omegaconf import OmegaConf
 
-from leapbot_va.eval_contract import build_result_contract
+from leapbot_va.eval_contract import _git_source_identity, build_result_contract
 from leapbot_va.eval_fingerprint import (
     FINGERPRINT_SCHEMA_VERSION,
     atomic_write_json,
@@ -103,11 +104,24 @@ def _complete_result(fingerprint, *, memory_enabled: bool = True):
     trials = fingerprint["result_contract"]["trials"]
     metrics = []
     for _ in range(trials):
-        timing = {"total_inference_s": 0.123}
+        timing = {
+            "total_inference_s": 0.123,
+            "input_preprocess_s": 0.003,
+            "model_inference_s": 0.117,
+            "action_postprocess_s": 0.003,
+            "latency_residual_s": 0.0,
+        }
         replan = {"timing": timing}
         if memory_enabled:
             timing.update(
-                {"observation_prefill_s": 0.01, "action_denoise_s": 0.1}
+                {
+                    "conditioning_s": 0.002,
+                    "observation_prefill_s": 0.01,
+                    "action_setup_s": 0.003,
+                    "action_denoise_s": 0.1,
+                    "causal_model_residual_s": 0.002,
+                    "causal_model_s": 0.117,
+                }
             )
             replan["commit"] = {"commit_s": 0.013}
         metrics.append({"enabled": memory_enabled, "replans": [replan]})
@@ -128,6 +142,40 @@ def test_sha256_file_streams_exact_file_identity(tmp_path):
     assert sha256_file(checkpoint) == hashlib.sha256(b"checkpoint-a").hexdigest()
     checkpoint.write_bytes(b"checkpoint-b")
     assert sha256_file(checkpoint) == hashlib.sha256(b"checkpoint-b").hexdigest()
+
+
+def test_git_source_identity_distinguishes_dirty_and_untracked_content(tmp_path):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"], check=True
+    )
+    tracked = repo / "tracked.txt"
+    tracked.write_text("base")
+    subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+
+    clean = _git_source_identity(repo)
+    assert clean["dirty"] is False
+    tracked.write_text("change-a")
+    dirty_a = _git_source_identity(repo)
+    tracked.write_text("change-b")
+    dirty_b = _git_source_identity(repo)
+    assert dirty_a["dirty"] is True
+    assert dirty_a["worktree_sha256"] != dirty_b["worktree_sha256"]
+
+    tracked.write_text("base")
+    untracked = repo / "untracked.txt"
+    untracked.write_text("one")
+    untracked_a = _git_source_identity(repo)
+    untracked.write_text("two")
+    untracked_b = _git_source_identity(repo)
+    assert untracked_a["worktree_sha256"] != untracked_b["worktree_sha256"]
 
 
 def test_canonical_hash_is_stable_across_mapping_order_and_tuple_list():
