@@ -158,5 +158,8 @@ fi
 
 "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
     "$EVAL_ROOT" \
-    --output-dir "$EVAL_ROOT/pareto"
+    --output-dir "$EVAL_ROOT/pareto" \
+    --expected-tasks 10 \
+    --expected-trials-per-task "$NUM_TRIALS" \
+    --require-profiled
 log "phase-1 comparison complete: $EVAL_ROOT/pareto/results.csv"

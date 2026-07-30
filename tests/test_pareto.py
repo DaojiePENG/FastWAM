@@ -74,3 +74,32 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert task_row["task_id"] == 3
     assert task_row["success_rate"] == 0.5
     assert task_row["mean_completion_steps"] == 150
+
+
+def test_optional_percentile_is_none_when_metric_is_unavailable():
+    assert pareto.optional_percentile([], 0.5) is None
+
+
+def test_validate_inputs_rejects_incomplete_or_unprofiled_results(tmp_path):
+    payload = {
+        "task_id": 0,
+        "checkpoint": "/tmp/model.pt",
+        "successes": 1,
+        "total_episodes": 1,
+        "completion_steps": [100],
+        "memory_metrics": [{"peak_cache_bytes": 0, "replans": [{"timing": {}}]}],
+    }
+    path = tmp_path / "gpu0_task0_results.json"
+    path.write_text(json.dumps(payload))
+
+    try:
+        pareto.validate_inputs(
+            [path], expected_tasks=2, expected_trials_per_task=1, require_profiled=True
+        )
+    except ValueError as error:
+        message = str(error)
+        assert "task ids mismatch" in message
+        assert "total_inference_s" in message
+        assert "peak GPU metric missing" in message
+    else:
+        raise AssertionError("incomplete evaluation unexpectedly passed validation")

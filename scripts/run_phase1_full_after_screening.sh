@@ -20,7 +20,14 @@ log() {
 }
 
 screening_complete() {
-    [[ -s "$SCREEN_EVAL_ROOT/pareto/pareto.json" ]]
+    [[ -s "$SCREEN_EVAL_ROOT/pareto/pareto.json" ]] || return 1
+    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
+        "$SCREEN_EVAL_ROOT" \
+        --output-dir "$SCREEN_EVAL_ROOT/pareto" \
+        --expected-tasks 10 \
+        --expected-trials-per-task 10 \
+        --require-profiled \
+        >"$SCREEN_EVAL_ROOT/pareto/validation.log" 2>&1
 }
 
 final_checkpoint() {

@@ -23,6 +23,10 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[low] * (high - position) + ordered[high] * (position - low)
 
 
+def optional_percentile(values: list[float], q: float) -> float | None:
+    return percentile(values, q) if values else None
+
+
 def wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[float, float]:
     if total <= 0:
         return 0.0, 0.0
@@ -113,12 +117,12 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 "p95_completion_steps": percentile(values["completion_steps"], 0.95),
                 "p50_latency_s": percentile(values["latency"], 0.50),
                 "p95_latency_s": percentile(values["latency"], 0.95),
-                "p50_observation_prefill_s": percentile(values["observation_prefill"], 0.50),
-                "p95_observation_prefill_s": percentile(values["observation_prefill"], 0.95),
-                "p50_action_denoise_s": percentile(values["action_denoise"], 0.50),
-                "p95_action_denoise_s": percentile(values["action_denoise"], 0.95),
-                "p50_action_commit_s": percentile(values["action_commit"], 0.50),
-                "p95_action_commit_s": percentile(values["action_commit"], 0.95),
+                "p50_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.50),
+                "p95_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.95),
+                "p50_action_denoise_s": optional_percentile(values["action_denoise"], 0.50),
+                "p95_action_denoise_s": optional_percentile(values["action_denoise"], 0.95),
+                "p50_action_commit_s": optional_percentile(values["action_commit"], 0.50),
+                "p95_action_commit_s": optional_percentile(values["action_commit"], 0.95),
                 "peak_cache_gib": max(values["cache"], default=0) / 2**30,
                 "peak_gpu_gib": max(values["gpu"], default=0) / 2**30,
             }
@@ -168,6 +172,80 @@ def aggregate_per_task(paths: list[Path]) -> list[dict]:
     return sorted(rows, key=lambda row: (row["config"], row["task_id"]))
 
 
+def validate_inputs(
+    paths: list[Path],
+    expected_tasks: int | None = None,
+    expected_trials_per_task: int | None = None,
+    require_profiled: bool = False,
+) -> None:
+    """Reject incomplete/duplicated evaluation sets before model selection."""
+    groups: dict[str, dict[int, Path]] = defaultdict(dict)
+    errors: list[str] = []
+    for path in paths:
+        payload = json.loads(path.read_text())
+        key = config_key(payload, path)
+        task_id = int(payload.get("task_id", -1))
+        if task_id in groups[key]:
+            errors.append(
+                f"{key}: duplicate task {task_id}: {groups[key][task_id]} and {path}"
+            )
+        groups[key][task_id] = path
+
+        episodes = int(payload.get("total_episodes", 0))
+        if expected_trials_per_task is not None and episodes != expected_trials_per_task:
+            errors.append(
+                f"{key}/task{task_id}: expected {expected_trials_per_task} episodes, got {episodes}"
+            )
+        if len(payload.get("completion_steps", [])) != episodes:
+            errors.append(
+                f"{key}/task{task_id}: completion_steps length does not match episodes"
+            )
+        metrics = payload.get("memory_metrics", [])
+        if len(metrics) != episodes:
+            errors.append(
+                f"{key}/task{task_id}: memory_metrics length does not match episodes"
+            )
+        if require_profiled:
+            for episode_index, episode in enumerate(metrics):
+                replans = episode.get("replans", [])
+                if not replans:
+                    errors.append(
+                        f"{key}/task{task_id}/episode{episode_index}: no replanning metrics"
+                    )
+                    continue
+                missing = sum(
+                    "total_inference_s" not in replan.get("timing", {})
+                    for replan in replans
+                )
+                if missing:
+                    errors.append(
+                        f"{key}/task{task_id}/episode{episode_index}: "
+                        f"{missing}/{len(replans)} replans lack total_inference_s"
+                    )
+                if "peak_gpu_bytes" not in episode:
+                    errors.append(
+                        f"{key}/task{task_id}/episode{episode_index}: peak GPU metric missing"
+                    )
+                if "peak_cache_bytes" not in episode:
+                    errors.append(
+                        f"{key}/task{task_id}/episode{episode_index}: peak cache metric missing"
+                    )
+
+    if expected_tasks is not None:
+        expected_ids = set(range(expected_tasks))
+        for key, task_paths in groups.items():
+            actual_ids = set(task_paths)
+            if actual_ids != expected_ids:
+                errors.append(
+                    f"{key}: task ids mismatch; missing={sorted(expected_ids - actual_ids)} "
+                    f"unexpected={sorted(actual_ids - expected_ids)}"
+                )
+    if errors:
+        preview = "\n".join(f"- {error}" for error in errors[:50])
+        suffix = "" if len(errors) <= 50 else f"\n- ... {len(errors) - 50} more"
+        raise ValueError(f"evaluation completeness validation failed:\n{preview}{suffix}")
+
+
 def non_dominated(rows: list[dict]) -> list[dict]:
     result = []
     for candidate in rows:
@@ -206,10 +284,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("inputs", nargs="+", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("evaluate_results/leapbot/pareto"))
+    parser.add_argument("--expected-tasks", type=int)
+    parser.add_argument("--expected-trials-per-task", type=int)
+    parser.add_argument("--require-profiled", action="store_true")
     args = parser.parse_args()
     paths = []
     for item in args.inputs:
         paths.extend(sorted(item.rglob("*_results.json")) if item.is_dir() else [item])
+    validate_inputs(
+        paths,
+        expected_tasks=args.expected_tasks,
+        expected_trials_per_task=args.expected_trials_per_task,
+        require_profiled=args.require_profiled,
+    )
     rows = aggregate(paths)
     per_task_rows = aggregate_per_task(paths)
     frontier = non_dominated(rows)
