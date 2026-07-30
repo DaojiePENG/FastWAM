@@ -135,3 +135,34 @@ def lora_parameters(module: nn.Module) -> list[nn.Parameter]:
         if isinstance(child, LoRALinear):
             result.extend((child.lora_A, child.lora_B))
     return result
+
+
+def merge_video_self_attention_lora(video_expert: nn.Module) -> tuple[str, ...]:
+    """Merge adapters into base weights and restore plain ``nn.Linear`` modules."""
+    merged = []
+    for layer_index, block in enumerate(video_expert.blocks):
+        for projection_name in ("q", "k", "v", "o"):
+            projection = getattr(block.self_attn, projection_name)
+            if not isinstance(projection, LoRALinear):
+                continue
+            weight = projection.weight.detach()
+            delta = torch.matmul(
+                projection.lora_B.detach().float(),
+                projection.lora_A.detach().float(),
+            ) * projection.scaling
+            plain = nn.Linear(
+                projection.in_features,
+                projection.out_features,
+                bias=projection.bias is not None,
+                device=weight.device,
+                dtype=weight.dtype,
+            )
+            plain.weight = nn.Parameter(
+                (weight.float() + delta).to(weight.dtype),
+                requires_grad=projection.weight.requires_grad,
+            )
+            if projection.bias is not None:
+                plain.bias = projection.bias
+            setattr(block.self_attn, projection_name, plain)
+            merged.append(f"blocks.{layer_index}.self_attn.{projection_name}")
+    return tuple(merged)

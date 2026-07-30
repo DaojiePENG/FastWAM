@@ -15,6 +15,7 @@ FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 GPU_IDS_CSV="${GPU_IDS_CSV:-}"
 INCLUDE_BASELINE="${INCLUDE_BASELINE:-true}"
 VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-false}"
+MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-false}"
 
 MODES=(interleaved vision_causal action_aggregator)
 if [[ -n "$GPU_IDS_CSV" ]]; then
@@ -105,6 +106,7 @@ run_task() {
         mode_args=(
             "model.causal_mode=$mode"
             "model.video_lora.enabled=$VIDEO_LORA_ENABLED"
+            "EVALUATION.merge_video_lora=$MERGE_VIDEO_LORA"
             "EVALUATION.memory.causal_mode=$mode"
             "EVALUATION.memory.exit_depth=30"
             "EVALUATION.memory.max_history_blocks=70"

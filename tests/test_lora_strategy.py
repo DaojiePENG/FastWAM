@@ -9,6 +9,7 @@ from leapbot_va.lora import (
     VideoLoRAConfig,
     inject_video_self_attention_lora,
     lora_parameters,
+    merge_video_self_attention_lora,
 )
 
 
@@ -92,3 +93,24 @@ def test_cosine_scheduler_preserves_optimizer_group_lr_ratio():
             optimizer.param_groups[1]["lr"] / optimizer.param_groups[0]["lr"],
             10.0,
         )
+
+
+def test_lora_merge_restores_plain_linear_with_equivalent_output():
+    torch.manual_seed(7)
+    video = _Video()
+    inject_video_self_attention_lora(
+        video,
+        VideoLoRAConfig(enabled=True, rank=2, alpha=2),
+    )
+    nn.init.normal_(video.blocks[0].self_attn.q.lora_B, std=0.01)
+    video.eval()
+    x = torch.randn(2, 3, 4)
+    expected = video.blocks[0].self_attn.q(x)
+
+    merged = merge_video_self_attention_lora(video)
+    actual = video.blocks[0].self_attn.q(x)
+
+    assert len(merged) == 8
+    assert type(video.blocks[0].self_attn.q) is nn.Linear
+    assert not any("lora_" in key for key in video.state_dict())
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)

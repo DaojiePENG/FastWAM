@@ -799,6 +799,14 @@ def eval_single_process(cfg: DictConfig):
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
     _load_model_checkpoint(model, str(cfg.ckpt))
     model = model.to(model_device).eval()
+    if bool(cfg.EVALUATION.get("merge_video_lora", False)):
+        merge = getattr(model, "merge_video_lora_", None)
+        if merge is None:
+            raise ValueError("merge_video_lora=true but model has no LoRA merge support")
+        merged_projections = int(merge())
+        if merged_projections <= 0:
+            raise ValueError("merge_video_lora=true but no LoRA projections were merged")
+        logging.info("Merged %d video LoRA projections for inference", merged_projections)
 
     dataset_stats_path = _resolve_dataset_stats_path(cfg)
     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))

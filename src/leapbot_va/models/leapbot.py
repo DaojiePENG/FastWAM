@@ -15,6 +15,7 @@ from leapbot_va.lora import (
     VideoLoRAConfig,
     inject_video_self_attention_lora,
     lora_parameters,
+    merge_video_self_attention_lora,
 )
 
 from leapbot_va.memory import (
@@ -64,6 +65,7 @@ class LeapBotVA(FastWAM):
         self.training_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
         self.video_lora_config = VideoLoRAConfig()
+        self.video_lora_merged = False
 
     def configure_finetuning(
         self,
@@ -84,6 +86,16 @@ class LeapBotVA(FastWAM):
             inject_video_self_attention_lora(self.video_expert, config)
         self.training_strategy = training_strategy
         self.video_lora_config = config
+        self.video_lora_merged = False
+
+    def merge_video_lora_(self) -> int:
+        if not self.video_lora_config.enabled:
+            return 0
+        merged = merge_video_self_attention_lora(self.video_expert)
+        if not merged:
+            raise RuntimeError("video LoRA was enabled but no adapters were available to merge")
+        self.video_lora_merged = True
+        return len(merged)
 
     def configure_trainable_parameters(self) -> None:
         """Select full-DiT or video-LoRA/action-full trainable parameters."""

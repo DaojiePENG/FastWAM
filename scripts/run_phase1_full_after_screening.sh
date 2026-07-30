@@ -148,5 +148,6 @@ EVAL_ROOT="$EVAL_ROOT" \
 FINAL_STEP="$FINAL_STEP" \
 NUM_TRIALS=10 \
 VIDEO_LORA_ENABLED=true \
+MERGE_VIDEO_LORA=true \
 bash "$ROOT_DIR/scripts/run_phase1_eval_after_training.sh"
 log "full one-epoch comparison complete: $EVAL_ROOT/pareto/pareto.json"
