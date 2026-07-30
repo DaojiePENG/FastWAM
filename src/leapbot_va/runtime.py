@@ -34,6 +34,8 @@ def create_leapbot(
     exit_depths=(8, 16, 24, 30),
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
+    training_strategy: str = "full_dit",
+    video_lora=None,
     model_dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
 ):
@@ -44,6 +46,7 @@ def create_leapbot(
     video_scheduler = _as_dict(video_scheduler)
     action_scheduler = _as_dict(action_scheduler)
     loss = _as_dict(loss)
+    video_lora = _as_dict(video_lora)
     required = {"train_shift", "infer_shift", "num_train_timesteps"}
     missing = required - set(action_scheduler)
     if missing:
@@ -78,6 +81,20 @@ def create_leapbot(
             "exit_depths are fixed during construction; "
             f"requested {requested_depths}, model created {model.exit_depths}"
         )
+    from .lora import VideoLoRAConfig
+
+    model.configure_finetuning(
+        training_strategy=str(training_strategy),
+        video_lora_config=VideoLoRAConfig(
+            enabled=bool(video_lora.get("enabled", False)),
+            rank=int(video_lora.get("rank", 16)),
+            alpha=float(video_lora.get("alpha", 16.0)),
+            dropout=float(video_lora.get("dropout", 0.0)),
+            learning_rate_multiplier=float(
+                video_lora.get("learning_rate_multiplier", 10.0)
+            ),
+        ),
+    )
     model.configure_causal_training(
         causal_mode=str(causal_mode),
         training_exit_depths=tuple(int(depth) for depth in training_exit_depths),

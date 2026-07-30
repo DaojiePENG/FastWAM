@@ -11,6 +11,11 @@ import torch
 import torch.nn as nn
 
 from fastwam.models.wan22.fastwam import FastWAM
+from leapbot_va.lora import (
+    VideoLoRAConfig,
+    inject_video_self_attention_lora,
+    lora_parameters,
+)
 
 from leapbot_va.memory import (
     KVSegment,
@@ -57,6 +62,77 @@ class LeapBotVA(FastWAM):
         self.video_exit_heads.to(device=self.device, dtype=self.torch_dtype)
         self.causal_mode = "interleaved"
         self.training_exit_depths = (num_layers,)
+        self.training_strategy = "full_dit"
+        self.video_lora_config = VideoLoRAConfig()
+
+    def configure_finetuning(
+        self,
+        *,
+        training_strategy: str = "full_dit",
+        video_lora_config: VideoLoRAConfig | None = None,
+    ) -> None:
+        valid_strategies = {"full_dit", "video_lora_action_full"}
+        if training_strategy not in valid_strategies:
+            raise ValueError(
+                f"training_strategy must be one of {sorted(valid_strategies)}, "
+                f"got {training_strategy}"
+            )
+        config = video_lora_config or VideoLoRAConfig()
+        if training_strategy == "video_lora_action_full" and not config.enabled:
+            raise ValueError("hybrid fine-tuning requires video LoRA to be enabled")
+        if config.enabled:
+            inject_video_self_attention_lora(self.video_expert, config)
+        self.training_strategy = training_strategy
+        self.video_lora_config = config
+
+    def configure_trainable_parameters(self) -> None:
+        """Select full-DiT or video-LoRA/action-full trainable parameters."""
+        self.mot.train()
+        if self.training_strategy == "full_dit":
+            self.mot.requires_grad_(True)
+            return
+        self.action_expert.requires_grad_(True)
+        video_lora_params = lora_parameters(self.video_expert)
+        if not video_lora_params:
+            raise RuntimeError("hybrid fine-tuning selected but video LoRA is absent")
+        for parameter in video_lora_params:
+            parameter.requires_grad_(True)
+
+    def optimizer_parameter_groups(
+        self,
+        *,
+        learning_rate: float,
+        weight_decay: float,
+    ) -> list[dict]:
+        trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
+        if self.training_strategy == "full_dit":
+            return [
+                {
+                    "params": trainable,
+                    "lr": learning_rate,
+                    "weight_decay": weight_decay,
+                    "group_name": "full_dit",
+                }
+            ]
+        video_lora = lora_parameters(self.video_expert)
+        video_lora_ids = {id(parameter) for parameter in video_lora}
+        action_and_aux = [
+            parameter for parameter in trainable if id(parameter) not in video_lora_ids
+        ]
+        return [
+            {
+                "params": action_and_aux,
+                "lr": learning_rate,
+                "weight_decay": weight_decay,
+                "group_name": "action_and_aux",
+            },
+            {
+                "params": video_lora,
+                "lr": learning_rate * self.video_lora_config.learning_rate_multiplier,
+                "weight_decay": 0.0,
+                "group_name": "video_lora",
+            },
+        ]
 
     def configure_causal_training(
         self,
@@ -454,6 +530,8 @@ class LeapBotVA(FastWAM):
             "exit_depths": self.exit_depths,
             "training_exit_depths": self.training_exit_depths,
             "causal_mode": self.causal_mode,
+            "training_strategy": self.training_strategy,
+            "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
             "torch_dtype": str(self.torch_dtype),
         }
@@ -465,6 +543,15 @@ class LeapBotVA(FastWAM):
 
     def load_checkpoint(self, path, optimizer=None):
         payload = super().load_checkpoint(path, optimizer=optimizer)
+        checkpoint_lora = payload.get("video_lora_config")
+        if checkpoint_lora is not None:
+            checkpoint_lora_enabled = bool(checkpoint_lora.get("enabled", False))
+            if checkpoint_lora_enabled != self.video_lora_config.enabled:
+                raise ValueError(
+                    "checkpoint/model video LoRA mismatch: "
+                    f"checkpoint enabled={checkpoint_lora_enabled}, "
+                    f"model enabled={self.video_lora_config.enabled}"
+                )
         trained_exits = tuple(int(depth) for depth in payload.get("training_exit_depths", ()))
         has_trained_shallow_exits = any(depth != self.mot.num_layers for depth in trained_exits)
         if "action_exit_heads" in payload and has_trained_shallow_exits:

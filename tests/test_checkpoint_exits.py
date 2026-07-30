@@ -5,6 +5,8 @@ from fastwam.models.wan22.action_dit import ActionDiT
 from fastwam.models.wan22.mot import MoT
 from fastwam.models.wan22.wan_video_dit import WanVideoDiT
 from leapbot_va.models.leapbot import LeapBotVA
+from leapbot_va.lora import VideoLoRAConfig
+from fastwam.trainer import Wan22Trainer
 
 
 def _model():
@@ -71,3 +73,61 @@ def test_trained_multi_exit_checkpoint_preserves_exit_heads(tmp_path):
     loaded = _model()
     loaded.load_checkpoint(path)
     assert loaded.action_exit_heads["8"].weight[0, 0].item() == 4.0
+
+
+def test_hybrid_strategy_freezes_video_base_and_fully_trains_action():
+    model = _model()
+    model.configure_finetuning(
+        training_strategy="video_lora_action_full",
+        video_lora_config=VideoLoRAConfig(
+            enabled=True,
+            rank=2,
+            alpha=2,
+            learning_rate_multiplier=10,
+        ),
+    )
+    Wan22Trainer._apply_dit_only_train_mode(model)
+
+    video_trainable = {
+        name for name, parameter in model.video_expert.named_parameters() if parameter.requires_grad
+    }
+    assert video_trainable
+    assert all(name.endswith(("lora_A", "lora_B")) for name in video_trainable)
+    assert all(parameter.requires_grad for parameter in model.action_expert.parameters())
+
+    groups = model.optimizer_parameter_groups(learning_rate=1e-5, weight_decay=1e-2)
+    assert [group["group_name"] for group in groups] == ["action_and_aux", "video_lora"]
+    assert groups[0]["lr"] == 1e-5
+    assert groups[1]["lr"] == 1e-4
+    assert groups[1]["weight_decay"] == 0
+
+
+def test_lora_checkpoint_roundtrip_requires_matching_model(tmp_path):
+    config = VideoLoRAConfig(enabled=True, rank=2, alpha=2)
+    source = _model()
+    source.configure_finetuning(
+        training_strategy="video_lora_action_full",
+        video_lora_config=config,
+    )
+    nn.init.constant_(source.video_expert.blocks[0].self_attn.q.lora_B, 0.25)
+    path = tmp_path / "lora.pt"
+    source.save_checkpoint(path)
+
+    loaded = _model()
+    loaded.configure_finetuning(
+        training_strategy="full_dit",
+        video_lora_config=config,
+    )
+    loaded.load_checkpoint(path)
+    torch.testing.assert_close(
+        loaded.video_expert.blocks[0].self_attn.q.lora_B,
+        source.video_expert.blocks[0].self_attn.q.lora_B,
+    )
+
+    incompatible = _model()
+    try:
+        incompatible.load_checkpoint(path)
+    except ValueError as error:
+        assert "LoRA mismatch" in str(error)
+    else:
+        raise AssertionError("LoRA checkpoint loaded without LoRA modules")

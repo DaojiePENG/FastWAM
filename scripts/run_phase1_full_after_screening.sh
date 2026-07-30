@@ -84,6 +84,12 @@ run_mode() {
         task=libero_leapbot_2cam224 \
         "output_dir=$output_dir" \
         "model.causal_mode=$mode" \
+        model.training_strategy=video_lora_action_full \
+        model.video_lora.enabled=true \
+        model.video_lora.rank=16 \
+        model.video_lora.alpha=16.0 \
+        model.video_lora.dropout=0.0 \
+        model.video_lora.learning_rate_multiplier=10.0 \
         data.train.min_history_blocks=0 \
         data.train.max_history_blocks=8 \
         'model.training_exit_depths=[30]' \
@@ -141,5 +147,6 @@ TRAIN_ROOT="$TRAIN_ROOT" \
 EVAL_ROOT="$EVAL_ROOT" \
 FINAL_STEP="$FINAL_STEP" \
 NUM_TRIALS=10 \
+VIDEO_LORA_ENABLED=true \
 bash "$ROOT_DIR/scripts/run_phase1_eval_after_training.sh"
 log "full one-epoch comparison complete: $EVAL_ROOT/pareto/pareto.json"

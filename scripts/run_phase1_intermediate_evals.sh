@@ -37,6 +37,7 @@ for step in "${STEPS[@]}"; do
     NUM_TRIALS=2 \
     GPU_IDS_CSV=6,7 \
     INCLUDE_BASELINE=false \
+    VIDEO_LORA_ENABLED=true \
     bash "$ROOT_DIR/scripts/run_phase1_eval_after_training.sh"
 done
 log "all intermediate checkpoint evaluations complete: $EVAL_ROOT"

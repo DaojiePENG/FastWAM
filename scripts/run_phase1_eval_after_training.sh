@@ -14,6 +14,7 @@ FINAL_STEP="${FINAL_STEP:-1000}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 GPU_IDS_CSV="${GPU_IDS_CSV:-}"
 INCLUDE_BASELINE="${INCLUDE_BASELINE:-true}"
+VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-false}"
 
 MODES=(interleaved vision_causal action_aggregator)
 if [[ -n "$GPU_IDS_CSV" ]]; then
@@ -103,6 +104,7 @@ run_task() {
         task_choice="libero_leapbot_2cam224"
         mode_args=(
             "model.causal_mode=$mode"
+            "model.video_lora.enabled=$VIDEO_LORA_ENABLED"
             "EVALUATION.memory.causal_mode=$mode"
             "EVALUATION.memory.exit_depth=30"
             "EVALUATION.memory.max_history_blocks=70"

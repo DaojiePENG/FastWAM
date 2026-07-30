@@ -1,4 +1,5 @@
 import logging
+import math
 import json
 import inspect
 import os
@@ -12,7 +13,7 @@ import torch
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
-from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import ConstantLR, LambdaLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 
 from .utils.fs import ensure_dir
@@ -82,19 +83,41 @@ class Wan22Trainer:
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
         self._apply_dit_only_train_mode(self.model)
-        trainable_params = list(self.model.dit.parameters())
-        proprio_encoder = getattr(self.model, "proprio_encoder", None)
-        if proprio_encoder is not None:
-            trainable_params.extend(list(proprio_encoder.parameters()))
-        auxiliary_getter = getattr(self.model, "auxiliary_trainable_modules", None)
-        if auxiliary_getter is not None:
-            for module in auxiliary_getter():
-                trainable_params.extend(list(module.parameters()))
+        group_getter = getattr(self.model, "optimizer_parameter_groups", None)
+        if group_getter is None:
+            trainable_params = [
+                parameter for parameter in self.model.parameters() if parameter.requires_grad
+            ]
+        else:
+            trainable_params = group_getter(
+                learning_rate=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
         self.optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
             betas=(0.9, 0.95),
+        )
+        total_count = sum(parameter.numel() for parameter in self.model.parameters())
+        trainable_count = sum(
+            parameter.numel()
+            for parameter in self.model.parameters()
+            if parameter.requires_grad
+        )
+        logger.info(
+            "Trainable parameters: %.3f B / %.3f B (%.2f%%); optimizer groups=%s",
+            trainable_count / 1e9,
+            total_count / 1e9,
+            100.0 * trainable_count / total_count,
+            [
+                {
+                    "name": group.get("group_name", f"group_{index}"),
+                    "lr": group["lr"],
+                    "params": sum(parameter.numel() for parameter in group["params"]),
+                }
+                for index, group in enumerate(self.optimizer.param_groups)
+            ],
         )
         
         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
@@ -242,11 +265,13 @@ class Wan22Trainer:
 
         remaining_steps = max(total_train_steps - warmup_steps, 1)
         if scheduler_type == "cosine":
-            main_scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=remaining_steps,
-                eta_min=self.learning_rate * 0.01,
-            )
+            # Multiplicative decay preserves the LR ratio between the
+            # full-action and higher-LR video-LoRA optimizer groups.
+            def cosine_multiplier(step: int) -> float:
+                progress = min(max(step, 0), remaining_steps) / remaining_steps
+                return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            main_scheduler = LambdaLR(self.optimizer, lr_lambda=cosine_multiplier)
         elif scheduler_type == "constant":
             main_scheduler = ConstantLR(self.optimizer, factor=1.0, total_iters=remaining_steps)
         else:
@@ -305,8 +330,12 @@ class Wan22Trainer:
     def _apply_dit_only_train_mode(model):
         model.eval()
         model.requires_grad_(False)
-        model.dit.train()
-        model.dit.requires_grad_(True)
+        trainable_configurer = getattr(model, "configure_trainable_parameters", None)
+        if trainable_configurer is None:
+            model.dit.train()
+            model.dit.requires_grad_(True)
+        else:
+            trainable_configurer()
         proprio_encoder = getattr(model, "proprio_encoder", None)
         if proprio_encoder is not None:
             proprio_encoder.train()
@@ -729,10 +758,16 @@ class Wan22Trainer:
                         if global_loss_metrics:
                             detail_str = " ".join([f"{k}={v:.4f}" for k, v in sorted(global_loss_metrics.items())])
                             description += detail_str + " "
+                        samples_per_second = (
+                            steps_per_sec
+                            * self.batch_size
+                            * self.accelerator.num_processes
+                            * self.gradient_accumulation_steps
+                        )
                         description += "lr=%.2e speed=%.2f step/s, %.2f samples/s eta=%s" % (
                             current_lr,
                             steps_per_sec,
-                            steps_per_sec * self.batch_size * self.accelerator.num_processes,
+                            samples_per_second,
                             eta_str,
                         )
                         logger.info(description)
@@ -742,8 +777,11 @@ class Wan22Trainer:
                             "train/grad_norm": global_grad_norm,
                             "train/lr": current_lr,
                             "performance/steps_per_sec": steps_per_sec,
-                            "performance/samples_per_sec": steps_per_sec * self.batch_size * self.accelerator.num_processes,
+                            "performance/samples_per_sec": samples_per_second,
                         }
+                        for index, group in enumerate(self.optimizer.param_groups):
+                            group_name = str(group.get("group_name", f"group_{index}"))
+                            wandb_payload[f"train/lr_{group_name}"] = float(group["lr"])
                         for key, value in global_loss_metrics.items():
                             wandb_payload[f"train/{key}"] = value
                         self._wandb_log(wandb_payload)
