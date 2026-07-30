@@ -15,6 +15,9 @@ from omegaconf import DictConfig, OmegaConf
 from leapbot_va.eval_fingerprint import normalize_json_value, sha256_file
 
 
+KV_RETENTION_SEMANTICS = "physical_kv_blocks_recursive_prefix"
+
+
 def _to_resolved_container(value: Any) -> Any:
     if OmegaConf.is_config(value):
         value = OmegaConf.to_container(value, resolve=True)
@@ -191,6 +194,9 @@ def build_runtime_contract(
         raise ValueError("memory capacity/retention must be non-negative")
     if retained is not None and retained > episode_capacity:
         raise ValueError("retained_history_blocks cannot exceed max_history_blocks")
+    effective_kv_retention_cap = (
+        episode_capacity if retained is None else int(retained)
+    )
 
     action_horizon_raw = evaluation.get("action_horizon", None)
     action_horizon = (
@@ -268,9 +274,11 @@ def build_runtime_contract(
             "exit_depth": int(memory_cfg.get("exit_depth", 0)) if memory_enabled else 0,
             "episode_capacity": episode_capacity,
             "retained_history_blocks": retained,
-            "effective_history_cap": (
-                episode_capacity if retained is None else int(retained)
-            ),
+            "retention_semantics": KV_RETENTION_SEMANTICS,
+            "effective_kv_retention_cap": effective_kv_retention_cap,
+            # Compatibility alias. This is not a strict information window:
+            # retained high-layer K/V recursively encode earlier prefixes.
+            "effective_history_cap": effective_kv_retention_cap,
         },
         "input": {
             "height": int(video_size[0]),

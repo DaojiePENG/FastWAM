@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Correct-architecture phase-A v3 recipe:
+# Correct-architecture phase-A v4 recipe:
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
@@ -13,6 +13,9 @@ ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-$RELEASE_CHECKPOINT}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
+ASSET_DOWNLOAD_MANIFEST="${ASSET_DOWNLOAD_MANIFEST:-$ROOT_DIR/data/leapbot_asset_download_manifest.json}"
+TEXT_EMBEDDING_CACHE="${TEXT_EMBEDDING_CACHE:-$ROOT_DIR/data/text_embeds_cache/libero}"
+VAE_CHECKPOINT="${VAE_CHECKPOINT:-$ROOT_DIR/checkpoints/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors}"
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
@@ -37,13 +40,16 @@ ALLOW_DIRTY="${ALLOW_DIRTY:-false}"
 ALLOW_CROSS_CONTRACT_RESUME="${ALLOW_CROSS_CONTRACT_RESUME:-false}"
 ALLOW_EXISTING_UNCONTRACTED="${ALLOW_EXISTING_UNCONTRACTED:-false}"
 REQUIRE_SELF_IDENTIFYING_CHECKPOINT="${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}"
+LR_SELECTION_MANIFEST_SHA256="${LR_SELECTION_MANIFEST_SHA256:-}"
+H0_SELECTION_MANIFEST_SHA256="${H0_SELECTION_MANIFEST_SHA256:-}"
+EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="${EXPECTED_TRAINING_ASSET_MANIFEST_SHA256:-}"
 
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v3_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
-WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v3-seed42}"
-RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v3-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v4_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
+WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v4-seed42}"
+RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v4-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -118,6 +124,11 @@ if [[ ! -s "$DATASET_STATS" ]]; then
     log "missing release normalization statistics: $DATASET_STATS"
     exit 1
 fi
+if [[ ! -s "$ASSET_DOWNLOAD_MANIFEST" || ! -d "$TEXT_EMBEDDING_CACHE" \
+    || ! -s "$VAE_CHECKPOINT" ]]; then
+    log "formal training assets or pinned download manifest are missing"
+    exit 1
+fi
 if [[ "$HISTORY_VAE_BATCH_CHUNK_SIZE" != "1" ]]; then
     log "runtime-isomorphic training requires history VAE chunk 1; got $HISTORY_VAE_BATCH_CHUNK_SIZE"
     exit 1
@@ -126,14 +137,68 @@ if ! [[ "$INITIAL_BLOCK_OVERSAMPLE" =~ ^[1-9][0-9]*$ ]]; then
     log "initial block oversampling must be a positive integer; got $INITIAL_BLOCK_OVERSAMPLE"
     exit 1
 fi
+for selection_sha in \
+    "$LR_SELECTION_MANIFEST_SHA256" \
+    "$H0_SELECTION_MANIFEST_SHA256" \
+    "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256"; do
+    if [[ -n "$selection_sha" && ! "$selection_sha" =~ ^[0-9a-f]{64}$ ]]; then
+        log "selection manifest identity must be a SHA-256: $selection_sha"
+        exit 1
+    fi
+done
 if [[ "$ALLOW_DIRTY" != "true" ]] \
     && [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal)" ]]; then
     log "refusing formal training from a dirty worktree; commit the exact code first"
     exit 1
 fi
 
+ASSET_MANIFEST_TMP="$(mktemp "${TMPDIR:-/tmp}/leapbot-training-assets.XXXXXX.json")"
+cleanup_asset_manifest() {
+    rm -f "$ASSET_MANIFEST_TMP"
+}
+trap cleanup_asset_manifest EXIT
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/training_asset_manifest.py" \
+    --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot" \
+    --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot" \
+    --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot" \
+    --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_10_no_noops_lerobot" \
+    --text-embedding-cache "$TEXT_EMBEDDING_CACHE" \
+    --vae-checkpoint "$VAE_CHECKPOINT" \
+    --download-manifest "$ASSET_DOWNLOAD_MANIFEST" \
+    --output "$ASSET_MANIFEST_TMP"
+manifest_value() {
+    "$ROOT_DIR/.venv/bin/python" - "$ASSET_MANIFEST_TMP" "$1" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+for key in sys.argv[2].split("."):
+    value = value[key]
+print(value)
+PY
+}
+TRAINING_ASSET_MANIFEST_SHA256="$(manifest_value manifest_sha256)"
+ASSET_DOWNLOAD_MANIFEST_SHA256="$(manifest_value download_manifest.sha256)"
+DATASET_CONTENT_SHA256="$(manifest_value dataset_content_sha256)"
+DATASET_FILE_COUNT="$(manifest_value dataset_file_count)"
+DATASET_BYTES="$(manifest_value dataset_bytes)"
+TEXT_EMBEDDING_CACHE_SHA256="$(manifest_value text_embedding_cache.sha256)"
+TEXT_EMBEDDING_CACHE_FILE_COUNT="$(manifest_value text_embedding_cache.file_count)"
+VAE_CHECKPOINT_SHA256="$(manifest_value vae_checkpoint.sha256)"
+if [[ -n "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" ]] \
+    && [[ "$TRAINING_ASSET_MANIFEST_SHA256" != "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" ]]; then
+    log "training assets differ from the required source checkpoint contract"
+    exit 1
+fi
+
 CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
+ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')"
+if [[ -n "${RELEASE_CHECKPOINT_SHA256:-}" ]] \
+    && [[ "$RELEASE_CHECKPOINT_SHA256" != "$ACTUAL_RELEASE_CHECKPOINT_SHA256" ]]; then
+    log "configured release checkpoint hash does not match the checkpoint bytes"
+    exit 1
+fi
+RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"
 INITIAL_CHECKPOINT_SHA256="$(sha256sum "$INITIAL_CHECKPOINT" | awk '{print $1}')"
 DATASET_STATS_SHA256="$(sha256sum "$DATASET_STATS" | awk '{print $1}')"
 contract_fields=( \
@@ -145,6 +210,22 @@ if [[ "$INITIAL_CHECKPOINT_SHA256" != "$RELEASE_CHECKPOINT_SHA256" ]]; then
 fi
 contract_fields+=( \
     "dataset_stats_sha256=$DATASET_STATS_SHA256" \
+    "training_asset_manifest_sha256=$TRAINING_ASSET_MANIFEST_SHA256" \
+    "asset_download_manifest_sha256=$ASSET_DOWNLOAD_MANIFEST_SHA256" \
+    "dataset_content_sha256=$DATASET_CONTENT_SHA256" \
+    "dataset_file_count=$DATASET_FILE_COUNT" \
+    "dataset_bytes=$DATASET_BYTES" \
+    "text_embedding_cache_sha256=$TEXT_EMBEDDING_CACHE_SHA256" \
+    "text_embedding_cache_file_count=$TEXT_EMBEDDING_CACHE_FILE_COUNT" \
+    "vae_checkpoint_sha256=$VAE_CHECKPOINT_SHA256" \
+)
+if [[ -n "$LR_SELECTION_MANIFEST_SHA256" ]]; then
+    contract_fields+=("lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256")
+fi
+if [[ -n "$H0_SELECTION_MANIFEST_SHA256" ]]; then
+    contract_fields+=("h0_selection_manifest_sha256=$H0_SELECTION_MANIFEST_SHA256")
+fi
+contract_fields+=( \
     "mode=$MODE" \
     "num_processes=$NUM_PROCESSES" \
     "batch_size=$BATCH_SIZE" \
@@ -158,6 +239,7 @@ contract_fields+=( \
     "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     "save_every=$SAVE_EVERY" \
     "seed=$SEED" \
+    "padding_attention_mask=true" \
     "history_training_mode=incremental_full_bptt" \
     "full_episode_history=true" \
     "max_history_blocks=70" \
@@ -195,6 +277,9 @@ else
     } >"$RUN_CONTRACT_FILE.tmp"
     mv "$RUN_CONTRACT_FILE.tmp" "$RUN_CONTRACT_FILE"
 fi
+cp "$ASSET_MANIFEST_TMP" "$OUTPUT_DIR/training_asset_manifest.json.tmp"
+mv "$OUTPUT_DIR/training_asset_manifest.json.tmp" \
+    "$OUTPUT_DIR/training_asset_manifest.json"
 
 if [[ -s "$FINAL_CHECKPOINT" ]] \
     && grep -q "max_steps reached step=$MAX_STEPS" "$LOG_FILE" 2>/dev/null; then
@@ -211,13 +296,14 @@ else
 fi
 
 preflight_gpus
-log "start incremental full-BPTT v3 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
+log "start incremental full-BPTT v4 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \
     LEAPBOT_RUN_CONTRACT_SHA256="$RUN_CONTRACT_SHA256" \
     LEAPBOT_CODE_COMMIT="$CODE_COMMIT" \
     LEAPBOT_DATASET_STATS="$DATASET_STATS" \
+    DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
     TOKENIZERS_PARALLELISM=false \
     PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \

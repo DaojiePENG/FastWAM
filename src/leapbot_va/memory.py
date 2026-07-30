@@ -356,12 +356,16 @@ def build_block_causal_mask(
     key_modalities: Sequence[Modality],
     key_blocks: Sequence[int],
     mode: CausalMode,
+    *,
+    query_is_future_video: Sequence[bool] | None = None,
+    key_is_future_video: Sequence[bool] | None = None,
 ) -> torch.Tensor:
-    """Reference mask builder used by training and unit tests.
+    """Build the coarse block mask without confusing real and future video.
 
     Runtime incremental attention filters immutable history before the call, so
-    it can use an all-true rectangular mask.  Training needs the full rule to
-    prevent future leakage in a packed sequence.
+    it can use an all-true rectangular mask.  The production packed training
+    path additionally tracks individual video frames; the optional future-video
+    flags make this public reference helper preserve the same hard isolation.
     """
 
     if mode not in VALID_CAUSAL_MODES:
@@ -370,17 +374,53 @@ def build_block_causal_mask(
         raise ValueError("query modalities/blocks length mismatch")
     if len(key_modalities) != len(key_blocks):
         raise ValueError("key modalities/blocks length mismatch")
+    query_future = (
+        [False] * len(query_blocks)
+        if query_is_future_video is None
+        else list(query_is_future_video)
+    )
+    key_future = (
+        [False] * len(key_blocks)
+        if key_is_future_video is None
+        else list(key_is_future_video)
+    )
+    if len(query_future) != len(query_blocks):
+        raise ValueError("query future-video flags length mismatch")
+    if len(key_future) != len(key_blocks):
+        raise ValueError("key future-video flags length mismatch")
+    if any(
+        flag and modality != "video"
+        for flag, modality in zip(query_future, query_modalities)
+    ):
+        raise ValueError("only video queries can be marked as future video")
+    if any(
+        flag and modality != "video"
+        for flag, modality in zip(key_future, key_modalities)
+    ):
+        raise ValueError("only video keys can be marked as future video")
 
     mask = torch.zeros((len(query_blocks), len(key_blocks)), dtype=torch.bool)
-    for q_idx, (q_modality, q_block) in enumerate(zip(query_modalities, query_blocks)):
-        for k_idx, (k_modality, k_block) in enumerate(zip(key_modalities, key_blocks)):
+    for q_idx, (q_modality, q_block, q_future) in enumerate(
+        zip(query_modalities, query_blocks, query_future)
+    ):
+        for k_idx, (k_modality, k_block, k_future) in enumerate(
+            zip(key_modalities, key_blocks, key_future)
+        ):
             if k_block > q_block:
+                continue
+            # Future-video supervision is transient.  It is visible only to
+            # future-video queries in the same block and can never become
+            # historical information for a real observation or ActionDiT.
+            if k_future and not (
+                q_modality == "video" and q_future and k_block == q_block
+            ):
                 continue
             if q_modality == "action":
                 mask[q_idx, k_idx] = True
             elif k_block == q_block:
                 # The real observation is encoded before this block's action
-                # is predicted/executed, so it can only see same-block vision.
+                # is predicted/executed. Future-video queries may jointly read
+                # all video supervision tokens, while a real query cannot.
                 mask[q_idx, k_idx] = k_modality == "video"
             elif mode == "interleaved":
                 mask[q_idx, k_idx] = True

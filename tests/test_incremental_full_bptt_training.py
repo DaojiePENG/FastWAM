@@ -506,3 +506,167 @@ def test_incremental_training_action_is_bitwise_public_runtime(causal_mode):
     assert result["hidden"]["bitwise_equal"]
     assert result["head"]["bitwise_equal"]
     assert result["bitwise_pass"]
+
+
+def test_padded_current_action_and_video_tokens_are_masked_before_attention(
+    monkeypatch,
+):
+    model = _model("interleaved")
+    sample = _sample((1,))
+    sample["action_is_pad"][0, 2:] = True
+    sample["image_is_pad"][0, 3:] = True
+    captured_action_masks = []
+    captured_video_masks = []
+    original_action = model.mot.forward_action_with_history
+    original_prefill = model.mot.prefill_expert_segment
+
+    def action_forward(*args, **kwargs):
+        captured_action_masks.append(kwargs.get("action_valid_mask"))
+        return original_action(*args, **kwargs)
+
+    def prefill(*args, **kwargs):
+        if kwargs["expert_name"] == "video" and kwargs.get("exit_depths"):
+            captured_video_masks.append(kwargs.get("segment_valid_mask"))
+        return original_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(model.mot, "forward_action_with_history", action_forward)
+    monkeypatch.setattr(model.mot, "prefill_expert_segment", prefill)
+
+    torch.manual_seed(8804)
+    loss, _ = model.training_loss(sample)
+    assert torch.isfinite(loss)
+    assert len(captured_action_masks) == 1
+    assert captured_action_masks[0].tolist() == [[True, True, False, False]]
+    assert len(captured_video_masks) == 1
+    assert captured_video_masks[0].tolist() == [[True, True, False, False]]
+
+
+def test_padded_action_values_cannot_change_valid_action_loss():
+    reference = _model("interleaved")
+    perturbed = _model("interleaved")
+    for model in (reference, perturbed):
+        model.loss_lambda_video = 0.0
+        model.loss_lambda_action = 1.0
+    sample = _sample((1,))
+    sample["action_is_pad"][0, 2:] = True
+    changed = {key: value.clone() for key, value in sample.items()}
+    changed["action"][0, 2:] += 1000.0
+
+    torch.manual_seed(8805)
+    reference_loss, _ = reference.training_loss(sample)
+    torch.manual_seed(8805)
+    changed_loss, _ = perturbed.training_loss(changed)
+    torch.testing.assert_close(changed_loss, reference_loss, rtol=0, atol=0)
+
+
+def test_fully_padded_video_values_cannot_change_valid_video_loss():
+    reference = _model("interleaved")
+    perturbed = _model("interleaved")
+    for model in (reference, perturbed):
+        model.loss_lambda_video = 1.0
+        model.loss_lambda_action = 0.0
+    sample = _sample((1,))
+    sample["image_is_pad"][0, 3:] = True
+    changed = {key: value.clone() for key, value in sample.items()}
+    changed["video"][0, :, 3:] += 1000.0
+
+    torch.manual_seed(8806)
+    reference_loss, _ = reference.training_loss(sample)
+    torch.manual_seed(8806)
+    changed_loss, _ = perturbed.training_loss(changed)
+    torch.testing.assert_close(changed_loss, reference_loss, rtol=0, atol=0)
+
+
+def test_checkpointed_padding_masks_survive_recompute_and_isolate_padded_tails(
+    monkeypatch,
+):
+    reference = _model("interleaved")
+    perturbed = _model("interleaved")
+    for model in (reference, perturbed):
+        model.history_segment_activation_checkpointing = True
+        model.mot.mot_checkpoint_mixed_attn = True
+        model.video_expert.use_gradient_checkpointing = True
+        model.action_expert.use_gradient_checkpointing = True
+        assert _use_segment_activation_checkpointing(model)
+
+    sample = _sample((1,))
+    sample["action_is_pad"][0, 2:] = True
+    sample["image_is_pad"][0, 3:] = True
+    changed = {key: value.clone() for key, value in sample.items()}
+    changed["action"][0, 2:] += 1000.0
+    changed["video"][0, :, 3:] += 1000.0
+
+    expected_valid_mask = torch.tensor([[True, True, False, False]])
+    action_mask_calls: list[tuple[torch.Tensor, bool]] = []
+    video_mask_calls: list[tuple[torch.Tensor, bool]] = []
+    original_action = reference.mot.forward_action_with_history
+    original_prefill = reference.mot.prefill_expert_segment
+
+    def record_action_mask(*args, **kwargs):
+        valid_mask = kwargs.get("action_valid_mask")
+        if valid_mask is not None:
+            action_mask_calls.append(
+                (valid_mask.detach().cpu().clone(), kwargs["checkpoint_internal"])
+            )
+        return original_action(*args, **kwargs)
+
+    def record_video_mask(*args, **kwargs):
+        valid_mask = kwargs.get("segment_valid_mask")
+        if kwargs["expert_name"] == "video" and valid_mask is not None:
+            video_mask_calls.append(
+                (valid_mask.detach().cpu().clone(), kwargs["checkpoint_internal"])
+            )
+        return original_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(
+        reference.mot,
+        "forward_action_with_history",
+        record_action_mask,
+    )
+    monkeypatch.setattr(
+        reference.mot,
+        "prefill_expert_segment",
+        record_video_mask,
+    )
+
+    torch.manual_seed(8807)
+    reference_loss, reference_metrics = reference.training_loss(sample)
+    torch.manual_seed(8807)
+    changed_loss, changed_metrics = perturbed.training_loss(changed)
+
+    torch.testing.assert_close(changed_loss, reference_loss, rtol=0, atol=0)
+    assert changed_metrics == reference_metrics
+    assert torch.isfinite(reference_loss)
+    assert torch.isfinite(changed_loss)
+
+    reference_loss.backward()
+    changed_loss.backward()
+
+    # Non-reentrant checkpointing invokes these methods once in the original
+    # forward and again while rematerializing activations during backward.
+    assert len(action_mask_calls) >= 2
+    assert len(video_mask_calls) >= 2
+    for valid_mask, checkpoint_internal in action_mask_calls + video_mask_calls:
+        torch.testing.assert_close(valid_mask, expected_valid_mask)
+        assert checkpoint_internal is False
+
+    saw_finite_gradient = False
+    for (reference_name, reference_parameter), (
+        changed_name,
+        changed_parameter,
+    ) in zip(reference.named_parameters(), perturbed.named_parameters(), strict=True):
+        assert changed_name == reference_name
+        assert (reference_parameter.grad is None) is (changed_parameter.grad is None)
+        if reference_parameter.grad is None:
+            continue
+        saw_finite_gradient = True
+        assert torch.isfinite(reference_parameter.grad).all(), reference_name
+        assert torch.isfinite(changed_parameter.grad).all(), changed_name
+        torch.testing.assert_close(
+            changed_parameter.grad,
+            reference_parameter.grad,
+            rtol=1e-5,
+            atol=1e-6,
+            msg=lambda message, name=reference_name: f"{name}: {message}",
+        )
+    assert saw_finite_gradient

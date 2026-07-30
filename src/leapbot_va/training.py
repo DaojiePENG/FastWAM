@@ -549,6 +549,7 @@ def _prefill_with_segment_history(
     history_segments: list[dict[str, Any]],
     max_layers: int,
     exit_depths: tuple[int, ...] | None = None,
+    segment_valid_mask: torch.Tensor | None = None,
     return_segment_kv: bool,
 ) -> tuple[
     torch.Tensor | dict[int, torch.Tensor] | None,
@@ -579,6 +580,7 @@ def _prefill_with_segment_history(
             context_payload={"context": context, "mask": context_mask},
             history_kv=_materialize_attached_segments(history_segments),
             max_layers=max_layers,
+            segment_valid_mask=segment_valid_mask,
             exit_depths=requested_exits,
         )
 
@@ -588,6 +590,11 @@ def _prefill_with_segment_history(
     )
     num_segments = len(history_segments)
     num_exit_outputs = 0 if requested_exits is None else len(requested_exits)
+    valid_mask_input = (
+        torch.empty((0,), dtype=torch.bool, device=tokens.device)
+        if segment_valid_mask is None
+        else segment_valid_mask
+    )
 
     def run(
         inner_tokens: torch.Tensor,
@@ -595,6 +602,7 @@ def _prefill_with_segment_history(
         inner_t_mod: torch.Tensor,
         inner_context: torch.Tensor,
         inner_context_mask: torch.Tensor,
+        inner_valid_mask: torch.Tensor,
         *inner_raw_kv: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
         history_kv = _materialize_flat_segment_kv(
@@ -613,6 +621,9 @@ def _prefill_with_segment_history(
             },
             history_kv=history_kv,
             max_layers=max_layers,
+            segment_valid_mask=(
+                None if inner_valid_mask.numel() == 0 else inner_valid_mask
+            ),
             exit_depths=requested_exits,
             checkpoint_internal=False,
         )
@@ -635,6 +646,7 @@ def _prefill_with_segment_history(
         t_mod,
         context,
         context_mask,
+        valid_mask_input,
         *raw_kv,
         use_reentrant=False,
         preserve_rng_state=True,
@@ -674,6 +686,7 @@ def _forward_action_with_segment_history(
     history_segments: list[dict[str, Any]],
     max_layers: int,
     exit_depths: tuple[int, ...],
+    action_valid_mask: torch.Tensor | None = None,
 ) -> dict[int, torch.Tensor]:
     """Run transient ActionDiT while rematerializing only its K/V prefix."""
 
@@ -691,6 +704,7 @@ def _forward_action_with_segment_history(
             history_kv=_materialize_attached_segments(history_segments),
             max_layers=max_layers,
             exit_depths=requested_exits,
+            action_valid_mask=action_valid_mask,
         )
         if not isinstance(hidden, dict):
             raise RuntimeError("multi-exit ActionDiT did not return depth outputs")
@@ -701,6 +715,11 @@ def _forward_action_with_segment_history(
         num_layers=max_layers,
     )
     num_segments = len(history_segments)
+    valid_mask_input = (
+        torch.empty((0,), dtype=torch.bool, device=action_tokens.device)
+        if action_valid_mask is None
+        else action_valid_mask
+    )
 
     def run(
         inner_tokens: torch.Tensor,
@@ -708,6 +727,7 @@ def _forward_action_with_segment_history(
         inner_t_mod: torch.Tensor,
         inner_context: torch.Tensor,
         inner_context_mask: torch.Tensor,
+        inner_valid_mask: torch.Tensor,
         *inner_raw_kv: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
         history_kv = _materialize_flat_segment_kv(
@@ -726,6 +746,9 @@ def _forward_action_with_segment_history(
             history_kv=history_kv,
             max_layers=max_layers,
             exit_depths=requested_exits,
+            action_valid_mask=(
+                None if inner_valid_mask.numel() == 0 else inner_valid_mask
+            ),
             checkpoint_internal=False,
         )
         if not isinstance(hidden, dict):
@@ -739,6 +762,7 @@ def _forward_action_with_segment_history(
         action_t_mod,
         context,
         context_mask,
+        valid_mask_input,
         *raw_kv,
         use_reentrant=False,
         preserve_rng_state=True,
@@ -851,6 +875,45 @@ def current_video_segment_attention_mask(
     mask = torch.ones((total, total), dtype=torch.bool, device=device)
     mask[:tokens_per_frame, tokens_per_frame:] = False
     return mask
+
+
+def future_video_token_valid_mask(
+    image_is_pad: torch.Tensor | None,
+    *,
+    temporal_downsample_factor: int,
+    num_future_latent_frames: int,
+    tokens_per_frame: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Return a token mask only when an episode has a fully padded latent tail."""
+
+    if image_is_pad is None:
+        return None
+    if image_is_pad.dtype != torch.bool or image_is_pad.ndim != 2:
+        raise ValueError("image_is_pad must be bool [B,T]")
+    if (
+        min(
+            temporal_downsample_factor,
+            num_future_latent_frames,
+            tokens_per_frame,
+        )
+        <= 0
+    ):
+        raise ValueError("future-video mask dimensions must be positive")
+    tail = image_is_pad[:, 1:].to(device=device)
+    expected_tail = num_future_latent_frames * temporal_downsample_factor
+    if int(tail.shape[1]) != expected_tail:
+        raise ValueError(
+            "image padding cannot be aligned with future video latents: "
+            f"tail={tail.shape[1]} expected={expected_tail}"
+        )
+    latent_valid = ~tail.reshape(
+        tail.shape[0], num_future_latent_frames, temporal_downsample_factor
+    ).all(dim=2)
+    token_valid = latent_valid.repeat_interleave(tokens_per_frame, dim=1)
+    if bool(token_valid.all().item()):
+        return None
+    return token_valid
 
 
 def _runtime_single_observation_latents(
@@ -1455,6 +1518,13 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             absolute_start=int(episode_steps[sample_index].item()),
             block_index=int(current_block.item()),
         )
+        current_action_valid_mask = None
+        if inputs["action_is_pad"] is not None:
+            candidate_action_valid = ~inputs["action_is_pad"][
+                sample_index : sample_index + 1
+            ]
+            if not bool(candidate_action_valid.all().item()):
+                current_action_valid_mask = candidate_action_valid
         action_hidden_by_depth = _forward_action_with_segment_history(
             model,
             action_tokens=current_action_pre["tokens"],
@@ -1467,6 +1537,7 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             history_segments=action_prefix_segments,
             max_layers=final_depth,
             exit_depths=training_depths,
+            action_valid_mask=current_action_valid_mask,
         )
 
         # The video loss is intentionally later and transient.  It sees the
@@ -1504,6 +1575,15 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             future_video_pre,
             current_block[:, None].expand(-1, num_future_frames),
         )
+        future_video_valid_mask = future_video_token_valid_mask(
+            None
+            if inputs["image_is_pad"] is None
+            else inputs["image_is_pad"][sample_index : sample_index + 1],
+            temporal_downsample_factor=int(model.vae.temporal_downsample_factor),
+            num_future_latent_frames=num_future_frames,
+            tokens_per_frame=int(future_video_pre["meta"]["tokens_per_frame"]),
+            device=model.device,
+        )
         video_hidden_by_depth, _ = _prefill_with_segment_history(
             model,
             expert_name="video",
@@ -1521,6 +1601,7 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             ),
             max_layers=final_depth,
             exit_depths=training_depths,
+            segment_valid_mask=future_video_valid_mask,
             return_segment_kv=False,
         )
         if not isinstance(video_hidden_by_depth, dict):

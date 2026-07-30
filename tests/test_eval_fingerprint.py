@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from leapbot_va.eval_contract import _git_source_identity, build_result_contract
+import leapbot_va.eval_contract as eval_contract
+from leapbot_va.eval_contract import (
+    KV_RETENTION_SEMANTICS,
+    _git_source_identity,
+    build_result_contract,
+    build_runtime_contract,
+)
 from leapbot_va.eval_fingerprint import (
     FINGERPRINT_SCHEMA_VERSION,
     atomic_write_json,
@@ -57,6 +63,8 @@ def _runtime_contract(*, memory_enabled: bool = True):
             "exit_depth": 30 if memory_enabled else 0,
             "episode_capacity": 70 if memory_enabled else 0,
             "retained_history_blocks": None if memory_enabled else 0,
+            "retention_semantics": KV_RETENTION_SEMANTICS,
+            "effective_kv_retention_cap": 70 if memory_enabled else 0,
             "effective_history_cap": 70 if memory_enabled else 0,
         },
         "input": {
@@ -212,6 +220,8 @@ def test_canonical_hash_is_stable_across_mapping_order_and_tuple_list():
         ("memory", "exit_depth", 24),
         ("memory", "episode_capacity", 80),
         ("memory", "retained_history_blocks", 32),
+        ("memory", "retention_semantics", "strict_information_window"),
+        ("memory", "effective_kv_retention_cap", 32),
         ("input", "width", 224),
         ("input", "concat_multi_camera", "vertical"),
     ],
@@ -222,6 +232,74 @@ def test_any_behavior_contract_change_rejects_reuse(section, field, different):
     changed_runtime[section][field] = different
     stale = _fingerprint(runtime_contract=changed_runtime)
     assert not result_matches_fingerprint(_complete_result(stale), expected)
+
+
+@pytest.mark.parametrize(
+    ("retained_history_blocks", "effective_kv_retention_cap"),
+    [(None, 70), (8, 8)],
+)
+def test_runtime_contract_audits_recursive_physical_kv_retention(
+    tmp_path,
+    monkeypatch,
+    retained_history_blocks,
+    effective_kv_retention_cap,
+):
+    dataset_stats = tmp_path / "dataset_stats.json"
+    dataset_stats.write_text("{}")
+    monkeypatch.setattr(
+        eval_contract,
+        "_git_source_identity",
+        lambda source_root: {"revision": "a" * 40, "dirty": False},
+    )
+    monkeypatch.setattr(
+        eval_contract,
+        "_dependency_identity",
+        lambda module_name, distribution_name: {
+            "module": module_name,
+            "distribution": distribution_name,
+        },
+    )
+    cfg = OmegaConf.create(
+        {
+            "ckpt": str(tmp_path / "checkpoint.pt"),
+            "seed": 42,
+            "mixed_precision": "bf16",
+            "eval_num_inference_steps": 20,
+            "EVALUATION": {
+                "memory": {
+                    "enabled": True,
+                    "causal_mode": "interleaved",
+                    "exit_depth": 30,
+                    "max_history_blocks": 70,
+                    "retained_history_blocks": retained_history_blocks,
+                },
+                "replan_steps": 10,
+                "action_horizon": 32,
+            },
+            "model": {"causal_mode": "interleaved"},
+            "data": {
+                "train": {
+                    "num_frames": 33,
+                    "video_size": [224, 448],
+                    "action_video_freq_ratio": 1,
+                    "processor": {"_target_": "example.Processor"},
+                }
+            },
+        }
+    )
+
+    contract = build_runtime_contract(
+        cfg,
+        config_name="sim_leapbot_libero",
+        hydra_choices={"task": "libero_leapbot_2cam224"},
+        dataset_stats_path=dataset_stats,
+        source_root=tmp_path,
+    )
+
+    memory = contract["memory"]
+    assert memory["retention_semantics"] == KV_RETENTION_SEMANTICS
+    assert memory["effective_kv_retention_cap"] == effective_kv_retention_cap
+    assert memory["effective_history_cap"] == effective_kv_retention_cap
 
 
 @pytest.mark.parametrize(

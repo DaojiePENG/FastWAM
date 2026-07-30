@@ -12,7 +12,7 @@ GRAD_ACCUM="${GRAD_ACCUM:-20}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
-SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v4_s${MAX_STEPS}_bs80_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
+SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v5_s${MAX_STEPS}_bs80_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
 LEARNING_RATES=(1.0e-5 1.0e-4)
 GPU_GROUPS=(0,1,2,3 4,5,6,7)
 PORTS=(29974 29975)
@@ -49,7 +49,7 @@ for index in "${!LEARNING_RATES[@]}"; do
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
     RELEASE_CHECKPOINT_SHA256="$RELEASE_CHECKPOINT_SHA256" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="lr-screen-incremental-v4-action-aggregator-${lr_tag}-s${MAX_STEPS}-bs80-chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}-seed42" \
+    RUN_NAME="lr-screen-incremental-v5-action-aggregator-${lr_tag}-s${MAX_STEPS}-bs80-chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}-seed42" \
     WANDB_ENABLED=false \
     WANDB_MODE=disabled \
     MAIN_PROCESS_PORT="$port" \

@@ -91,16 +91,25 @@ the same batch-one, T=1 VAE call as rollout; the earlier chunk-2 approximation
 and all packed-attention runs are invalidated and are not used as results.
 
 ```bash
+# Paired screens are followed by fixed-observation, fixed-timestep, fixed-noise
+# audits with correct, masked, and cross-episode shuffled histories.
+bash scripts/run_paired_lr_screen.sh
+bash scripts/run_paired_lr_audit.sh
+LR_SELECTION_MANIFEST=<lr-selection.json> \
+  bash scripts/run_paired_h0_retention_screen.sh
+LR_SELECTION_MANIFEST=<lr-selection.json> \
+  bash scripts/run_paired_h0_audit.sh
+
 # Phase 1: after the paired LR audit selects a learning rate, train all three
 # modes sequentially with the complete episode prefix, D30, BF16, the same
 # 8-GPU topology/global batch, and a 5% warmup + cosine schedule.
-SELECTED_LR=1.0e-4 INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
+LR_SELECTION_MANIFEST=<lr-selection.json> \
+  H0_SELECTION_MANIFEST=<h0-selection.json> \
   bash scripts/run_causal_full_bptt_comparison.sh
 
 # Phase 2: initialize from the winning D30 history checkpoint and train exits.
 SOURCE_TRAIN_ROOT=/path/to/d30_root MODE=<winner> SOURCE_STEP=<step> \
-  MULTI_EXIT_LR=<selected-lr> MAX_STEPS=<steps> \
-  INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
+  MAX_STEPS=<steps> \
   bash scripts/run_multi_exit_training.sh
 ```
 
@@ -109,6 +118,14 @@ recipe and not substitutes for complete-prefix training.
 The released LIBERO training episodes provide real prefixes through H=50. The
 70-block setting is a capacity and inference extrapolation bound; H=51..69 is
 not represented as observed training history and must be reported as such.
+
+The inference ablations labelled `kvret0/8/16/32/full` cap the number of
+physically retained KV blocks. They are not strict information windows: a
+newer causal KV was computed while attending to its older prefix and therefore
+can still encode information from blocks whose tensors are later evicted.
+Strict last-N-information ablations would require replaying retained raw
+observations/actions after every eviction and are outside the online cache
+design. The default full-episode configuration performs no eviction.
 
 For phase 3 the objective is exactly
 `L30 + (L8 + L16 + L24) / 3`; every `Ld` contains video and action

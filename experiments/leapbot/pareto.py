@@ -10,6 +10,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
+from leapbot_va.eval_contract import KV_RETENTION_SEMANTICS
 from leapbot_va.eval_fingerprint import normalize_evaluation_fingerprint
 
 
@@ -27,6 +28,66 @@ def percentile(values: list[float], q: float) -> float:
 
 def optional_percentile(values: list[float], q: float) -> float | None:
     return percentile(values, q) if values else None
+
+
+def _validated_kv_retention_contract(
+    memory: dict,
+    *,
+    context: str,
+) -> tuple[str, int]:
+    """Validate that a run describes physical KV retention, not a history window."""
+
+    if not isinstance(memory, dict):
+        raise TypeError(f"{context}: runtime memory contract must be an object")
+    semantics = memory.get("retention_semantics")
+    if semantics != KV_RETENTION_SEMANTICS:
+        raise ValueError(
+            f"{context}: memory.retention_semantics must be "
+            f"{KV_RETENTION_SEMANTICS!r}, got {semantics!r}"
+        )
+
+    integer_fields = (
+        "episode_capacity",
+        "effective_kv_retention_cap",
+        "effective_history_cap",
+    )
+    values = {}
+    for field in integer_fields:
+        value = memory.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"{context}: memory.{field} must be a non-negative integer"
+            )
+        values[field] = value
+
+    retained = memory.get("retained_history_blocks")
+    if retained is not None and (
+        isinstance(retained, bool) or not isinstance(retained, int) or retained < 0
+    ):
+        raise ValueError(
+            f"{context}: memory.retained_history_blocks must be a non-negative "
+            "integer or null"
+        )
+    episode_capacity = values["episode_capacity"]
+    if retained is not None and retained > episode_capacity:
+        raise ValueError(
+            f"{context}: memory.retained_history_blocks cannot exceed "
+            "memory.episode_capacity"
+        )
+    expected_cap = episode_capacity if retained is None else retained
+    kv_cap = values["effective_kv_retention_cap"]
+    if kv_cap != expected_cap:
+        raise ValueError(
+            f"{context}: memory.effective_kv_retention_cap={kv_cap} does not "
+            f"match the configured physical KV cap {expected_cap}"
+        )
+    if values["effective_history_cap"] != kv_cap:
+        raise ValueError(
+            f"{context}: compatibility alias memory.effective_history_cap="
+            f"{values['effective_history_cap']} does not match "
+            f"memory.effective_kv_retention_cap={kv_cap}"
+        )
+    return semantics, kv_cap
 
 
 def wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[float, float]:
@@ -53,6 +114,10 @@ def config_key(payload: dict, path: Path) -> str:
         return f"legacy/{path.stem}"
     runtime = fingerprint["runtime_contract"]
     memory = runtime["memory"]
+    _, kv_retention_cap = _validated_kv_retention_contract(
+        memory,
+        context=str(path),
+    )
     runtime_tag = fingerprint["runtime_contract_sha256"][:12]
     checkpoint_tag = fingerprint["checkpoint_sha256"][:12]
     if memory["enabled"]:
@@ -60,7 +125,7 @@ def config_key(payload: dict, path: Path) -> str:
             [
                 str(memory["causal_mode"]),
                 f"d{memory['exit_depth']}",
-                f"h{memory['effective_history_cap']}",
+                f"kvret{kv_retention_cap}",
                 f"cap{memory['episode_capacity']}",
                 f"rt-{runtime_tag}",
                 f"ckpt-{checkpoint_tag}",
@@ -89,6 +154,8 @@ def _new_group() -> dict:
     return {
         "model_family": None,
         "memory_enabled": None,
+        "retention_semantics": None,
+        "effective_kv_retention_cap": None,
         "successes": 0,
         "episodes": 0,
         "completion_steps": [],
@@ -115,12 +182,25 @@ def aggregate(paths: list[Path]) -> list[dict]:
         group = groups[key]
         family = model_family(payload)
         memory_enabled = family == "leapbot_memory"
+        fingerprint = normalize_evaluation_fingerprint(
+            payload["evaluation_fingerprint"]
+        )
+        retention_semantics, kv_retention_cap = _validated_kv_retention_contract(
+            fingerprint["runtime_contract"]["memory"],
+            context=str(path),
+        )
         if group["model_family"] not in (None, family):
             raise ValueError(f"{key}: mixed model families in one aggregate group")
         if group["memory_enabled"] not in (None, memory_enabled):
             raise ValueError(f"{key}: mixed memory contracts in one aggregate group")
+        if group["retention_semantics"] not in (None, retention_semantics):
+            raise ValueError(f"{key}: mixed KV retention semantics in one group")
+        if group["effective_kv_retention_cap"] not in (None, kv_retention_cap):
+            raise ValueError(f"{key}: mixed physical KV retention caps in one group")
         group["model_family"] = family
         group["memory_enabled"] = memory_enabled
+        group["retention_semantics"] = retention_semantics
+        group["effective_kv_retention_cap"] = kv_retention_cap
         group["successes"] += int(payload.get("successes", 0))
         group["episodes"] += int(payload.get("total_episodes", 0))
         group["completion_steps"].extend(
@@ -165,6 +245,10 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 "config": key,
                 "model_family": values["model_family"],
                 "memory_enabled": values["memory_enabled"],
+                "retention_semantics": values["retention_semantics"],
+                "effective_kv_retention_cap": values[
+                    "effective_kv_retention_cap"
+                ],
                 "successes": values["successes"],
                 "episodes": values["episodes"],
                 "success_rate": rate,
@@ -246,8 +330,8 @@ def aggregate_per_task(paths: list[Path]) -> list[dict]:
     return sorted(rows, key=lambda row: (row["config"], row["task_id"]))
 
 
-def aggregate_by_history(paths: list[Path]) -> list[dict]:
-    """Aggregate cache growth and latency against retained history length."""
+def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
+    """Aggregate against physically retained KV blocks, not an information window."""
     groups = defaultdict(
         lambda: {
             "samples": 0,
@@ -273,27 +357,38 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
             payload["evaluation_fingerprint"]
         )
         runtime_memory = fingerprint["runtime_contract"]["memory"]
-        retention_cap = int(runtime_memory["effective_history_cap"])
+        retention_semantics, retention_cap = _validated_kv_retention_contract(
+            runtime_memory,
+            context=str(path),
+        )
         for episode in payload.get("memory_metrics", []):
             for replan in episode.get("replans", []):
                 memory = replan.get("memory", {})
                 if "completed_blocks" not in memory:
                     continue
                 episode_blocks = int(memory["completed_blocks"])
-                retained_blocks = int(
+                retained_kv_blocks = int(
                     memory.get(
                         "retained_history_blocks",
                         min(episode_blocks, retention_cap),
                     )
                 )
                 expected_retained = min(episode_blocks, retention_cap)
-                if retained_blocks != expected_retained:
+                if retained_kv_blocks != expected_retained:
                     raise ValueError(
-                        f"{path}: runtime retained history {retained_blocks} does not "
+                        f"{path}: runtime retained KV blocks={retained_kv_blocks} "
+                        "do not "
                         f"match min(episode_blocks={episode_blocks}, "
-                        f"retention_cap={retention_cap})={expected_retained}"
+                        f"kv_retention_cap={retention_cap})={expected_retained}"
                     )
-                group = groups[(key, retained_blocks)]
+                group = groups[
+                    (
+                        key,
+                        retention_semantics,
+                        retention_cap,
+                        retained_kv_blocks,
+                    )
+                ]
                 group["samples"] += 1
                 group["episode_blocks"].append(float(episode_blocks))
                 if "cache_bytes" in memory:
@@ -335,11 +430,20 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
         return None if value is None else value / 2**30
 
     rows = []
-    for (key, history_blocks), values in groups.items():
+    for (
+        key,
+        retention_semantics,
+        retention_cap,
+        retained_kv_blocks,
+    ), values in groups.items():
         rows.append(
             {
                 "config": key,
-                "history_blocks_before_replan": history_blocks,
+                "retention_semantics": retention_semantics,
+                "effective_kv_retention_cap": retention_cap,
+                "kv_retained_blocks_before_replan": retained_kv_blocks,
+                # Compatibility alias for existing plotting/report consumers.
+                "history_blocks_before_replan": retained_kv_blocks,
                 "p50_episode_blocks_before_replan": optional_percentile(
                     values["episode_blocks"], 0.50
                 ),
@@ -423,8 +527,14 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
         )
     return sorted(
         rows,
-        key=lambda row: (row["config"], row["history_blocks_before_replan"]),
+        key=lambda row: (row["config"], row["kv_retained_blocks_before_replan"]),
     )
+
+
+def aggregate_by_history(paths: list[Path]) -> list[dict]:
+    """Compatibility alias for :func:`aggregate_by_kv_retention`."""
+
+    return aggregate_by_kv_retention(paths)
 
 
 def validate_inputs(
@@ -743,7 +853,7 @@ def main() -> None:
     )
     rows = aggregate(paths)
     per_task_rows = aggregate_per_task(paths)
-    history_rows = aggregate_by_history(paths)
+    kv_retention_rows = aggregate_by_kv_retention(paths)
     frontier = non_dominated(rows)
     leapbot_default = choose_leapbot_default(rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -758,20 +868,20 @@ def main() -> None:
         )
         writer.writeheader()
         writer.writerows(per_task_rows)
-    with (args.output_dir / "history_profile.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(
-            stream,
-            fieldnames=(
-                list(history_rows[0])
-                if history_rows
-                else ["config", "history_blocks_before_replan"]
-            ),
-        )
-        writer.writeheader()
-        writer.writerows(history_rows)
+    kv_retention_fields = (
+        list(kv_retention_rows[0])
+        if kv_retention_rows
+        else ["config", "kv_retained_blocks_before_replan"]
+    )
+    for filename in ("kv_retention_profile.csv", "history_profile.csv"):
+        with (args.output_dir / filename).open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=kv_retention_fields)
+            writer.writeheader()
+            writer.writerows(kv_retention_rows)
     (args.output_dir / "pareto.json").write_text(
         json.dumps(
             {
+                "retention_semantics": KV_RETENTION_SEMANTICS,
                 "leapbot_default": leapbot_default,
                 "overall_frontier": frontier,
                 # Compatibility aliases for existing report consumers.

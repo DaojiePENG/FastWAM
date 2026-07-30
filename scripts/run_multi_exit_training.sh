@@ -6,9 +6,7 @@ ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 SOURCE_TRAIN_ROOT="${SOURCE_TRAIN_ROOT:?SOURCE_TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
 SOURCE_STEP="${SOURCE_STEP:?SOURCE_STEP is required}"
-MULTI_EXIT_LR="${MULTI_EXIT_LR:?MULTI_EXIT_LR is required}"
 MAX_STEPS="${MAX_STEPS:?MAX_STEPS is required}"
-INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:?INITIAL_BLOCK_OVERSAMPLE is required}"
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/multi_exit_incremental_full_bptt}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
@@ -35,9 +33,15 @@ if [[ ! -s "$SOURCE_CHECKPOINT" || ! -s "$SOURCE_CONTRACT" ]]; then
 fi
 SOURCE_RUN_CONTRACT_SHA256="$(awk -F= '$1 == "run_contract_sha256" {print $2}' "$SOURCE_CONTRACT")"
 SOURCE_CODE_COMMIT="$(awk -F= '$1 == "code_commit" {print $2}' "$SOURCE_CONTRACT")"
+CURRENT_CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 if [[ ! "$SOURCE_RUN_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]] \
     || [[ ! "$SOURCE_CODE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
     printf 'Invalid source training identity in %s\n' "$SOURCE_CONTRACT" >&2
+    exit 2
+fi
+if [[ "$SOURCE_CODE_COMMIT" != "$CURRENT_CODE_COMMIT" ]]; then
+    printf 'Source checkpoint code differs from the current training code: %s != %s\n' \
+        "$SOURCE_CODE_COMMIT" "$CURRENT_CODE_COMMIT" >&2
     exit 2
 fi
 if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 1 ]] \
@@ -50,6 +54,7 @@ for expected_field in \
     batch_size=1 \
     gradient_accumulation_steps=16 \
     history_vae_batch_chunk_size=1 \
+    padding_attention_mask=true \
     history_training_mode=incremental_full_bptt \
     full_episode_history=true \
     max_history_blocks=70 \
@@ -65,6 +70,25 @@ for expected_field in \
         exit 2
     fi
 done
+INITIAL_BLOCK_OVERSAMPLE="$(contract_value initial_block_oversample)"
+MULTI_EXIT_LR="$(contract_value learning_rate)"
+SOURCE_SEED="$(contract_value seed)"
+SOURCE_RELEASE_SHA256="$(contract_value release_checkpoint_sha256)"
+SOURCE_DATASET_STATS_SHA256="$(contract_value dataset_stats_sha256)"
+SOURCE_ASSET_MANIFEST_SHA256="$(contract_value training_asset_manifest_sha256)"
+SOURCE_LR_SELECTION_SHA256="$(contract_value lr_selection_manifest_sha256)"
+SOURCE_H0_SELECTION_SHA256="$(contract_value h0_selection_manifest_sha256)"
+RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
+DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
+if [[ "$SOURCE_SEED" != "42" ]] \
+    || [[ ! "$SOURCE_ASSET_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [[ ! "$SOURCE_LR_SELECTION_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [[ ! "$SOURCE_H0_SELECTION_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [[ "$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')" != "$SOURCE_RELEASE_SHA256" ]] \
+    || [[ "$(sha256sum "$DATASET_STATS" | awk '{print $1}')" != "$SOURCE_DATASET_STATS_SHA256" ]]; then
+    printf 'Source checkpoint lineage, seed, release weights, or data statistics are incompatible.\n' >&2
+    exit 2
+fi
 "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
     "$SOURCE_CHECKPOINT" \
     --expected-step "$SOURCE_STEP" \
@@ -89,10 +113,17 @@ LR_SCHEDULER_TYPE=cosine \
 VIDEO_LORA_MULTIPLIER=1.0 \
 HISTORY_VAE_BATCH_CHUNK_SIZE=1 \
 INITIAL_BLOCK_OVERSAMPLE="$INITIAL_BLOCK_OVERSAMPLE" \
+LR_SELECTION_MANIFEST_SHA256="$SOURCE_LR_SELECTION_SHA256" \
+H0_SELECTION_MANIFEST_SHA256="$SOURCE_H0_SELECTION_SHA256" \
+EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="$SOURCE_ASSET_MANIFEST_SHA256" \
 INITIAL_CHECKPOINT="$SOURCE_CHECKPOINT" \
 TRAINING_EXIT_DEPTHS_CSV=8,16,24,30 \
 REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
 OUTPUT_DIR="$OUTPUT_DIR" \
+RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
+RELEASE_CHECKPOINT_SHA256="$SOURCE_RELEASE_SHA256" \
+DATASET_STATS="$DATASET_STATS" \
+SEED="$SOURCE_SEED" \
 RUN_NAME="multi-exit-incremental-full-bptt-${MODE//_/-}-s${MAX_STEPS}-seed42" \
 WANDB_ENABLED="$WANDB_ENABLED" \
 WANDB_MODE="$WANDB_MODE" \

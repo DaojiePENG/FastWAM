@@ -3,6 +3,9 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+from leapbot_va.eval_contract import KV_RETENTION_SEMANTICS
 from leapbot_va.eval_fingerprint import build_evaluation_fingerprint
 
 
@@ -21,6 +24,10 @@ def _attach_fingerprint(payload, *, checkpoint_bytes=b"checkpoint", config_name=
     enabled = bool(memory.get("enabled", False))
     episode_capacity = int(memory.get("max_history_blocks", 0)) if enabled else 0
     retained = memory.get("retained_history_blocks", None) if enabled else 0
+    effective_kv_retention_cap = memory.get(
+        "effective_kv_retention_cap",
+        episode_capacity if retained is None else int(retained),
+    )
     runtime = {
         "config": {
             "name": config_name
@@ -32,8 +39,12 @@ def _attach_fingerprint(payload, *, checkpoint_bytes=b"checkpoint", config_name=
             "exit_depth": int(memory.get("exit_depth", 0)) if enabled else 0,
             "episode_capacity": episode_capacity,
             "retained_history_blocks": retained,
-            "effective_history_cap": (
-                episode_capacity if retained is None else int(retained)
+            "retention_semantics": memory.get(
+                "retention_semantics", KV_RETENTION_SEMANTICS
+            ),
+            "effective_kv_retention_cap": effective_kv_retention_cap,
+            "effective_history_cap": memory.get(
+                "effective_history_cap", effective_kv_retention_cap
             ),
         },
     }
@@ -71,7 +82,7 @@ def test_leapbot_default_excludes_faster_overlapping_fastwam_baseline():
             "p50_latency_s": 0.1,
         },
         {
-            "config": "interleaved/d30/h70/cap70/rt-b/ckpt-b",
+            "config": "interleaved/d30/kvret70/cap70/rt-b/ckpt-b",
             "model_family": "leapbot_memory",
             "memory_enabled": True,
             "success_rate": 0.90,
@@ -80,7 +91,7 @@ def test_leapbot_default_excludes_faster_overlapping_fastwam_baseline():
             "p50_latency_s": 2.0,
         },
         {
-            "config": "action_aggregator/d16/h8/cap70/rt-c/ckpt-c",
+            "config": "action_aggregator/d16/kvret8/cap70/rt-c/ckpt-c",
             "model_family": "leapbot_memory",
             "memory_enabled": True,
             "success_rate": 0.895,
@@ -159,6 +170,8 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     row = pareto.aggregate([path])[0]
     assert row["model_family"] == "leapbot_memory"
     assert row["memory_enabled"] is True
+    assert row["retention_semantics"] == KV_RETENTION_SEMANTICS
+    assert row["effective_kv_retention_cap"] == 70
     assert row["mean_completion_steps"] == 150
     assert row["p50_latency_s"] == 0.55
     assert row["p50_model_inference_s"] == 0.5
@@ -176,7 +189,11 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert task_row["success_rate"] == 0.5
     assert task_row["mean_completion_steps"] == 150
 
-    history_row = pareto.aggregate_by_history([path])[0]
+    history_row = pareto.aggregate_by_kv_retention([path])[0]
+    assert history_row["retention_semantics"] == KV_RETENTION_SEMANTICS
+    assert history_row["effective_kv_retention_cap"] == 70
+    assert history_row["kv_retained_blocks_before_replan"] == 4
+    # Compatibility field remains identical for existing report consumers.
     assert history_row["history_blocks_before_replan"] == 4
     assert history_row["samples"] == 1
     assert history_row["p50_cache_after_observation_gib"] == 0.5
@@ -188,7 +205,7 @@ def test_optional_percentile_is_none_when_metric_is_unavailable():
     assert pareto.optional_percentile([], 0.5) is None
 
 
-def test_config_key_separates_episode_capacity_from_retained_history():
+def test_config_key_separates_episode_capacity_from_physical_kv_retention():
     base = {
         "checkpoint": "/tmp/model.pt",
         "memory_config": {
@@ -206,12 +223,14 @@ def test_config_key_separates_episode_capacity_from_retained_history():
     _attach_fingerprint(capped_payload)
     capped = pareto.config_key(capped_payload, Path("capped.json"))
 
-    assert "/h70/cap70/" in full
-    assert "/h8/cap70/" in capped
+    assert "/kvret70/cap70/" in full
+    assert "/kvret8/cap70/" in capped
     assert full != capped
 
 
-def test_history_profile_uses_retained_window_not_absolute_episode_clock(tmp_path):
+def test_kv_retention_profile_uses_physical_cap_not_absolute_episode_clock(
+    tmp_path,
+):
     payload = {
         "checkpoint": "/tmp/model.pt",
         "memory_config": {
@@ -240,12 +259,13 @@ def test_history_profile_uses_retained_window_not_absolute_episode_clock(tmp_pat
     path = tmp_path / "capped_results.json"
     path.write_text(json.dumps(payload))
 
-    row = pareto.aggregate_by_history([path])[0]
+    row = pareto.aggregate_by_kv_retention([path])[0]
+    assert row["kv_retained_blocks_before_replan"] == 8
     assert row["history_blocks_before_replan"] == 8
     assert row["p50_episode_blocks_before_replan"] == 20
 
 
-def test_history_profile_rejects_runtime_retention_mismatch(tmp_path):
+def test_kv_retention_profile_rejects_runtime_retention_mismatch(tmp_path):
     payload = {
         "checkpoint": "/tmp/model.pt",
         "memory_config": {
@@ -273,9 +293,9 @@ def test_history_profile_rejects_runtime_retention_mismatch(tmp_path):
     path.write_text(json.dumps(payload))
 
     try:
-        pareto.aggregate_by_history([path])
+        pareto.aggregate_by_kv_retention([path])
     except ValueError as error:
-        assert "runtime retained history 9" in str(error)
+        assert "runtime retained KV blocks=9" in str(error)
     else:
         raise AssertionError("retention mismatch unexpectedly passed aggregation")
 
@@ -330,12 +350,80 @@ def test_memory_disabled_leapbot_is_not_grouped_as_fastwam():
     )
 
 
-def test_plot_labels_preserve_mode_depth_history_and_capacity():
-    config = "action_aggregator/d16/h8/cap70/rt-abc/ckpt-def"
-    assert plot_pareto._short_label(config) == "action_aggregator/d16/h8/cap70"
+def test_plot_labels_preserve_mode_depth_kv_retention_and_capacity():
+    config = "action_aggregator/d16/kvret8/cap70/rt-abc/ckpt-def"
+    assert (
+        plot_pareto._short_label(config)
+        == "action_aggregator/d16/kvret8/cap70"
+    )
     assert plot_pareto._short_label(
         "fastwam_release/rt-abc/ckpt-def"
     ) == "FastWAM"
+
+
+@pytest.mark.parametrize(
+    ("memory_overrides", "message"),
+    [
+        (
+            {"retention_semantics": "strict_information_window"},
+            "retention_semantics",
+        ),
+        (
+            {
+                "retained_history_blocks": 8,
+                "effective_kv_retention_cap": 9,
+                "effective_history_cap": 9,
+            },
+            "effective_kv_retention_cap",
+        ),
+        (
+            {
+                "retained_history_blocks": 8,
+                "effective_kv_retention_cap": 8,
+                "effective_history_cap": 9,
+            },
+            "compatibility alias",
+        ),
+    ],
+)
+def test_pareto_rejects_ambiguous_kv_retention_contract(
+    memory_overrides,
+    message,
+):
+    memory_config = {
+        "enabled": True,
+        "causal_mode": "interleaved",
+        "exit_depth": 30,
+        "max_history_blocks": 70,
+        **memory_overrides,
+    }
+    payload = _attach_fingerprint({"memory_config": memory_config})
+
+    with pytest.raises(ValueError, match=message):
+        pareto.config_key(payload, Path("ambiguous.json"))
+
+
+def test_validate_inputs_rejects_non_auditable_retention_semantics(tmp_path):
+    payload = _attach_fingerprint(
+        {
+            "task_id": 0,
+            "total_episodes": 0,
+            "completion_steps": [],
+            "memory_metrics": [],
+            "memory_config": {
+                "enabled": True,
+                "causal_mode": "interleaved",
+                "exit_depth": 30,
+                "max_history_blocks": 70,
+                "retention_semantics": "unspecified",
+            },
+        }
+    )
+    path = tmp_path / "invalid_results.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="retention_semantics"):
+        pareto.validate_inputs([path])
 
 
 def test_validate_inputs_rejects_incomplete_or_unprofiled_results(tmp_path):

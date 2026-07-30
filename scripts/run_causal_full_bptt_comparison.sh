@@ -9,7 +9,21 @@ set -euo pipefail
 # identical per-mode run contracts.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-SELECTED_LR="${SELECTED_LR:?SELECTED_LR must come from the paired LR audit}"
+LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?LR_SELECTION_MANIFEST is required}"
+H0_SELECTION_MANIFEST="${H0_SELECTION_MANIFEST:?H0_SELECTION_MANIFEST is required}"
+SELECTED_LR="$("$ROOT_DIR/.venv/bin/python" \
+    "$ROOT_DIR/scripts/history_audit_selection.py" validate \
+    --manifest "$LR_SELECTION_MANIFEST" \
+    --expected-kind learning_rate \
+    --selected-value-only)"
+INITIAL_BLOCK_OVERSAMPLE="$("$ROOT_DIR/.venv/bin/python" \
+    "$ROOT_DIR/scripts/history_audit_selection.py" validate \
+    --manifest "$H0_SELECTION_MANIFEST" \
+    --expected-kind initial_block_oversample \
+    --selected-value-only)"
+LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST" | awk '{print $1}')"
+H0_SELECTION_MANIFEST_SHA256="$(sha256sum "$H0_SELECTION_MANIFEST" | awk '{print $1}')"
+DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 MAX_STEPS="${MAX_STEPS:-1115}"
 SAVE_EVERY="${SAVE_EVERY:-223}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
@@ -17,13 +31,14 @@ GRAD_ACCUM="${GRAD_ACCUM:-16}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
-INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:?INITIAL_BLOCK_OVERSAMPLE must come from the H0-retention audit}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
+SEED="${SEED:-42}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v3_d30_e5_bs128_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v4_d30_e5_bs128_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
+CANONICAL_MODES=(action_aggregator interleaved vision_causal)
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -55,8 +70,88 @@ done
 
 mkdir -p "$TRAIN_ROOT"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
-RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
+if [[ ! -s "$RELEASE_CHECKPOINT" ]] || [[ ! -s "$DATASET_STATS" ]]; then
+    log "missing release checkpoint or dataset statistics"
+    exit 1
+fi
+ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')"
+if [[ -n "${RELEASE_CHECKPOINT_SHA256:-}" ]] \
+    && [[ "$RELEASE_CHECKPOINT_SHA256" != "$ACTUAL_RELEASE_CHECKPOINT_SHA256" ]]; then
+    log "configured release checkpoint hash does not match the checkpoint bytes"
+    exit 1
+fi
+RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"
+DATASET_STATS_SHA256="$(sha256sum "$DATASET_STATS" | awk '{print $1}')"
+CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
+
+validate_existing_contract_group() {
+    local mode mode_dir contract_file
+    local -a contract_args=()
+    for mode in "${CANONICAL_MODES[@]}"; do
+        mode_dir="$TRAIN_ROOT/$mode"
+        contract_file="$mode_dir/run_contract.txt"
+        if [[ -e "$contract_file" && ! -s "$contract_file" ]]; then
+            log "invalid empty run contract: $contract_file"
+            return 2
+        fi
+        if [[ -d "$mode_dir" ]] \
+            && [[ -n "$(find "$mode_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+            && [[ ! -s "$contract_file" ]]; then
+            log "refusing uncontracted existing mode directory: $mode_dir"
+            return 2
+        fi
+        if [[ -s "$contract_file" ]]; then
+            contract_args+=(--contract "$mode=$contract_file")
+        fi
+    done
+    if (( ${#contract_args[@]} == 0 )); then
+        return 0
+    fi
+    "$ROOT_DIR/.venv/bin/python" \
+        "$ROOT_DIR/scripts/validate_run_contract_group.py" \
+        "${contract_args[@]}" \
+        --expected-field "code_commit=$CODE_COMMIT" \
+        --expected-field "release_checkpoint_sha256=$RELEASE_CHECKPOINT_SHA256" \
+        --expected-field "dataset_stats_sha256=$DATASET_STATS_SHA256" \
+        --expected-field "num_processes=$NUM_PROCESSES" \
+        --expected-field "batch_size=$BATCH_SIZE" \
+        --expected-field "gradient_accumulation_steps=$GRAD_ACCUM" \
+        --expected-field "global_batch=$GLOBAL_BATCH" \
+        --expected-field "max_steps=$MAX_STEPS" \
+        --expected-field "learning_rate=$SELECTED_LR" \
+        --expected-field lr_scheduler_type=cosine \
+        --expected-field "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+        --expected-field "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
+        --expected-field "lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256" \
+        --expected-field "h0_selection_manifest_sha256=$H0_SELECTION_MANIFEST_SHA256" \
+        --expected-field "save_every=$SAVE_EVERY" \
+        --expected-field "seed=$SEED" \
+        --expected-field padding_attention_mask=true \
+        --expected-field training_exit_depths=30 \
+        --output "$TRAIN_ROOT/run_contract_group.validation.json" \
+        >/dev/null
+}
+
+existing_asset_manifest_sha() {
+    local mode contract_file value
+    for mode in "${CANONICAL_MODES[@]}"; do
+        contract_file="$TRAIN_ROOT/$mode/run_contract.txt"
+        if [[ -s "$contract_file" ]]; then
+            value="$(awk -F= '$1 == "training_asset_manifest_sha256" {print $2}' "$contract_file")"
+            if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then
+                log "invalid training asset identity in $contract_file"
+                return 2
+            fi
+            printf '%s\n' "$value"
+            return 0
+        fi
+    done
+}
+
+validate_existing_contract_group
 for mode in "${MODES[@]}"; do
+    EXPECTED_ASSET_MANIFEST_SHA256="$(existing_asset_manifest_sha)"
     output_dir="$TRAIN_ROOT/$mode"
     log "start controlled full-BPTT mode=$mode output=$output_dir"
     MODE="$mode" \
@@ -71,15 +166,21 @@ for mode in "${MODES[@]}"; do
     VIDEO_LORA_MULTIPLIER=1.0 \
     HISTORY_VAE_BATCH_CHUNK_SIZE="$HISTORY_VAE_BATCH_CHUNK_SIZE" \
     INITIAL_BLOCK_OVERSAMPLE="$INITIAL_BLOCK_OVERSAMPLE" \
+    LR_SELECTION_MANIFEST_SHA256="$LR_SELECTION_MANIFEST_SHA256" \
+    H0_SELECTION_MANIFEST_SHA256="$H0_SELECTION_MANIFEST_SHA256" \
+    EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="$EXPECTED_ASSET_MANIFEST_SHA256" \
     REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
     RELEASE_CHECKPOINT_SHA256="$RELEASE_CHECKPOINT_SHA256" \
+    DATASET_STATS="$DATASET_STATS" \
+    SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-incremental-full-bptt-v3-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed42" \
+    RUN_NAME="causal-incremental-full-bptt-v4-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \
         bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh"
+    validate_existing_contract_group
     log "complete controlled full-BPTT mode=$mode"
 done
 

@@ -12,6 +12,7 @@ GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
 DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"
 HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"
+KV_RETENTION_CAPS_CSV="${KV_RETENTION_CAPS_CSV:-$HISTORY_CAPS_CSV}"
 BASELINE_RESULTS_ROOT="${BASELINE_RESULTS_ROOT:-}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
@@ -52,7 +53,7 @@ mkdir -p "$GRID_ROOT/.checkpoint_validation"
     >/dev/null
 
 IFS=',' read -r -a DEPTHS <<<"$DEPTHS_CSV"
-IFS=',' read -r -a HISTORY_CAPS <<<"$HISTORY_CAPS_CSV"
+IFS=',' read -r -a KV_RETENTION_CAPS <<<"$KV_RETENTION_CAPS_CSV"
 for depth in "${DEPTHS[@]}"; do
     case "$depth" in
         8|16|24|30) ;;
@@ -61,15 +62,15 @@ for depth in "${DEPTHS[@]}"; do
             exit 2
             ;;
     esac
-    for history_cap in "${HISTORY_CAPS[@]}"; do
-        if [[ "$history_cap" != "full" ]] \
-            && { [[ ! "$history_cap" =~ ^[0-9]+$ ]] \
-                || (( history_cap > MAX_HISTORY_BLOCKS )); }; then
-            printf 'Invalid history cap: %s\n' "$history_cap" >&2
+    for kv_retention_cap in "${KV_RETENTION_CAPS[@]}"; do
+        if [[ "$kv_retention_cap" != "full" ]] \
+            && { [[ ! "$kv_retention_cap" =~ ^[0-9]+$ ]] \
+                || (( kv_retention_cap > MAX_HISTORY_BLOCKS )); }; then
+            printf 'Invalid KV retention cap: %s\n' "$kv_retention_cap" >&2
             exit 2
         fi
-        config_root="$GRID_ROOT/configs/d${depth}_h${history_cap}"
-        log "evaluate mode=$MODE depth=$depth history=$history_cap trials=$NUM_TRIALS"
+        config_root="$GRID_ROOT/configs/d${depth}_kvret${kv_retention_cap}"
+        log "evaluate mode=$MODE depth=$depth kv-retention=$kv_retention_cap trials=$NUM_TRIALS"
         ROOT_DIR="$ROOT_DIR" \
         TRAIN_ROOT="$TRAIN_ROOT" \
         EVAL_ROOT="$config_root" \
@@ -79,7 +80,7 @@ for depth in "${DEPTHS[@]}"; do
         GPU_IDS_CSV="$GPU_IDS_CSV" \
         LEAPBOT_DATASET_STATS="$DATASET_STATS" \
         MAX_HISTORY_BLOCKS="$MAX_HISTORY_BLOCKS" \
-        RETAINED_HISTORY_BLOCKS="$history_cap" \
+        RETAINED_HISTORY_BLOCKS="$kv_retention_cap" \
         EXIT_DEPTH="$depth" \
         EXPECTED_TRAINED_EXIT_DEPTHS=8,16,24,30 \
         bash "$ROOT_DIR/scripts/run_single_mode_checkpoint_eval.sh"
@@ -105,4 +106,4 @@ MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
     "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/plot_pareto.py" \
     "$GRID_ROOT/pareto" \
     --output-dir "$GRID_ROOT/pareto"
-log "depth/history Pareto complete: $GRID_ROOT/pareto/results.csv"
+log "depth/kv-retention Pareto complete: $GRID_ROOT/pareto/results.csv"

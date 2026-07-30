@@ -40,10 +40,19 @@ from fastwam.runtime import _mixed_precision_to_model_dtype, _normalize_mixed_pr
 from fastwam.utils import misc
 from fastwam.utils.config_resolvers import register_default_resolvers
 from fastwam.utils.logging_config import get_logger, setup_logging
+from leapbot_va.eval_contract import _git_source_identity
 
 
 register_default_resolvers()
 logger = get_logger(__name__)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _stable_seed(*parts: Any) -> int:
@@ -1233,6 +1242,7 @@ def _evaluate_checkpoint(
     result: dict[str, Any] = {
         "label": label,
         "checkpoint": str(checkpoint),
+        "checkpoint_sha256": _sha256_file(checkpoint),
         "checkpoint_step": checkpoint_step,
         "causal_mode": str(model.causal_mode),
         "history_training_mode": str(model.history_training_mode),
@@ -1559,6 +1569,7 @@ def run_audit(cfg: DictConfig) -> dict[str, Any]:
 
     result = {
         "kind": "paired_history_stratified_loss_audit",
+        "source_identity": _git_source_identity(Path(__file__).parents[1]),
         "history_lengths": history_lengths,
         "samples_per_history_requested": int(audit.get("samples_per_history", 2)),
         "selected_samples": selected,

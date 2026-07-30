@@ -329,5 +329,12 @@ def test_depth_history_launcher_covers_full_grid_with_isolated_result_roots():
     source = (REPO_ROOT / "scripts" / "run_depth_history_pareto.sh").read_text()
     assert 'DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"' in source
     assert 'HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"' in source
-    assert 'config_root="$GRID_ROOT/configs/d${depth}_h${history_cap}"' in source
+    assert 'KV_RETENTION_CAPS_CSV="${KV_RETENTION_CAPS_CSV:-$HISTORY_CAPS_CSV}"' in source
+    assert (
+        'config_root="$GRID_ROOT/configs/d${depth}_kvret${kv_retention_cap}"'
+        in source
+    )
+    assert "kv-retention=$kv_retention_cap" in source
+    assert 'RETAINED_HISTORY_BLOCKS="$kv_retention_cap"' in source
+    assert "depth/kv-retention Pareto complete" in source
     assert "--expected-trained-exit-depths 8,16,24,30" in source

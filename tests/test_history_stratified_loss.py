@@ -28,6 +28,7 @@ summarize_diagnostic_records = _MODULE.summarize_diagnostic_records
 paired_rows = _MODULE._paired_rows
 stable_seed = _MODULE._stable_seed
 checkpoint_decompositions = _MODULE._checkpoint_decompositions
+sha256_file = _MODULE._sha256_file
 
 
 @dataclass
@@ -36,6 +37,14 @@ class _FakeDataset:
     _episode_step: dict[int, int]
     replan_steps: int = 10
     _episode_id: dict[int, int] | None = None
+
+
+def test_audit_checkpoint_hash_covers_exact_bytes(tmp_path):
+    checkpoint = tmp_path / "weights.pt"
+    checkpoint.write_bytes(b"first")
+    first = sha256_file(checkpoint)
+    checkpoint.write_bytes(b"second")
+    assert sha256_file(checkpoint) != first
 
 
 def test_local_rope_history_sample_preserves_history_and_resets_only_positions():

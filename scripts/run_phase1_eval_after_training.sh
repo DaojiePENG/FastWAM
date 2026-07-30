@@ -74,11 +74,31 @@ while ! training_complete; do
 done
 
 log "all phase-1 checkpoints are complete; starting LIBERO-Long dev evaluation"
-if [[ "$INCLUDE_BASELINE" == "true" && ! -s "$RELEASE_CHECKPOINT" ]]; then
+if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
     printf 'FastWAM release checkpoint missing: %s\n' "$RELEASE_CHECKPOINT" >&2
     exit 2
 fi
+if [[ ! -s "$DATASET_STATS" ]]; then
+    printf 'Dataset statistics missing: %s\n' "$DATASET_STATS" >&2
+    exit 2
+fi
+RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')"
+DATASET_STATS_SHA256="$(sha256sum "$DATASET_STATS" | awk '{print $1}')"
 mkdir -p "$EVAL_ROOT/.checkpoint_validation"
+contract_args=()
+for mode in "${MODES[@]}"; do
+    contract_args+=(
+        --contract "$mode=$TRAIN_ROOT/$mode/run_contract.txt"
+    )
+done
+"$ROOT_DIR/.venv/bin/python" \
+    "$ROOT_DIR/scripts/validate_run_contract_group.py" \
+    "${contract_args[@]}" \
+    --expected-field "max_steps=$FINAL_STEP" \
+    --expected-field "release_checkpoint_sha256=$RELEASE_CHECKPOINT_SHA256" \
+    --expected-field "dataset_stats_sha256=$DATASET_STATS_SHA256" \
+    --output "$EVAL_ROOT/.checkpoint_validation/run_contract_group.json" \
+    >/dev/null
 for mode in "${MODES[@]}"; do
     run_contract_file="$TRAIN_ROOT/$mode/run_contract.txt"
     if [[ ! -s "$run_contract_file" ]]; then
@@ -110,7 +130,11 @@ for mode in "${MODES[@]}"; do
 done
 for mode in "${EVAL_MODES[@]}"; do
     log "hashing checkpoint once for result identity: mode=$mode"
-    CHECKPOINT_SHA256_BY_MODE[$mode]="$(sha256sum "${CHECKPOINT_BY_MODE[$mode]}" | awk '{print $1}')"
+    if [[ "$mode" == "fastwam_release" ]]; then
+        CHECKPOINT_SHA256_BY_MODE[$mode]="$RELEASE_CHECKPOINT_SHA256"
+    else
+        CHECKPOINT_SHA256_BY_MODE[$mode]="$(sha256sum "${CHECKPOINT_BY_MODE[$mode]}" | awk '{print $1}')"
+    fi
 done
 
 fingerprint_path() {

@@ -46,3 +46,35 @@ def test_visual_query_never_reads_action_from_its_own_block():
             mode=mode,
         )
         assert mask.tolist() == [[True, False]]
+
+
+@pytest.mark.parametrize("mode", ["interleaved", "vision_causal", "action_aggregator"])
+def test_same_block_future_video_is_invisible_to_real_and_action_queries(mode):
+    mask = build_block_causal_mask(
+        query_modalities=["video", "action", "video"],
+        query_blocks=[2, 2, 2],
+        query_is_future_video=[False, False, True],
+        key_modalities=["video", "video", "action"],
+        key_blocks=[2, 2, 2],
+        key_is_future_video=[False, True, False],
+        mode=mode,
+    )
+    # Current real V reads only the real V; current A reads real V and its own
+    # bidirectional action block; transient future V reads real/future V only.
+    assert mask.tolist() == [
+        [True, False, False],
+        [True, False, True],
+        [True, True, False],
+    ]
+
+
+def test_future_video_flags_reject_action_tokens():
+    with pytest.raises(ValueError, match="only video keys"):
+        build_block_causal_mask(
+            query_modalities=["action"],
+            query_blocks=[0],
+            key_modalities=["action"],
+            key_blocks=[0],
+            key_is_future_video=[True],
+            mode="interleaved",
+        )

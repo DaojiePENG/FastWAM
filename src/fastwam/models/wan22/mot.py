@@ -359,6 +359,7 @@ class MoT(nn.Module):
         history_kv: Optional[list[dict[str, torch.Tensor]]] = None,
         max_layers: Optional[int] = None,
         segment_attention_mask: Optional[torch.Tensor] = None,
+        segment_valid_mask: Optional[torch.Tensor] = None,
         exit_depths: Optional[Sequence[int]] = None,
         checkpoint_internal: bool = True,
     ) -> tuple[
@@ -401,7 +402,9 @@ class MoT(nn.Module):
                 )
         if segment_attention_mask is not None:
             expected = (int(tokens.shape[1]), int(tokens.shape[1]))
-            if segment_attention_mask.ndim != 2 or tuple(segment_attention_mask.shape) != expected:
+            if segment_attention_mask.ndim != 2 or tuple(
+                segment_attention_mask.shape
+            ) != expected:
                 raise ValueError(
                     "segment_attention_mask must be [segment,segment], "
                     f"got {tuple(segment_attention_mask.shape)} expected {expected}"
@@ -409,6 +412,16 @@ class MoT(nn.Module):
             segment_attention_mask = segment_attention_mask.to(
                 device=tokens.device, dtype=torch.bool
             )
+        if segment_valid_mask is not None:
+            expected = (int(tokens.shape[0]), int(tokens.shape[1]))
+            if segment_valid_mask.dtype != torch.bool or tuple(
+                segment_valid_mask.shape
+            ) != expected:
+                raise ValueError(
+                    "segment_valid_mask must be bool [batch,segment], "
+                    f"got {tuple(segment_valid_mask.shape)} expected {expected}"
+                )
+            segment_valid_mask = segment_valid_mask.to(device=tokens.device)
 
         expert = self.mixtures[expert_name]
         x = tokens
@@ -440,22 +453,43 @@ class MoT(nn.Module):
                 layer_history = history_kv[layer_idx]
                 k_all = torch.cat([layer_history["k"], k], dim=1)
                 v_all = torch.cat([layer_history["v"], v], dim=1)
-            current_mask = (
+            current_mask: torch.Tensor = (
                 segment_attention_mask
                 if segment_attention_mask is not None
                 else torch.ones(
                     (q.shape[1], q.shape[1]), dtype=torch.bool, device=q.device
                 )
             )
-            if history_kv is None:
-                attention_mask = current_mask
+            if segment_valid_mask is None:
+                if history_kv is None:
+                    attention_mask = current_mask
+                else:
+                    history_mask = torch.ones(
+                        (q.shape[1], k_all.shape[1] - q.shape[1]),
+                        dtype=torch.bool,
+                        device=q.device,
+                    )
+                    attention_mask = torch.cat([history_mask, current_mask], dim=1)
             else:
-                history_mask = torch.ones(
-                    (q.shape[1], k_all.shape[1] - q.shape[1]),
-                    dtype=torch.bool,
-                    device=q.device,
+                query_valid = segment_valid_mask
+                current_mask = (
+                    current_mask.unsqueeze(0)
+                    & query_valid.unsqueeze(2)
+                    & query_valid.unsqueeze(1)
                 )
-                attention_mask = torch.cat([history_mask, current_mask], dim=1)
+                invalid_self = (~query_valid).unsqueeze(2) & torch.eye(
+                    q.shape[1], dtype=torch.bool, device=q.device
+                ).unsqueeze(0)
+                current_mask = current_mask | invalid_self
+                if history_kv is None:
+                    attention_mask = current_mask
+                else:
+                    history_mask = query_valid.unsqueeze(2).expand(
+                        -1,
+                        -1,
+                        k_all.shape[1] - q.shape[1],
+                    )
+                    attention_mask = torch.cat([history_mask, current_mask], dim=2)
             mixed = self._mixed_attention(
                 q_cat=q,
                 k_cat=k_all,
@@ -496,6 +530,7 @@ class MoT(nn.Module):
         history_kv: list[dict[str, torch.Tensor]],
         max_layers: Optional[int] = None,
         exit_depths: Optional[Sequence[int]] = None,
+        action_valid_mask: Optional[torch.Tensor] = None,
         checkpoint_internal: bool = True,
     ) -> torch.Tensor | dict[int, torch.Tensor]:
         """Denoise a transient action block against persistent mixed history."""
@@ -511,6 +546,16 @@ class MoT(nn.Module):
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
             )
+        if action_valid_mask is not None:
+            expected = (int(action_tokens.shape[0]), int(action_tokens.shape[1]))
+            if action_valid_mask.dtype != torch.bool or tuple(
+                action_valid_mask.shape
+            ) != expected:
+                raise ValueError(
+                    "action_valid_mask must be bool [batch,action], "
+                    f"got {tuple(action_valid_mask.shape)} expected {expected}"
+                )
+            action_valid_mask = action_valid_mask.to(device=action_tokens.device)
         requested_exits: set[int] | None = None
         if exit_depths is not None:
             requested_exits = {int(depth) for depth in exit_depths}
@@ -549,11 +594,29 @@ class MoT(nn.Module):
             layer_history = history_kv[layer_idx]
             k_all = torch.cat([layer_history["k"], k_action], dim=1)
             v_all = torch.cat([layer_history["v"], v_action], dim=1)
-            attention_mask = torch.ones(
-                (q_action.shape[1], k_all.shape[1]),
-                dtype=torch.bool,
-                device=q_action.device,
-            )
+            if action_valid_mask is None:
+                attention_mask = torch.ones(
+                    (q_action.shape[1], k_all.shape[1]),
+                    dtype=torch.bool,
+                    device=q_action.device,
+                )
+            else:
+                history_length = k_all.shape[1] - q_action.shape[1]
+                query_valid = action_valid_mask
+                history_mask = query_valid.unsqueeze(2).expand(
+                    -1, -1, history_length
+                )
+                current_mask = (
+                    query_valid.unsqueeze(2) & query_valid.unsqueeze(1)
+                )
+                invalid_self = (~query_valid).unsqueeze(2) & torch.eye(
+                    q_action.shape[1],
+                    dtype=torch.bool,
+                    device=q_action.device,
+                ).unsqueeze(0)
+                attention_mask = torch.cat(
+                    [history_mask, current_mask | invalid_self], dim=2
+                )
             mixed = self._mixed_attention(
                 q_cat=q_action,
                 k_cat=k_all,
