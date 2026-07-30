@@ -34,6 +34,7 @@ def create_leapbot(
     exit_depths=(8, 16, 24, 30),
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
+    history_training_mode: str = "packed_full_bptt",
     training_strategy: str = "full_dit",
     video_lora=None,
     model_dtype: torch.dtype = torch.bfloat16,
@@ -98,5 +99,6 @@ def create_leapbot(
     model.configure_causal_training(
         causal_mode=str(causal_mode),
         training_exit_depths=tuple(int(depth) for depth in training_exit_depths),
+        history_training_mode=str(history_training_mode),
     )
     return model

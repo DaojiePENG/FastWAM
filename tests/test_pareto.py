@@ -52,7 +52,15 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
                             "observation_prefill_s": 0.1,
                             "action_denoise_s": 0.4,
                         },
-                        "commit": {"commit_s": 0.05},
+                        "memory": {
+                            "completed_blocks": 4,
+                            "cache_bytes": 2**29,
+                        },
+                        "commit": {
+                            "commit_s": 0.05,
+                            "completed_blocks": 5,
+                            "cache_bytes": 3 * 2**28,
+                        },
                     }
                 ],
             }
@@ -74,6 +82,13 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert task_row["task_id"] == 3
     assert task_row["success_rate"] == 0.5
     assert task_row["mean_completion_steps"] == 150
+
+    history_row = pareto.aggregate_by_history([path])[0]
+    assert history_row["history_blocks_before_replan"] == 4
+    assert history_row["samples"] == 1
+    assert history_row["p50_cache_after_observation_gib"] == 0.5
+    assert history_row["p50_cache_after_commit_gib"] == 0.75
+    assert history_row["p50_total_replan_s"] == 0.55
 
 
 def test_optional_percentile_is_none_when_metric_is_unavailable():

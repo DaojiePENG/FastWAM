@@ -172,6 +172,109 @@ def aggregate_per_task(paths: list[Path]) -> list[dict]:
     return sorted(rows, key=lambda row: (row["config"], row["task_id"]))
 
 
+def aggregate_by_history(paths: list[Path]) -> list[dict]:
+    """Aggregate cache growth and latency against retained history length."""
+    groups = defaultdict(
+        lambda: {
+            "samples": 0,
+            "cache_after_observation": [],
+            "cache_after_commit": [],
+            "observation_prefill": [],
+            "action_denoise": [],
+            "action_commit": [],
+            "total_replan": [],
+        }
+    )
+    for path in paths:
+        payload = json.loads(path.read_text())
+        key = config_key(payload, path)
+        for episode in payload.get("memory_metrics", []):
+            for replan in episode.get("replans", []):
+                memory = replan.get("memory", {})
+                if "completed_blocks" not in memory:
+                    continue
+                history_blocks = int(memory["completed_blocks"])
+                group = groups[(key, history_blocks)]
+                group["samples"] += 1
+                if "cache_bytes" in memory:
+                    group["cache_after_observation"].append(float(memory["cache_bytes"]))
+
+                timing = replan.get("timing", {})
+                commit = replan.get("commit", {})
+                if "cache_bytes" in commit:
+                    group["cache_after_commit"].append(float(commit["cache_bytes"]))
+                if "observation_prefill_s" in timing:
+                    group["observation_prefill"].append(
+                        float(timing["observation_prefill_s"])
+                    )
+                if "action_denoise_s" in timing:
+                    group["action_denoise"].append(float(timing["action_denoise_s"]))
+                if "commit_s" in commit:
+                    group["action_commit"].append(float(commit["commit_s"]))
+                total = float(
+                    timing.get(
+                        "total_inference_s",
+                        float(timing.get("observation_prefill_s", 0))
+                        + float(timing.get("action_denoise_s", 0)),
+                    )
+                ) + float(commit.get("commit_s", 0))
+                group["total_replan"].append(total)
+
+    def cache_percentile(values: list[float], q: float) -> float | None:
+        value = optional_percentile(values, q)
+        return None if value is None else value / 2**30
+
+    rows = []
+    for (key, history_blocks), values in groups.items():
+        rows.append(
+            {
+                "config": key,
+                "history_blocks_before_replan": history_blocks,
+                "samples": values["samples"],
+                "p50_cache_after_observation_gib": cache_percentile(
+                    values["cache_after_observation"], 0.50
+                ),
+                "p95_cache_after_observation_gib": cache_percentile(
+                    values["cache_after_observation"], 0.95
+                ),
+                "p50_cache_after_commit_gib": cache_percentile(
+                    values["cache_after_commit"], 0.50
+                ),
+                "p95_cache_after_commit_gib": cache_percentile(
+                    values["cache_after_commit"], 0.95
+                ),
+                "p50_observation_prefill_s": optional_percentile(
+                    values["observation_prefill"], 0.50
+                ),
+                "p95_observation_prefill_s": optional_percentile(
+                    values["observation_prefill"], 0.95
+                ),
+                "p50_action_denoise_s": optional_percentile(
+                    values["action_denoise"], 0.50
+                ),
+                "p95_action_denoise_s": optional_percentile(
+                    values["action_denoise"], 0.95
+                ),
+                "p50_action_commit_s": optional_percentile(
+                    values["action_commit"], 0.50
+                ),
+                "p95_action_commit_s": optional_percentile(
+                    values["action_commit"], 0.95
+                ),
+                "p50_total_replan_s": optional_percentile(
+                    values["total_replan"], 0.50
+                ),
+                "p95_total_replan_s": optional_percentile(
+                    values["total_replan"], 0.95
+                ),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (row["config"], row["history_blocks_before_replan"]),
+    )
+
+
 def validate_inputs(
     paths: list[Path],
     expected_tasks: int | None = None,
@@ -328,6 +431,7 @@ def main() -> None:
     )
     rows = aggregate(paths)
     per_task_rows = aggregate_per_task(paths)
+    history_rows = aggregate_by_history(paths)
     frontier = non_dominated(rows)
     default = choose_default(rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -342,6 +446,17 @@ def main() -> None:
         )
         writer.writeheader()
         writer.writerows(per_task_rows)
+    with (args.output_dir / "history_profile.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=(
+                list(history_rows[0])
+                if history_rows
+                else ["config", "history_blocks_before_replan"]
+            ),
+        )
+        writer.writeheader()
+        writer.writerows(history_rows)
     (args.output_dir / "pareto.json").write_text(
         json.dumps({"default": default, "frontier": frontier, "all": rows}, indent=2)
     )

@@ -12,10 +12,11 @@ seed: 42
 data:
   train:
     _target_: leapbot_va.data.LeapRobotVideoDataset
-    max_history_blocks: 8
+    max_history_blocks: 70
     min_history_blocks: 0
     replan_steps: 10
     history_seed: ${seed}
+    full_episode_history: true
     # Reuse release normalization statistics; the historical window does not
     # recompute them. Override on the CLI for a local checkpoint directory.
     pretrained_norm_stats: ${oc.env:LEAPBOT_DATASET_STATS,null}
@@ -39,6 +40,8 @@ weight_decay: 1.0e-2
 resume: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
 
 # Reproducible phase presets (Hydra CLI examples):
-# phase 1: model.causal_mode={interleaved,vision_causal,action_aggregator}
-# phase 2: data.train.max_history_blocks=16
+# causal comparison: model.causal_mode={interleaved,vision_causal,action_aggregator}
+# short-history packed training is retained only as an explicit ablation:
+# data.train.full_episode_history=false data.train.max_history_blocks=8
+# model.history_training_mode=packed_full_bptt
 # phase 3: model.training_exit_depths=[8,16,24,30]

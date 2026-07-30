@@ -64,6 +64,7 @@ class LeapBotVA(FastWAM):
         self.causal_mode = "interleaved"
         self.training_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
+        self.history_training_mode = "packed_full_bptt"
         self.video_lora_config = VideoLoRAConfig()
         self.video_lora_merged = False
 
@@ -151,6 +152,7 @@ class LeapBotVA(FastWAM):
         *,
         causal_mode: str = "interleaved",
         training_exit_depths: Sequence[int] = (30,),
+        history_training_mode: str = "packed_full_bptt",
     ) -> None:
         if causal_mode not in VALID_CAUSAL_MODES:
             raise ValueError(f"unsupported causal mode: {causal_mode}")
@@ -163,12 +165,24 @@ class LeapBotVA(FastWAM):
             )
         self.causal_mode = causal_mode
         self.training_exit_depths = depths
+        valid_history_modes = {"packed_full_bptt", "incremental_detached_prefix"}
+        if history_training_mode not in valid_history_modes:
+            raise ValueError(
+                "history_training_mode must be one of "
+                f"{sorted(valid_history_modes)}, got {history_training_mode}"
+            )
+        self.history_training_mode = history_training_mode
 
     def training_loss(self, sample, tiled: bool = False):
         if "history_video" not in sample:
             return super().training_loss(sample, tiled=tiled)
-        from leapbot_va.training import causal_history_training_loss
+        from leapbot_va.training import (
+            causal_history_training_loss,
+            incremental_detached_prefix_training_loss,
+        )
 
+        if self.history_training_mode == "incremental_detached_prefix":
+            return incremental_detached_prefix_training_loss(self, sample, tiled=tiled)
         return causal_history_training_loss(self, sample, tiled=tiled)
 
     def auxiliary_trainable_modules(self) -> tuple[nn.Module, ...]:
@@ -543,6 +557,7 @@ class LeapBotVA(FastWAM):
             "training_exit_depths": self.training_exit_depths,
             "causal_mode": self.causal_mode,
             "training_strategy": self.training_strategy,
+            "history_training_mode": self.history_training_mode,
             "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
             "torch_dtype": str(self.torch_dtype),
@@ -555,6 +570,24 @@ class LeapBotVA(FastWAM):
 
     def load_checkpoint(self, path, optimizer=None):
         payload = super().load_checkpoint(path, optimizer=optimizer)
+        checkpoint_causal_mode = payload.get("causal_mode")
+        if (
+            checkpoint_causal_mode is not None
+            and str(checkpoint_causal_mode) != self.causal_mode
+        ):
+            raise ValueError(
+                "checkpoint/model causal mode mismatch: "
+                f"checkpoint={checkpoint_causal_mode} model={self.causal_mode}"
+            )
+        checkpoint_history_mode = payload.get("history_training_mode")
+        if (
+            checkpoint_history_mode is not None
+            and str(checkpoint_history_mode) != self.history_training_mode
+        ):
+            raise ValueError(
+                "checkpoint/model history training mode mismatch: "
+                f"checkpoint={checkpoint_history_mode} model={self.history_training_mode}"
+            )
         checkpoint_lora = payload.get("video_lora_config")
         if checkpoint_lora is not None:
             checkpoint_lora_enabled = bool(checkpoint_lora.get("enabled", False))

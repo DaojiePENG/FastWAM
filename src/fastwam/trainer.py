@@ -741,10 +741,16 @@ class Wan22Trainer:
                     )
                     global_loss_metrics = {}
                     for key, value in loss_dict.items():
-                        metric_tensor = torch.tensor(float(value), device=loss.device, dtype=torch.float32).reshape(1)
-                        global_loss_metrics[key] = float(
-                            self.accelerator.gather(metric_tensor).mean().item()
+                        metric_tensor = torch.tensor(
+                            float(value), device=loss.device, dtype=torch.float32
+                        ).reshape(1)
+                        gathered_metric = self.accelerator.gather(metric_tensor)
+                        reduced_metric = (
+                            gathered_metric.max()
+                            if key.endswith("_max")
+                            else gathered_metric.mean()
                         )
+                        global_loss_metrics[key] = float(reduced_metric.item())
                     ema_inputs = {"loss": global_loss, **global_loss_metrics}
                     for key, value in ema_inputs.items():
                         previous = self.metric_ema.get(key, value)

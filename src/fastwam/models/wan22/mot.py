@@ -352,6 +352,7 @@ class MoT(nn.Module):
         context_payload: Optional[dict],
         history_kv: Optional[list[dict[str, torch.Tensor]]] = None,
         max_layers: Optional[int] = None,
+        segment_attention_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
         """Incrementally encode one clean segment and return its layer-wise KV.
 
@@ -374,6 +375,16 @@ class MoT(nn.Module):
         if history_kv is not None and len(history_kv) < max_layers:
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
+            )
+        if segment_attention_mask is not None:
+            expected = (int(tokens.shape[1]), int(tokens.shape[1]))
+            if segment_attention_mask.ndim != 2 or tuple(segment_attention_mask.shape) != expected:
+                raise ValueError(
+                    "segment_attention_mask must be [segment,segment], "
+                    f"got {tuple(segment_attention_mask.shape)} expected {expected}"
+                )
+            segment_attention_mask = segment_attention_mask.to(
+                device=tokens.device, dtype=torch.bool
             )
 
         expert = self.mixtures[expert_name]
@@ -405,11 +416,22 @@ class MoT(nn.Module):
                 layer_history = history_kv[layer_idx]
                 k_all = torch.cat([layer_history["k"], k], dim=1)
                 v_all = torch.cat([layer_history["v"], v], dim=1)
-            attention_mask = torch.ones(
-                (q.shape[1], k_all.shape[1]),
-                dtype=torch.bool,
-                device=q.device,
+            current_mask = (
+                segment_attention_mask
+                if segment_attention_mask is not None
+                else torch.ones(
+                    (q.shape[1], q.shape[1]), dtype=torch.bool, device=q.device
+                )
             )
+            if history_kv is None:
+                attention_mask = current_mask
+            else:
+                history_mask = torch.ones(
+                    (q.shape[1], k_all.shape[1] - q.shape[1]),
+                    dtype=torch.bool,
+                    device=q.device,
+                )
+                attention_mask = torch.cat([history_mask, current_mask], dim=1)
             mixed = self._mixed_attention(
                 q_cat=q,
                 k_cat=k_all,

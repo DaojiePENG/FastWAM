@@ -12,6 +12,8 @@ GPU_IDS_CSV="${GPU_IDS_CSV:-6,7}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-true}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-true}"
+MEMORY_ENABLED="${MEMORY_ENABLED:-true}"
+MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 CHECKPOINT="$TRAIN_ROOT/$MODE/checkpoints/weights/$FINAL_STEP_TAG.pt"
 
@@ -68,14 +70,16 @@ run_task() {
         "EVALUATION.num_trials=$NUM_TRIALS" \
         EVALUATION.num_inference_steps=10 \
         EVALUATION.replan_steps=10 \
+        EVALUATION.save_rollout_video=false \
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \
         "EVALUATION.output_dir=$output_dir" \
         "model.causal_mode=$MODE" \
         "model.video_lora.enabled=$VIDEO_LORA_ENABLED" \
         "EVALUATION.merge_video_lora=$MERGE_VIDEO_LORA" \
+        "EVALUATION.memory.enabled=$MEMORY_ENABLED" \
         "EVALUATION.memory.causal_mode=$MODE" \
         EVALUATION.memory.exit_depth=30 \
-        EVALUATION.memory.max_history_blocks=70 \
+        "EVALUATION.memory.max_history_blocks=$MAX_HISTORY_BLOCKS" \
         >"$log_file" 2>&1; then
         log "done mode=$MODE step=$FINAL_STEP task=$task_id gpu=$gpu"
     else

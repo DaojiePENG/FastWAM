@@ -16,6 +16,33 @@ from fastwam.datasets.lerobot.robot_video_dataset import RobotVideoDataset
 from leapbot_va.training import history_window_indices
 
 
+def full_episode_sparse_offsets(
+    *,
+    max_history_blocks: int,
+    replan_steps: int,
+    current_action_horizon: int,
+    current_video_offsets: list[int],
+) -> tuple[list[int], list[int]]:
+    """Return sparse observation and dense-action offsets for a full prefix.
+
+    Historical images/proprio are needed only at replanning boundaries, while
+    every historical executed action is required.  Keeping those schedules
+    separate avoids decoding hundreds of unused intermediate video frames.
+    """
+
+    if max_history_blocks <= 0 or replan_steps <= 0 or current_action_horizon <= 0:
+        raise ValueError("history/replan/horizon sizes must be positive")
+    if not current_video_offsets or current_video_offsets[0] != 0:
+        raise ValueError("current_video_offsets must start at zero")
+    if current_video_offsets != sorted(set(current_video_offsets)):
+        raise ValueError("current_video_offsets must be sorted and unique")
+    history_steps = max_history_blocks * replan_steps
+    observation_offsets = list(range(-history_steps, 0, replan_steps))
+    observation_offsets.extend(int(value) for value in current_video_offsets)
+    action_offsets = list(range(-history_steps, current_action_horizon))
+    return observation_offsets, action_offsets
+
+
 class LeapRobotVideoDataset(RobotVideoDataset):
     """Return a fixed-size causal prefix plus the original FastWAM target.
 
@@ -48,6 +75,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         min_history_blocks: int = 0,
         replan_steps: int = 10,
         history_seed: int = 42,
+        full_episode_history: bool = False,
     ):
         if max_history_blocks < 0:
             raise ValueError("max_history_blocks must be non-negative")
@@ -85,23 +113,43 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         self.min_history_blocks = int(min_history_blocks)
         self.replan_steps = int(replan_steps)
         self.history_seed = int(history_seed)
+        self.full_episode_history = bool(full_episode_history)
         self.history_action_steps = self.max_history_blocks * self.replan_steps
         self.window_frames = self.history_action_steps + int(num_frames)
 
         resolved_shape_meta = OmegaConf.to_container(shape_meta, resolve=True)
-        self.lerobot_dataset = BaseLerobotDataset(
-            dataset_dirs=dataset_dirs,
-            shape_meta=resolved_shape_meta,
-            obs_size=self.window_frames,
-            action_size=self.window_frames - 1,
-            past_obs_size=self.history_action_steps,
-            past_action_size=self.history_action_steps,
-            val_set_proportion=val_set_proportion,
-            is_training_set=is_training_set,
-            global_sample_stride=global_sample_stride,
-            seed=history_seed,
-        )
-        prepared_processor.num_obs_steps = self.window_frames
+        if self.full_episode_history:
+            observation_offsets, action_offsets = full_episode_sparse_offsets(
+                max_history_blocks=self.max_history_blocks,
+                replan_steps=self.replan_steps,
+                current_action_horizon=int(num_frames) - 1,
+                current_video_offsets=list(self.video_sample_indices),
+            )
+            self.lerobot_dataset = BaseLerobotDataset(
+                dataset_dirs=dataset_dirs,
+                shape_meta=resolved_shape_meta,
+                observation_offsets=observation_offsets,
+                action_offsets=action_offsets,
+                val_set_proportion=val_set_proportion,
+                is_training_set=is_training_set,
+                global_sample_stride=global_sample_stride,
+                seed=history_seed,
+            )
+            prepared_processor.num_obs_steps = len(observation_offsets)
+        else:
+            self.lerobot_dataset = BaseLerobotDataset(
+                dataset_dirs=dataset_dirs,
+                shape_meta=resolved_shape_meta,
+                obs_size=self.window_frames,
+                action_size=self.window_frames - 1,
+                past_obs_size=self.history_action_steps,
+                past_action_size=self.history_action_steps,
+                val_set_proportion=val_set_proportion,
+                is_training_set=is_training_set,
+                global_sample_stride=global_sample_stride,
+                seed=history_seed,
+            )
+            prepared_processor.num_obs_steps = self.window_frames
         self.lerobot_dataset._set_return_images(True)
         self.lerobot_dataset.set_processor(prepared_processor)
 
@@ -122,6 +170,13 @@ class LeapRobotVideoDataset(RobotVideoDataset):
 
     def _choose_history_blocks(self, sample_index: int) -> int:
         current_block = self._episode_step[sample_index] // self.replan_steps
+        if self.full_episode_history:
+            if current_block > self.max_history_blocks:
+                raise ValueError(
+                    "episode prefix exceeds configured history capacity: "
+                    f"{current_block}>{self.max_history_blocks}"
+                )
+            return current_block
         upper = min(self.max_history_blocks, current_block)
         lower = min(self.min_history_blocks, upper)
         # numpy's worker seeding keeps this reproducible across dataloader runs.
@@ -164,18 +219,36 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         sample = self.lerobot_dataset[mapped_idx]
         history_blocks = self._choose_history_blocks(mapped_idx)
         current_block = self._episode_step[mapped_idx] // self.replan_steps
-        offset = self.history_action_steps
-
-        current_indices = [offset + value for value in self.video_sample_indices]
+        if self.full_episode_history:
+            observation_history_slots = self.max_history_blocks
+            current_indices = list(
+                range(
+                    observation_history_slots,
+                    observation_history_slots + len(self.video_sample_indices),
+                )
+            )
+        else:
+            offset = self.history_action_steps
+            current_indices = [offset + value for value in self.video_sample_indices]
         video = self._format_camera_video(sample["pixel_values"], current_indices)
         current_image_is_pad = sample["image_is_pad"][current_indices]
 
-        history_indices, history_action_slice, absolute_history_positions = history_window_indices(
-            current_episode_step=self._episode_step[mapped_idx],
-            history_blocks=history_blocks,
-            replan_steps=self.replan_steps,
-            current_window_offset=offset,
-        )
+        if self.full_episode_history:
+            history_start = self.max_history_blocks - history_blocks
+            history_indices = list(range(history_start, self.max_history_blocks))
+            history_action_end = self.history_action_steps
+            history_action_slice = slice(
+                history_action_end - history_blocks * self.replan_steps,
+                history_action_end,
+            )
+            absolute_history_positions = list(range(history_blocks))
+        else:
+            history_indices, history_action_slice, absolute_history_positions = history_window_indices(
+                current_episode_step=self._episode_step[mapped_idx],
+                history_blocks=history_blocks,
+                replan_steps=self.replan_steps,
+                current_window_offset=offset,
+            )
         channels, _, height, width = video.shape
         history_video = torch.zeros(
             (channels, self.max_history_blocks, height, width), dtype=video.dtype
@@ -206,10 +279,21 @@ class LeapRobotVideoDataset(RobotVideoDataset):
                 absolute_history_positions, dtype=torch.long
             )
 
-        action_end = offset + self.num_frames - 1
-        action = sample["action"][offset:action_end]
-        action_is_pad = sample["action_is_pad"][offset:action_end]
-        proprio = sample["proprio"][offset:action_end]
+        action_start = self.history_action_steps
+        action_end = action_start + self.num_frames - 1
+        action = sample["action"][action_start:action_end]
+        action_is_pad = sample["action_is_pad"][action_start:action_end]
+        if self.full_episode_history:
+            # Only the current proprio is consumed by LeapBot training.  Keep
+            # the public FastWAM-shaped field aligned with the action horizon.
+            current_proprio = sample["proprio"][self.max_history_blocks]
+            proprio = current_proprio.unsqueeze(0).expand(self.num_frames - 1, -1).clone()
+            proprio_is_pad = torch.zeros(
+                self.num_frames - 1, dtype=torch.bool, device=proprio.device
+            )
+        else:
+            proprio = sample["proprio"][action_start:action_end]
+            proprio_is_pad = sample["proprio_is_pad"][action_start:action_end]
 
         task = self.override_instruction or sample["instruction"]
         from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
@@ -227,7 +311,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "context_mask": context_mask,
             "image_is_pad": current_image_is_pad,
             "action_is_pad": action_is_pad,
-            "proprio_is_pad": sample["proprio_is_pad"][offset:action_end],
+            "proprio_is_pad": proprio_is_pad,
             "history_video": history_video,
             "history_action": history_action,
             "history_proprio": history_proprio,
@@ -235,4 +319,5 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "history_block_positions": history_positions,
             "current_block_position": torch.tensor(current_block, dtype=torch.long),
             "episode_step": torch.tensor(self._episode_step[mapped_idx], dtype=torch.long),
+            "full_episode_history": torch.tensor(self.full_episode_history, dtype=torch.bool),
         }

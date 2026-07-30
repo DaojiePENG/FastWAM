@@ -3,8 +3,11 @@ import torch
 from leapbot_va.training import (
     build_packed_history_attention_mask,
     build_query_context_masks,
+    current_video_frame_positions,
+    current_video_segment_attention_mask,
     history_window_indices,
 )
+from leapbot_va.data import full_episode_sparse_offsets
 
 
 def _indices():
@@ -93,3 +96,46 @@ def test_history_window_is_aligned_and_cannot_cross_episode():
             replan_steps=10,
             current_window_offset=80,
         )
+
+
+def test_incremental_current_real_frame_cannot_read_future_supervision():
+    mask = current_video_segment_attention_mask(
+        tokens_per_frame=2,
+        num_frames=3,
+        device=torch.device("cpu"),
+    )
+    assert mask[:2, :2].all()
+    assert not mask[:2, 2:].any()
+    assert mask[2:, :].all()
+
+
+def test_current_video_positions_anchor_real_frame_and_keep_relative_time():
+    positions = current_video_frame_positions(
+        torch.tensor([0, 17, 69]), num_frames=4
+    )
+    assert positions.tolist() == [
+        [0, 1, 2, 3],
+        [17, 18, 19, 20],
+        [69, 70, 71, 72],
+    ]
+    # The persistent real frame stays at the absolute replanning position;
+    # transient future supervision preserves native FastWAM unit spacing.
+    assert torch.equal(positions[:, 0], torch.tensor([0, 17, 69]))
+    assert torch.equal(
+        positions[:, 1:] - positions[:, :-1], torch.ones(3, 3, dtype=torch.long)
+    )
+
+
+def test_full_episode_offsets_decode_only_replan_observations():
+    observations, actions = full_episode_sparse_offsets(
+        max_history_blocks=70,
+        replan_steps=10,
+        current_action_horizon=32,
+        current_video_offsets=[0, 4, 8, 12, 16, 20, 24, 28, 32],
+    )
+    assert len(observations) == 79
+    assert observations[:3] == [-700, -690, -680]
+    assert observations[69:72] == [-10, 0, 4]
+    assert len(actions) == 732
+    assert actions[0] == -700
+    assert actions[-1] == 31

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterable
 
 import torch
 import torch.nn.functional as F
@@ -186,6 +186,34 @@ def build_query_context_masks(
     return make(video_block), make(action_block)
 
 
+def current_video_frame_positions(
+    current_block_positions: torch.Tensor,
+    *,
+    num_frames: int,
+) -> torch.Tensor:
+    """Preserve FastWAM's relative video time while anchoring the real frame.
+
+    The first frame is the only persistent observation and therefore uses the
+    episode's absolute replanning index.  Future frames are transient training
+    supervision, but still need distinct consecutive temporal RoPE positions
+    so the release video head sees the same relative geometry as native
+    FastWAM.  None of these future-frame K/V tensors is committed to memory.
+    """
+
+    if current_block_positions.ndim != 1:
+        raise ValueError("current_block_positions must be [B]")
+    if num_frames <= 0:
+        raise ValueError("num_frames must be positive")
+    if bool((current_block_positions < 0).any().item()):
+        raise ValueError("current block positions must be non-negative")
+    offsets = torch.arange(
+        num_frames,
+        device=current_block_positions.device,
+        dtype=current_block_positions.dtype,
+    )
+    return current_block_positions[:, None] + offsets[None, :]
+
+
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
     """Original video/action flow matching over a clean real-history prefix."""
 
@@ -193,12 +221,21 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     current_latents = inputs["input_latents"]
     action = inputs["action"]
     batch = current_latents.shape[0]
-    history_valid = sample["history_valid_blocks"].to(model.device, dtype=torch.bool)
-    max_history = int(history_valid.shape[1])
+    configured_history_valid = sample["history_valid_blocks"].to(
+        model.device, dtype=torch.bool
+    )
+    history_counts = configured_history_valid.sum(dim=1)
+    max_history = int(history_counts.max().item())
+    # Capacity is a runtime upper bound, not a reason to execute padded tokens.
+    # Cropping only a suffix that is invalid for every sample preserves every
+    # real episode-prefix block while making full BPTT practical on H800s.
+    history_valid = configured_history_valid[:, :max_history]
     replan_steps = int(sample["history_action"].shape[2])
     action_horizon = int(action.shape[1])
 
-    history_video = sample["history_video"].to(model.device, dtype=model.torch_dtype)
+    history_video = sample["history_video"][:, :, :max_history].to(
+        model.device, dtype=model.torch_dtype
+    )
     history_latents = []
     for block_index in range(max_history):
         history_latents.append(
@@ -223,8 +260,12 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     noisy_current[:, :, 0:1] = current_latents[:, :, 0:1]
     packed_video = torch.cat([history_latents, noisy_current], dim=2)
 
-    history_action = sample["history_action"].to(model.device, dtype=model.torch_dtype)
-    history_action = history_action.reshape(batch, max_history * replan_steps, -1)
+    history_action = sample["history_action"][:, :max_history].to(
+        model.device, dtype=model.torch_dtype
+    )
+    history_action = history_action.reshape(
+        batch, max_history * replan_steps, int(action.shape[-1])
+    )
     noise_action = torch.randn_like(action)
     timestep_action = model.train_action_scheduler.sample_training_t(
         batch, model.device, action.dtype
@@ -237,7 +278,9 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     context_mask = inputs["context_mask"]
     if model.proprio_encoder is None:
         raise ValueError("causal history training requires proprio_encoder")
-    history_proprio = sample["history_proprio"].to(model.device, dtype=model.torch_dtype)
+    history_proprio = sample["history_proprio"][:, :max_history].to(
+        model.device, dtype=model.torch_dtype
+    )
     current_proprio = sample["proprio"][:, 0:1].to(model.device, dtype=model.torch_dtype)
     proprio_tokens = model.proprio_encoder(torch.cat([history_proprio, current_proprio], dim=1))
     packed_context = torch.cat([context, proprio_tokens.to(context.dtype)], dim=1)
@@ -249,11 +292,21 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         dim=1,
     )
 
-    history_positions = sample["history_block_positions"].to(model.device).clamp_min(0)
+    history_positions = (
+        sample["history_block_positions"][:, :max_history]
+        .to(model.device)
+        .clamp_min(0)
+    )
     current_block = sample["current_block_position"].to(model.device).view(batch, 1)
     current_video_frames = int(current_latents.shape[2])
     frame_positions = torch.cat(
-        [history_positions, current_block.expand(-1, current_video_frames)], dim=1
+        [
+            history_positions,
+            current_video_frame_positions(
+                current_block[:, 0], num_frames=current_video_frames
+            ),
+        ],
+        dim=1,
     )
     frame_timesteps = torch.cat(
         [
@@ -275,9 +328,12 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     )
 
     history_action_positions = (
-        sample["history_block_positions"].to(model.device).unsqueeze(-1) * replan_steps
+        sample["history_block_positions"][:, :max_history]
+        .to(model.device)
+        .unsqueeze(-1)
+        * replan_steps
         + torch.arange(replan_steps, device=model.device).view(1, 1, -1)
-    ).clamp_min(0).reshape(batch, -1)
+    ).clamp_min(0).reshape(batch, max_history * replan_steps)
     episode_step = sample["episode_step"].to(model.device).view(batch, 1)
     current_action_positions = episode_step + torch.arange(action_horizon, device=model.device)
     action_positions = torch.cat([history_action_positions, current_action_positions], dim=1)
@@ -384,7 +440,467 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     for depth, (_, video_loss, action_loss) in losses.items():
         metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(video_loss.detach())
         metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(action_loss.detach())
-    metrics["history_blocks_mean"] = float(
-        history_valid.sum(dim=1).float().mean().detach()
-    )
+    metrics["history_blocks_mean"] = float(history_counts.float().mean().detach())
+    metrics["history_blocks_max"] = float(history_counts.max().detach())
     return total, metrics
+
+
+def _materialize_incremental_segments(
+    segments: Iterable[dict[str, Any]],
+    *,
+    modalities: set[str] | None = None,
+) -> list[dict[str, torch.Tensor]] | None:
+    selected = [
+        segment
+        for segment in segments
+        if modalities is None or str(segment["modality"]) in modalities
+    ]
+    if not selected:
+        return None
+    num_layers = len(selected[0]["kv"])
+    if any(len(segment["kv"]) != num_layers for segment in selected):
+        raise ValueError("incremental prefix segments have inconsistent depth")
+    return [
+        {
+            "k": torch.cat([segment["kv"][layer]["k"] for segment in selected], dim=1),
+            "v": torch.cat([segment["kv"][layer]["v"] for segment in selected], dim=1),
+        }
+        for layer in range(num_layers)
+    ]
+
+
+def _materialize_incremental_batch(
+    sample_segments: list[list[dict[str, Any]]],
+    sample_indices: torch.Tensor,
+    *,
+    modalities: set[str] | None = None,
+) -> list[dict[str, torch.Tensor]] | None:
+    """Stack equal-length per-sample prefixes into one attention batch."""
+
+    individual = [
+        _materialize_incremental_segments(
+            sample_segments[int(index)], modalities=modalities
+        )
+        for index in sample_indices.tolist()
+    ]
+    if all(prefix is None for prefix in individual):
+        return None
+    if any(prefix is None for prefix in individual):
+        raise ValueError("batched prefixes must be uniformly empty or populated")
+    populated = [prefix for prefix in individual if prefix is not None]
+    num_layers = len(populated[0])
+    if any(len(prefix) != num_layers for prefix in populated):
+        raise ValueError("batched prefixes have inconsistent depth")
+    result = []
+    for layer in range(num_layers):
+        sequence_lengths = {int(prefix[layer]["k"].shape[1]) for prefix in populated}
+        if len(sequence_lengths) != 1:
+            raise ValueError(
+                "samples grouped for incremental attention have unequal prefix lengths"
+            )
+        result.append(
+            {
+                "k": torch.cat([prefix[layer]["k"] for prefix in populated], dim=0),
+                "v": torch.cat([prefix[layer]["v"] for prefix in populated], dim=0),
+            }
+        )
+    return result
+
+
+def _video_prefix_batch_for_mode(
+    sample_segments: list[list[dict[str, Any]]],
+    sample_indices: torch.Tensor,
+    causal_mode: str,
+) -> list[dict[str, torch.Tensor]] | None:
+    if causal_mode == "interleaved":
+        return _materialize_incremental_batch(sample_segments, sample_indices)
+    if causal_mode == "vision_causal":
+        return _materialize_incremental_batch(
+            sample_segments, sample_indices, modalities={"video"}
+        )
+    if causal_mode == "action_aggregator":
+        return None
+    raise ValueError(f"unsupported causal mode: {causal_mode}")
+
+
+def _video_prefix_for_mode(
+    segments: list[dict[str, Any]], causal_mode: str
+) -> list[dict[str, torch.Tensor]] | None:
+    if causal_mode == "interleaved":
+        return _materialize_incremental_segments(segments)
+    if causal_mode == "vision_causal":
+        return _materialize_incremental_segments(segments, modalities={"video"})
+    if causal_mode == "action_aggregator":
+        return None
+    raise ValueError(f"unsupported causal mode: {causal_mode}")
+
+
+def _context_for_proprio(
+    model: "LeapBotVA",
+    context: torch.Tensor,
+    context_mask: torch.Tensor,
+    proprio: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return model._append_proprio_to_context(
+        context=context,
+        context_mask=context_mask,
+        proprio=proprio.to(device=model.device, dtype=model.torch_dtype),
+    )
+
+
+def current_video_segment_attention_mask(
+    *, tokens_per_frame: int, num_frames: int, device: torch.device
+) -> torch.Tensor:
+    """Inference-equivalent current-video mask used only for training.
+
+    The first real frame cannot read noisy future-video supervision.  Future
+    tokens may attend bidirectionally inside the current video block.  Only the
+    first-frame K/V is later exposed to the action branch.
+    """
+
+    if tokens_per_frame <= 0 or num_frames <= 0:
+        raise ValueError("tokens_per_frame and num_frames must be positive")
+    total = tokens_per_frame * num_frames
+    mask = torch.ones((total, total), dtype=torch.bool, device=device)
+    mask[:tokens_per_frame, tokens_per_frame:] = False
+    return mask
+
+
+def incremental_detached_prefix_training_loss(
+    model: "LeapBotVA", sample, tiled: bool = False
+):
+    """Train the current block against the complete real episode prefix.
+
+    Historical observation/action K/V is built sequentially with the exact
+    rollout primitives and remains fully visible to attention.  It is encoded
+    under ``no_grad`` and detached solely to bound activation memory; no
+    historical block is removed.  The current real observation retains
+    gradients and is the only current-video K/V exposed to ActionDiT.
+    """
+
+    final_depth = int(model.mot.num_layers)
+    if tuple(model.training_exit_depths) != (final_depth,):
+        raise NotImplementedError(
+            "incremental detached-prefix training currently supports the final exit only; "
+            "train shallow exits after the full-prefix recipe is selected"
+        )
+    full_history_flag = sample.get("full_episode_history")
+    if full_history_flag is None or not bool(torch.as_tensor(full_history_flag).all().item()):
+        raise ValueError(
+            "incremental_detached_prefix requires data.train.full_episode_history=true"
+        )
+
+    inputs = model.build_inputs(sample, tiled=tiled, append_proprio=False)
+    current_latents = inputs["input_latents"]
+    action = inputs["action"]
+    batch = int(current_latents.shape[0])
+    action_horizon = int(action.shape[1])
+    history_valid = sample["history_valid_blocks"].to(model.device, dtype=torch.bool)
+    history_counts = history_valid.sum(dim=1)
+    expected_valid = (
+        torch.arange(history_valid.shape[1], device=model.device).unsqueeze(0)
+        < history_counts.unsqueeze(1)
+    )
+    if not torch.equal(history_valid, expected_valid):
+        raise ValueError("full episode history must be left-aligned without internal gaps")
+
+    history_video = sample["history_video"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    history_action = sample["history_action"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    history_proprio = sample["history_proprio"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    history_positions = sample["history_block_positions"].to(model.device)
+    current_block_positions = sample["current_block_position"].to(model.device)
+    episode_steps = sample["episode_step"].to(model.device)
+    replan_steps = int(history_action.shape[2])
+
+    noise_video = torch.randn_like(current_latents)
+    timestep_video = model.train_video_scheduler.sample_training_t(
+        batch, model.device, current_latents.dtype
+    )
+    noisy_current = model.train_video_scheduler.add_noise(
+        current_latents, noise_video, timestep_video
+    )
+    target_video = model.train_video_scheduler.training_target(
+        current_latents, noise_video, timestep_video
+    )
+    noisy_current[:, :, 0:1] = current_latents[:, :, 0:1]
+
+    noise_action = torch.randn_like(action)
+    timestep_action = model.train_action_scheduler.sample_training_t(
+        batch, model.device, action.dtype
+    )
+    noisy_action = model.train_action_scheduler.add_noise(
+        action, noise_action, timestep_action
+    )
+    target_action = model.train_action_scheduler.training_target(
+        action, noise_action, timestep_action
+    )
+
+    sample_segments: list[list[dict[str, Any]]] = [[] for _ in range(batch)]
+
+    # Recompute old K/V using current weights on every batch, but vectorize all
+    # episodes that are active at the same prefix depth.  Each active sample has
+    # exactly the same prefix token length, so this is numerically identical to
+    # per-sample rollout prefill while using the H800 efficiently.
+    with torch.no_grad():
+        max_history = int(history_counts.max().item())
+        for history_index in range(max_history):
+            active = torch.nonzero(
+                history_counts > history_index, as_tuple=False
+            ).flatten()
+            base_context = inputs["context"].index_select(0, active)
+            base_context_mask = inputs["context_mask"].index_select(0, active)
+            block_context, block_context_mask = _context_for_proprio(
+                model,
+                base_context,
+                base_context_mask,
+                history_proprio.index_select(0, active)[:, history_index],
+            )
+            block_image = history_video.index_select(0, active)[
+                :, :, history_index : history_index + 1
+            ]
+            block_latent = model._encode_video_latents(block_image, tiled=tiled)
+            clean_timestep = torch.zeros(
+                (active.numel(),), device=model.device, dtype=block_latent.dtype
+            )
+            block_positions = history_positions.index_select(0, active)[
+                :, history_index
+            ]
+            video_pre = model.video_expert.pre_dit(
+                x=block_latent,
+                timestep=clean_timestep,
+                context=block_context,
+                context_mask=block_context_mask,
+                action=None,
+                fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+                frame_position_ids=block_positions[:, None],
+            )
+            _, video_kv = model.mot.prefill_expert_segment(
+                expert_name="video",
+                tokens=video_pre["tokens"],
+                freqs=video_pre["freqs"],
+                t_mod=video_pre["t_mod"],
+                context_payload={
+                    "context": video_pre["context"],
+                    "mask": video_pre["context_mask"],
+                },
+                history_kv=_video_prefix_batch_for_mode(
+                    sample_segments, active, model.causal_mode
+                ),
+                max_layers=final_depth,
+            )
+            for local_index, sample_index in enumerate(active.tolist()):
+                sample_segments[sample_index].append(
+                    {
+                        "modality": "video",
+                        "kv": [
+                            {
+                                "k": layer["k"][local_index : local_index + 1],
+                                "v": layer["v"][local_index : local_index + 1],
+                            }
+                            for layer in video_kv
+                        ],
+                    }
+                )
+
+            executed_actions = history_action.index_select(0, active)[
+                :, history_index
+            ]
+            executed_positions = (
+                block_positions[:, None] * replan_steps
+                + torch.arange(replan_steps, device=model.device)[None, :]
+            )
+            action_pre = model.action_expert.pre_dit(
+                action_tokens=executed_actions,
+                timestep=torch.zeros(
+                    (active.numel(),),
+                    device=model.device,
+                    dtype=executed_actions.dtype,
+                ),
+                context=block_context,
+                context_mask=block_context_mask,
+                position_ids=executed_positions,
+            )
+            _, action_kv = model.mot.prefill_expert_segment(
+                expert_name="action",
+                tokens=action_pre["tokens"],
+                freqs=action_pre["freqs"],
+                t_mod=action_pre["t_mod"],
+                context_payload={
+                    "context": action_pre["context"],
+                    "mask": action_pre["context_mask"],
+                },
+                history_kv=_materialize_incremental_batch(sample_segments, active),
+                max_layers=final_depth,
+            )
+            for local_index, sample_index in enumerate(active.tolist()):
+                sample_segments[sample_index].append(
+                    {
+                        "modality": "action",
+                        "kv": [
+                            {
+                                "k": layer["k"][local_index : local_index + 1],
+                                "v": layer["v"][local_index : local_index + 1],
+                            }
+                            for layer in action_kv
+                        ],
+                    }
+                )
+
+    total_per_sample: list[torch.Tensor] = []
+    video_per_sample_all: list[torch.Tensor] = []
+    action_per_sample_all: list[torch.Tensor] = []
+    for history_count in torch.unique(history_counts, sorted=True).tolist():
+        group = torch.nonzero(
+            history_counts == int(history_count), as_tuple=False
+        ).flatten()
+        base_context = inputs["context"].index_select(0, group)
+        base_context_mask = inputs["context_mask"].index_select(0, group)
+        current_context, current_context_mask = _context_for_proprio(
+            model,
+            base_context,
+            base_context_mask,
+            sample["proprio"].to(model.device).index_select(0, group)[:, 0],
+        )
+        current_latent = noisy_current.index_select(0, group)
+        current_video_frames = int(current_latent.shape[2])
+        current_video_timestep = timestep_video.index_select(0, group)
+        frame_timesteps = current_video_timestep[:, None].expand(
+            -1, current_video_frames
+        ).clone()
+        frame_timesteps[:, 0] = 0
+        group_blocks = current_block_positions.index_select(0, group)
+        video_pre = model.video_expert.pre_dit(
+            x=current_latent,
+            timestep=current_video_timestep,
+            context=current_context,
+            context_mask=current_context_mask,
+            action=None,
+            fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+            frame_position_ids=current_video_frame_positions(
+                group_blocks, num_frames=current_video_frames
+            ),
+            frame_timesteps=frame_timesteps,
+        )
+        tokens_per_frame = int(video_pre["meta"]["tokens_per_frame"])
+        video_hidden, current_video_kv = model.mot.prefill_expert_segment(
+            expert_name="video",
+            tokens=video_pre["tokens"],
+            freqs=video_pre["freqs"],
+            t_mod=video_pre["t_mod"],
+            context_payload={
+                "context": video_pre["context"],
+                "mask": video_pre["context_mask"],
+            },
+            history_kv=_video_prefix_batch_for_mode(
+                sample_segments, group, model.causal_mode
+            ),
+            max_layers=final_depth,
+            segment_attention_mask=current_video_segment_attention_mask(
+                tokens_per_frame=tokens_per_frame,
+                num_frames=current_video_frames,
+                device=model.device,
+            ),
+        )
+        pred_video = model.video_expert.post_dit(video_hidden, video_pre)
+        group_video_loss = model._compute_video_loss_per_sample(
+            pred_video[:, :, 1:],
+            target_video.index_select(0, group)[:, :, 1:],
+            None
+            if inputs["image_is_pad"] is None
+            else inputs["image_is_pad"].index_select(0, group),
+            include_initial_video_step=False,
+        )
+        group_video_loss = group_video_loss * model.train_video_scheduler.training_weight(
+            current_video_timestep
+        ).to(group_video_loss.device, dtype=group_video_loss.dtype)
+
+        historical_action_prefix = _materialize_incremental_batch(
+            sample_segments, group
+        )
+        current_real_kv = [
+            {
+                "k": layer["k"][:, :tokens_per_frame],
+                "v": layer["v"][:, :tokens_per_frame],
+            }
+            for layer in current_video_kv
+        ]
+        if historical_action_prefix is None:
+            action_prefix = current_real_kv
+        else:
+            action_prefix = [
+                {
+                    "k": torch.cat(
+                        [historical_action_prefix[layer]["k"], current_real_kv[layer]["k"]],
+                        dim=1,
+                    ),
+                    "v": torch.cat(
+                        [historical_action_prefix[layer]["v"], current_real_kv[layer]["v"]],
+                        dim=1,
+                    ),
+                }
+                for layer in range(final_depth)
+            ]
+
+        group_episode_steps = episode_steps.index_select(0, group)
+        current_action_positions = group_episode_steps[:, None] + torch.arange(
+            action_horizon, device=model.device
+        )[None, :]
+        action_pre = model.action_expert.pre_dit(
+            action_tokens=noisy_action.index_select(0, group),
+            timestep=timestep_action.index_select(0, group),
+            context=current_context,
+            context_mask=current_context_mask,
+            position_ids=current_action_positions,
+        )
+        action_hidden = model.mot.forward_action_with_history(
+            action_tokens=action_pre["tokens"],
+            action_freqs=action_pre["freqs"],
+            action_t_mod=action_pre["t_mod"],
+            action_context_payload={
+                "context": action_pre["context"],
+                "mask": action_pre["context_mask"],
+            },
+            history_kv=action_prefix,
+            max_layers=final_depth,
+        )
+        pred_action = model.action_expert.post_dit(action_hidden, action_pre)
+        action_token_loss = F.mse_loss(
+            pred_action.float(),
+            target_action.index_select(0, group).float(),
+            reduction="none",
+        ).mean(dim=2)
+        action_is_pad = inputs["action_is_pad"]
+        if action_is_pad is not None:
+            valid = (~action_is_pad.index_select(0, group)).to(action_token_loss.dtype)
+            group_action_loss = (action_token_loss * valid).sum(1) / valid.sum(1).clamp_min(1)
+        else:
+            group_action_loss = action_token_loss.mean(1)
+        group_action_loss = group_action_loss * model.train_action_scheduler.training_weight(
+            timestep_action.index_select(0, group)
+        ).to(group_action_loss.device, dtype=group_action_loss.dtype)
+
+        total_per_sample.append(
+            model.loss_lambda_video * group_video_loss
+            + model.loss_lambda_action * group_action_loss
+        )
+        video_per_sample_all.append(group_video_loss)
+        action_per_sample_all.append(group_action_loss)
+
+    total = torch.cat(total_per_sample).mean()
+    loss_video_mean = torch.cat(video_per_sample_all).mean()
+    loss_action_mean = torch.cat(action_per_sample_all).mean()
+    return total, {
+        f"loss_video_d{final_depth}": model.loss_lambda_video
+        * float(loss_video_mean.detach()),
+        f"loss_action_d{final_depth}": model.loss_lambda_action
+        * float(loss_action_mean.detach()),
+        "history_blocks_mean": float(history_counts.float().mean().detach()),
+        "history_blocks_max": float(history_counts.max().detach()),
+        "prefix_detached": 1.0,
+    }

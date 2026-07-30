@@ -115,10 +115,10 @@ def _resolve_dataset_stats_path(cfg: DictConfig) -> Path:
     raise FileNotFoundError(msg)
 
 
-def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> None:
-    model.load_checkpoint(ckpt)
+def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> dict:
+    payload = model.load_checkpoint(ckpt)
     logging.info("Loaded checkpoint via model.load_checkpoint: %s", ckpt)
-    return
+    return payload if isinstance(payload, dict) else {}
 
     # deprecated legacy checkpoint loading
     payload = torch.load(ckpt, map_location="cpu")
@@ -479,6 +479,7 @@ def run_single_episode(
     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
     use_action_ensembler = bool(cfg.EVALUATION.get("use_action_ensembler", False))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    record_rollout_video = bool(cfg.EVALUATION.get("save_rollout_video", True))
     capture_steps = set(_get_future_frame_capture_steps(cfg)[1:])
 
     memory_cfg = cfg.EVALUATION.get("memory", {})
@@ -560,10 +561,12 @@ def run_single_episode(
                 pending_actions = [ensembler.get_action(ts).tolist() for ts in range(t, t + replan_steps)]
             else:
                 pending_actions = action_chunk[:replan_steps].tolist()
-            replay_images.append(imgs.copy())
+            if record_rollout_video:
+                replay_images.append(imgs.copy())
         else:
-            imgs = get_libero_image(obs)
-            replay_images.append(imgs.copy())
+            if record_rollout_video:
+                imgs = get_libero_image(obs)
+                replay_images.append(imgs.copy())
 
         executed_action = pending_actions.pop(0)
         obs, _, done, _ = env.step(executed_action)
@@ -691,6 +694,7 @@ def run_single_task(
 ) -> dict:
     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+    record_rollout_video = bool(cfg.EVALUATION.get("save_rollout_video", True))
     results = {
         "successes": 0,
         "failure_episodes": [],
@@ -727,13 +731,14 @@ def run_single_task(
             results["episode_future_video_psnr"].append(episode_mean_psnr)
         results["memory_metrics"].append(memory_metrics)
 
-        save_rollout_video(
-            video_dir,
-            replay_images,
-            f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
-            success=success,
-            task_description=task_description,
-        )
+        if record_rollout_video:
+            save_rollout_video(
+                video_dir,
+                replay_images,
+                f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
+                success=success,
+                task_description=task_description,
+            )
         if visualize_future_video:
             if len(predicted_future_video_clips) == 0:
                 logging.warning(
@@ -797,7 +802,18 @@ def eval_single_process(cfg: DictConfig):
     model_device = _resolve_eval_device(cfg)
     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
-    _load_model_checkpoint(model, str(cfg.ckpt))
+    checkpoint_payload = _load_model_checkpoint(model, str(cfg.ckpt))
+    checkpoint_causal_mode = checkpoint_payload.get("causal_mode")
+    configured_causal_mode = getattr(model, "causal_mode", None)
+    if (
+        checkpoint_causal_mode is not None
+        and configured_causal_mode is not None
+        and str(checkpoint_causal_mode) != str(configured_causal_mode)
+    ):
+        raise ValueError(
+            "checkpoint/evaluation causal mode mismatch: "
+            f"checkpoint={checkpoint_causal_mode} configured={configured_causal_mode}"
+        )
     model = model.to(model_device).eval()
     if bool(cfg.EVALUATION.get("merge_video_lora", False)):
         merge = getattr(model, "merge_video_lora_", None)
@@ -873,6 +889,12 @@ def eval_single_process(cfg: DictConfig):
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": 0,
         "checkpoint": str(cfg.ckpt),
+        "checkpoint_step": checkpoint_payload.get("step"),
+        "model_config": {
+            "causal_mode": configured_causal_mode,
+            "history_training_mode": getattr(model, "history_training_mode", None),
+            "training_strategy": getattr(model, "training_strategy", None),
+        },
         "memory_config": memory_config,
     }
 

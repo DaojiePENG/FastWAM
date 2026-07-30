@@ -33,16 +33,39 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
 
         # sampling
         global_sample_stride: int = 1,
+        observation_offsets: Optional[List[int]] = None,
+        action_offsets: Optional[List[int]] = None,
     ):
         assert len(dataset_dirs) > 0, "At least one dataset directory is required"
-        assert action_size == obs_size - 1, "In this dataset, action_size should be obs_size - 1"
-        assert 0 <= past_obs_size < obs_size
-        assert 0 <= past_action_size <= action_size
-        if past_action_size != past_obs_size:
-            raise ValueError(
-                "past action/observation offsets must match for aligned causal history, "
-                f"got {past_action_size} and {past_obs_size}"
-            )
+        explicit_offsets = observation_offsets is not None or action_offsets is not None
+        if explicit_offsets:
+            if observation_offsets is None or action_offsets is None:
+                raise ValueError(
+                    "observation_offsets and action_offsets must be provided together"
+                )
+            observation_offsets = [int(value) for value in observation_offsets]
+            action_offsets = [int(value) for value in action_offsets]
+            if not observation_offsets or not action_offsets:
+                raise ValueError("explicit temporal offsets cannot be empty")
+            if observation_offsets != sorted(observation_offsets):
+                raise ValueError("observation_offsets must be sorted")
+            if action_offsets != sorted(action_offsets):
+                raise ValueError("action_offsets must be sorted")
+            if len(set(observation_offsets)) != len(observation_offsets):
+                raise ValueError("observation_offsets must be unique")
+            if len(set(action_offsets)) != len(action_offsets):
+                raise ValueError("action_offsets must be unique")
+            obs_size = len(observation_offsets)
+            action_size = len(action_offsets)
+        else:
+            assert action_size == obs_size - 1, "In this dataset, action_size should be obs_size - 1"
+            assert 0 <= past_obs_size < obs_size
+            assert 0 <= past_action_size <= action_size
+            if past_action_size != past_obs_size:
+                raise ValueError(
+                    "past action/observation offsets must match for aligned causal history, "
+                    f"got {past_action_size} and {past_obs_size}"
+                )
         
         self.dataset_dirs = dataset_dirs
         self.shape_meta = shape_meta
@@ -72,24 +95,36 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         self.action_meta = shape_meta["action"]
 
         delta_timestamps = {}
+        observation_steps = (
+            observation_offsets
+            if explicit_offsets
+            else list(range(-past_obs_size, -past_obs_size + obs_size))
+        )
+        action_steps = (
+            action_offsets
+            if explicit_offsets
+            else list(range(-past_action_size, -past_action_size + action_size))
+        )
         for meta in self.image_meta:
             key = meta["key"]
             meta["lerobot_key"] = f"observation.images.{key}" if key != "default" else "observation.images"
             delta_timestamps[meta["lerobot_key"]] = [
-                (t * global_sample_stride) / fps for t in range(-past_obs_size, -past_obs_size + obs_size)
+                (t * global_sample_stride) / fps for t in observation_steps
             ]
         
         for meta in self.state_meta:
             key = meta["key"]
             meta["lerobot_key"] = f"observation.state.{key}" if key != "default" else "observation.state"
             delta_timestamps[meta["lerobot_key"]] = [
-                (t * global_sample_stride) / fps for t in range(-past_obs_size, -past_obs_size + obs_size)
+                (t * global_sample_stride) / fps for t in observation_steps
             ]
         
         for meta in self.action_meta:
             key = meta["key"]
             meta["lerobot_key"] = f"action.{key}" if key != "default" else "action"
-            delta_timestamps[meta["lerobot_key"]] = [(t * global_sample_stride) / fps for t in range(-past_action_size, -past_action_size + action_size)]
+            delta_timestamps[meta["lerobot_key"]] = [
+                (t * global_sample_stride) / fps for t in action_steps
+            ]
 
         episodes = {}
         if val_set_proportion < 1e-6:

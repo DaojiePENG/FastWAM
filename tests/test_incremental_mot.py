@@ -95,3 +95,74 @@ def test_one_forward_returns_all_requested_shared_depth_exits():
     assert tuple(outputs) == (1, 2, 4)
     assert outputs[2]["video"].shape == (1, 1, 12)
     assert outputs[2]["action"].shape == (1, 1, 10)
+
+
+def test_masked_real_frame_kv_matches_standalone_inference_prefill():
+    torch.manual_seed(19)
+    video, action = _experts()
+    mot = MoT({"video": video, "action": action}, mot_checkpoint_mixed_attn=False).eval()
+    tokens = torch.randn(1, 3, 12)
+    freqs = precompute_freqs_cis(6, end=3).view(3, 1, -1)
+    t_mod = torch.randn(1, 6, 12)
+
+    standalone_hidden, standalone_kv = mot.prefill_expert_segment(
+        expert_name="video",
+        tokens=tokens[:, :1],
+        freqs=freqs[:1],
+        t_mod=t_mod,
+        context_payload=None,
+    )
+    segment_mask = torch.ones(3, 3, dtype=torch.bool)
+    segment_mask[0, 1:] = False
+    training_hidden, training_kv = mot.prefill_expert_segment(
+        expert_name="video",
+        tokens=tokens,
+        freqs=freqs,
+        t_mod=t_mod,
+        context_payload=None,
+        segment_attention_mask=segment_mask,
+    )
+
+    torch.testing.assert_close(
+        training_hidden[:, :1], standalone_hidden, atol=1e-5, rtol=1e-5
+    )
+    for training_layer, standalone_layer in zip(training_kv, standalone_kv):
+        torch.testing.assert_close(
+            training_layer["k"][:, :1], standalone_layer["k"], atol=1e-5, rtol=1e-5
+        )
+        torch.testing.assert_close(
+            training_layer["v"][:, :1], standalone_layer["v"], atol=1e-5, rtol=1e-5
+        )
+
+
+def test_consecutive_absolute_video_positions_preserve_native_relative_geometry():
+    torch.manual_seed(23)
+    video, action = _experts()
+    mot = MoT({"video": video, "action": action}, mot_checkpoint_mixed_attn=False).eval()
+    latents = torch.randn(1, 4, 3, 1, 1)
+    timestep = torch.tensor([0.37])
+    context = torch.randn(1, 2, 6)
+    context_mask = torch.ones(1, 2, dtype=torch.bool)
+
+    def run(frame_positions: torch.Tensor) -> torch.Tensor:
+        pre = video.pre_dit(
+            x=latents,
+            timestep=timestep,
+            context=context,
+            context_mask=context_mask,
+            fuse_vae_embedding_in_latents=True,
+            frame_position_ids=frame_positions,
+        )
+        hidden, _ = mot.prefill_expert_segment(
+            expert_name="video",
+            tokens=pre["tokens"],
+            freqs=pre["freqs"],
+            t_mod=pre["t_mod"],
+            context_payload={"context": pre["context"], "mask": pre["context_mask"]},
+            segment_attention_mask=torch.ones(3, 3, dtype=torch.bool),
+        )
+        return hidden
+
+    native = run(torch.tensor([0, 1, 2]))
+    shifted = run(torch.tensor([17, 18, 19]))
+    torch.testing.assert_close(shifted, native, atol=2e-5, rtol=2e-5)

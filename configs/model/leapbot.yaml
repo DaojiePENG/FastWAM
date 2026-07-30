@@ -13,6 +13,9 @@ skip_dit_load_from_pretrain: false
 causal_mode: interleaved
 exit_depths: [8, 16, 24, 30]
 training_exit_depths: [30]
+# Full-prefix training uses the same incremental KV construction as rollout;
+# old real-data K/V stays visible but is detached from backpropagation.
+history_training_mode: incremental_detached_prefix
 
 # The formal post-training run overrides this to video_lora_action_full.
 training_strategy: full_dit
