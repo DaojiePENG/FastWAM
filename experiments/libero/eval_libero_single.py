@@ -40,7 +40,7 @@ from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_js
 from fastwam.utils.pytorch_utils import set_global_seed
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from leapbot_va.libero import executed_env_actions_to_model_space
-from libero.libero import benchmark
+from libero.libero import benchmark, get_libero_path
 from action_ensembler import ActionEnsembler
 
 OmegaConf.register_new_resolver("eval", eval)
@@ -417,12 +417,18 @@ def _predict_action_chunk(
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
 
+    if str(model_device).startswith("cuda"):
+        torch.cuda.synchronize(torch.device(model_device))
+    inference_start = time.perf_counter()
     with torch.no_grad():
         if visualize_future_video:
             pred = model.infer_joint(**infer_kwargs)
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
         else:
             pred = model.infer_action(**infer_kwargs)
+    if str(model_device).startswith("cuda"):
+        torch.cuda.synchronize(torch.device(model_device))
+    total_inference_s = time.perf_counter() - inference_start
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -433,8 +439,10 @@ def _predict_action_chunk(
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
+    timing = dict(pred.get("timing", {}))
+    timing["total_inference_s"] = total_inference_s
     return action, imgs, predicted_future_frames, {
-        "timing": pred.get("timing", {}),
+        "timing": timing,
         "memory": pred.get("memory", {}),
     }
 
@@ -509,7 +517,7 @@ def run_single_episode(
         "replans": [],
         "peak_cache_bytes": 0,
     }
-    if memory_enabled and str(model_device).startswith("cuda"):
+    if str(model_device).startswith("cuda"):
         torch.cuda.reset_peak_memory_stats(torch.device(model_device))
 
     t = 0
@@ -536,8 +544,7 @@ def run_single_episode(
                 memory=memory,
             )
             current_executed_actions = []
-            if memory_enabled:
-                memory_metrics["replans"].append(inference_metrics)
+            memory_metrics["replans"].append(inference_metrics)
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {
@@ -656,11 +663,11 @@ def run_single_episode(
             raise AssertionError(
                 f"executed/committed action mismatch: {executed_control_steps} vs {committed_steps}"
             )
-        if str(model_device).startswith("cuda"):
-            memory_metrics["peak_gpu_bytes"] = int(
-                torch.cuda.max_memory_allocated(torch.device(model_device))
-            )
         model.reset_memory(memory)
+    if str(model_device).startswith("cuda"):
+        memory_metrics["peak_gpu_bytes"] = int(
+            torch.cuda.max_memory_allocated(torch.device(model_device))
+        )
 
     episode_mean_psnr = (
         float(np.mean(episode_future_clip_psnr)) if len(episode_future_clip_psnr) > 0 else None
@@ -694,8 +701,7 @@ def run_single_task(
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
-    if bool(cfg.EVALUATION.get("memory", {}).get("enabled", False)):
-        results["memory_metrics"] = []
+    results["memory_metrics"] = []
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
         success, replay_images, predicted_future_video_clips, episode_mean_psnr, memory_metrics = run_single_episode(
@@ -719,8 +725,7 @@ def run_single_task(
         results["completion_steps"].append(memory_metrics["control_steps"])
         if visualize_future_video:
             results["episode_future_video_psnr"].append(episode_mean_psnr)
-        if memory_metrics["enabled"]:
-            results["memory_metrics"].append(memory_metrics)
+        results["memory_metrics"].append(memory_metrics)
 
         save_rollout_video(
             video_dir,
@@ -828,11 +833,26 @@ def eval_single_process(cfg: DictConfig):
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
     task = task_suite.get_task(cfg.EVALUATION.task_id)
-    initial_states = task_suite.get_task_init_states(cfg.EVALUATION.task_id)
+    # LIBERO's helper calls ``torch.load`` without an explicit ``weights_only``
+    # argument. PyTorch >=2.6 defaults that argument to True, while the trusted
+    # official LIBERO init-state files contain NumPy arrays. Load the same file
+    # explicitly so evaluation works without a process-wide unsafe-load flag.
+    initial_states_path = (
+        Path(get_libero_path("init_states"))
+        / task.problem_folder
+        / task.init_states_file
+    )
+    initial_states = torch.load(initial_states_path, weights_only=False)
 
     while len(initial_states) < int(cfg.EVALUATION.num_trials):
         initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
 
+    memory_cfg = cfg.EVALUATION.get("memory", None)
+    memory_config = (
+        OmegaConf.to_container(memory_cfg, resolve=True)
+        if OmegaConf.is_config(memory_cfg)
+        else dict(memory_cfg or {})
+    )
     results = {
         "task_suite": cfg.EVALUATION.task_suite_name,
         "task_id": cfg.EVALUATION.task_id,
@@ -845,9 +865,7 @@ def eval_single_process(cfg: DictConfig):
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": 0,
         "checkpoint": str(cfg.ckpt),
-        "memory_config": OmegaConf.to_container(
-            cfg.EVALUATION.get("memory", {}), resolve=True
-        ),
+        "memory_config": memory_config,
     }
 
     logging.info("Running LIBERO evaluation with env_num=1")
