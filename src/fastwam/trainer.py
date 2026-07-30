@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 from accelerate import Accelerator
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
@@ -149,6 +149,20 @@ class Wan22Trainer:
             group=None if self.cfg.wandb.group in (None, "null", "") else str(self.cfg.wandb.group),
             mode=self.cfg.wandb.mode,
             dir=self.output_dir,
+            config=OmegaConf.to_container(self.cfg, resolve=True),
+        )
+        self.wandb_run.config.update(
+            {
+                "derived/train_dataset_size": len(self.train_dataset),
+                "derived/world_size": self.accelerator.num_processes,
+                "derived/effective_global_batch_size": (
+                    self.batch_size
+                    * self.accelerator.num_processes
+                    * self.gradient_accumulation_steps
+                ),
+                "derived/optimizer_steps": self.max_steps,
+            },
+            allow_val_change=True,
         )
         logger.info(
             "Initialized wandb run: workspace=%s project=%s name=%s",
