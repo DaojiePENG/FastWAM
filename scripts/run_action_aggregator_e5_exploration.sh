@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-STAGE1_EVAL_ROOT="${STAGE1_EVAL_ROOT:-$ROOT_DIR/evaluate_results/phase1_h8_d30_e1_bs32_dev10}"
+STAGE1_TRAIN_ROOT="${STAGE1_TRAIN_ROOT:-$ROOT_DIR/runs/phase1_h8_d30_e1_bs32}"
 TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/action_aggregator_h8_e5_bs72_lr2e5}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 DATASET_SIZE="${DATASET_SIZE:-28523}"
@@ -30,15 +30,15 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-stage1_complete() {
-    [[ -s "$STAGE1_EVAL_ROOT/pareto/pareto.json" ]] || return 1
-    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
-        "$STAGE1_EVAL_ROOT" \
-        --output-dir "$STAGE1_EVAL_ROOT/pareto" \
-        --expected-tasks 10 \
-        --expected-trials-per-task 10 \
-        --require-profiled \
-        >"$STAGE1_EVAL_ROOT/pareto/action_e5_gate_validation.log" 2>&1
+stage1_training_complete() {
+    local mode
+    for mode in interleaved vision_causal action_aggregator; do
+        [[ -s "$STAGE1_TRAIN_ROOT/$mode/checkpoints/weights/step_000892.pt" ]] \
+            || return 1
+        grep -q "max_steps reached step=892" \
+            "$STAGE1_TRAIN_ROOT/$mode/train.log" 2>/dev/null \
+            || return 1
+    done
 }
 
 latest_state() {
@@ -52,8 +52,8 @@ mkdir -p \
     "$ROOT_DIR/.cache/wandb/cache" \
     "$ROOT_DIR/.cache/wandb/data"
 
-while ! stage1_complete; do
-    log "waiting for strict stage-1 10x10 comparison: $STAGE1_EVAL_ROOT/pareto/pareto.json"
+while ! stage1_training_complete; do
+    log "waiting for all stage-1 step-892 checkpoints under $STAGE1_TRAIN_ROOT"
     sleep "$POLL_SECONDS"
 done
 
