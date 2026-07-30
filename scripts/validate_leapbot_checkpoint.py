@@ -37,8 +37,11 @@ def validate_checkpoint(
     expected_step: int,
     expected_mode: str,
     state_dir: Path | None = None,
-    expected_history_training_mode: str = "incremental_detached_prefix",
+    expected_history_training_mode: str = "packed_full_bptt",
     expected_training_strategy: str = "video_lora_action_full",
+    expected_video_lora_multiplier: float = 1.0,
+    expected_replan_steps: int = 10,
+    expected_action_horizon: int = 32,
 ) -> dict[str, Any]:
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
@@ -58,6 +61,8 @@ def validate_checkpoint(
         "causal_mode": str(expected_mode),
         "history_training_mode": expected_history_training_mode,
         "training_strategy": expected_training_strategy,
+        "training_replan_steps": int(expected_replan_steps),
+        "training_action_horizon": int(expected_action_horizon),
     }
     for key, expected in expected_metadata.items():
         actual = payload.get(key)
@@ -79,7 +84,7 @@ def validate_checkpoint(
         "rank": 16,
         "alpha": 16.0,
         "dropout": 0.0,
-        "learning_rate_multiplier": 10.0,
+        "learning_rate_multiplier": float(expected_video_lora_multiplier),
     }
     for key, expected in expected_lora.items():
         actual = video_lora.get(key)
@@ -139,6 +144,13 @@ def main() -> None:
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("--expected-step", type=int, required=True)
     parser.add_argument("--expected-mode", required=True)
+    parser.add_argument(
+        "--expected-history-training-mode", default="packed_full_bptt"
+    )
+    parser.add_argument("--expected-training-strategy", default="video_lora_action_full")
+    parser.add_argument("--expected-video-lora-multiplier", type=float, default=1.0)
+    parser.add_argument("--expected-replan-steps", type=int, default=10)
+    parser.add_argument("--expected-action-horizon", type=int, default=32)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -148,6 +160,11 @@ def main() -> None:
         expected_step=args.expected_step,
         expected_mode=args.expected_mode,
         state_dir=args.state_dir,
+        expected_history_training_mode=args.expected_history_training_mode,
+        expected_training_strategy=args.expected_training_strategy,
+        expected_video_lora_multiplier=args.expected_video_lora_multiplier,
+        expected_replan_steps=args.expected_replan_steps,
+        expected_action_horizon=args.expected_action_horizon,
     )
     output = (
         args.output

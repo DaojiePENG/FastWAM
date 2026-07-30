@@ -627,10 +627,28 @@ class Wan22Trainer:
 
     def _save_trainer_state(self, state_path: str):
         state_file = os.path.join(state_path, "trainer_state.json")
+        epoch = int(self.epoch)
+        batch_in_epoch = int(self.batch_in_epoch)
+        micro_batches_per_epoch = int(len(self.train_loader))
+        if batch_in_epoch == micro_batches_per_epoch:
+            # Store the next unconsumed position.  Accelerate does not advance
+            # DataLoaderShard.iteration when an iterator is already empty, so an
+            # unnormalized end-of-epoch cursor would replay the completed epoch.
+            epoch += 1
+            batch_in_epoch = 0
+        elif batch_in_epoch < 0 or batch_in_epoch > micro_batches_per_epoch:
+            raise RuntimeError(
+                "invalid dataloader cursor while saving: "
+                f"batch={batch_in_epoch} length={micro_batches_per_epoch}"
+            )
         payload = {
             "global_step": int(self.global_step),
-            "epoch": int(self.epoch),
-            "batch_in_epoch": int(self.batch_in_epoch),
+            "epoch": epoch,
+            "batch_in_epoch": batch_in_epoch,
+            "dataset_length": int(len(self.train_dataset)),
+            "batch_size_per_process": int(self.batch_size),
+            "num_processes": int(self.accelerator.num_processes),
+            "micro_batches_per_epoch": micro_batches_per_epoch,
         }
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
@@ -662,8 +680,37 @@ class Wan22Trainer:
             self.global_step = int(payload["global_step"])
 
             if "epoch" in payload and "batch_in_epoch" in payload:
+                expected_resume_contract = {
+                    "dataset_length": int(len(self.train_dataset)),
+                    "batch_size_per_process": int(self.batch_size),
+                    "num_processes": int(self.accelerator.num_processes),
+                    "micro_batches_per_epoch": int(len(self.train_loader)),
+                }
+                for key, expected in expected_resume_contract.items():
+                    if key in payload and int(payload[key]) != expected:
+                        raise ValueError(
+                            "dataloader resume contract changed for "
+                            f"{key}: checkpoint={payload[key]} current={expected}"
+                        )
                 self.epoch = int(payload["epoch"])
                 self.batch_in_epoch = int(payload["batch_in_epoch"])
+                micro_batches_per_epoch = int(len(self.train_loader))
+                if self.batch_in_epoch == micro_batches_per_epoch:
+                    # Backward compatibility for states written before cursor
+                    # normalization was introduced.
+                    self.epoch += 1
+                    self.batch_in_epoch = 0
+                elif self.batch_in_epoch < 0 or self.batch_in_epoch > micro_batches_per_epoch:
+                    raise ValueError(
+                        "invalid dataloader cursor in trainer state: "
+                        f"batch={self.batch_in_epoch} length={micro_batches_per_epoch}"
+                    )
+                # DataLoaderShard uses relative iterations 0,1,... after a
+                # restart.  Pin that relative clock to zero and add the saved
+                # absolute epoch in our sampler.
+                set_loader_epoch = getattr(self.train_loader, "set_epoch", None)
+                if set_loader_epoch is not None:
+                    set_loader_epoch(0)
                 self.train_sampler.set_epoch_offset(self.epoch)
                 self.train_sampler.set_resume_batch_offset(self.batch_in_epoch)
                 logger.info(
@@ -710,6 +757,10 @@ class Wan22Trainer:
         data_iter = iter(self.train_loader)
         self.run_start_step = self.global_step
         self.run_start_time = time.perf_counter()
+        accumulated_loss_sum = 0.0
+        accumulated_sample_count = 0
+        accumulated_metric_sums: dict[str, float] = {}
+        accumulated_metric_maxima: dict[str, float] = {}
 
         while self.global_step < self.max_steps:
             try:
@@ -727,6 +778,28 @@ class Wan22Trainer:
 
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)
+                sample_video = sample.get("video") if isinstance(sample, dict) else None
+                if not isinstance(sample_video, torch.Tensor) or sample_video.ndim < 1:
+                    raise ValueError(
+                        "training samples must contain a batched `video` tensor so "
+                        "gradient-accumulation metrics can be weighted exactly"
+                    )
+                micro_batch_samples = int(sample_video.shape[0])
+                if micro_batch_samples <= 0:
+                    raise ValueError("training micro-batch must contain at least one sample")
+                accumulated_loss_sum += float(loss.detach()) * micro_batch_samples
+                accumulated_sample_count += micro_batch_samples
+                for key, value in loss_dict.items():
+                    scalar = float(value)
+                    if key.endswith("_max"):
+                        accumulated_metric_maxima[key] = max(
+                            accumulated_metric_maxima.get(key, scalar), scalar
+                        )
+                    else:
+                        accumulated_metric_sums[key] = (
+                            accumulated_metric_sums.get(key, 0.0)
+                            + scalar * micro_batch_samples
+                        )
                 self.accelerator.backward(loss)
 
                 if self.accelerator.sync_gradients:
@@ -736,21 +809,43 @@ class Wan22Trainer:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
                     self.global_step += 1
+                    local_loss_stats = torch.tensor(
+                        [accumulated_loss_sum, float(accumulated_sample_count)],
+                        device=loss.device,
+                        dtype=torch.float64,
+                    )
+                    gathered_loss_stats = self.accelerator.gather(
+                        local_loss_stats.reshape(1, 2)
+                    ).reshape(-1, 2)
                     global_loss = float(
-                        self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()
+                        gathered_loss_stats[:, 0].sum().item()
+                        / gathered_loss_stats[:, 1].sum().clamp_min(1.0).item()
                     )
                     global_loss_metrics = {}
-                    for key, value in loss_dict.items():
-                        metric_tensor = torch.tensor(
-                            float(value), device=loss.device, dtype=torch.float32
-                        ).reshape(1)
-                        gathered_metric = self.accelerator.gather(metric_tensor)
-                        reduced_metric = (
-                            gathered_metric.max()
-                            if key.endswith("_max")
-                            else gathered_metric.mean()
+                    for key, local_sum in accumulated_metric_sums.items():
+                        local_metric_stats = torch.tensor(
+                            [local_sum, float(accumulated_sample_count)],
+                            device=loss.device,
+                            dtype=torch.float64,
                         )
-                        global_loss_metrics[key] = float(reduced_metric.item())
+                        gathered_metric_stats = self.accelerator.gather(
+                            local_metric_stats.reshape(1, 2)
+                        ).reshape(-1, 2)
+                        global_loss_metrics[key] = float(
+                            gathered_metric_stats[:, 0].sum().item()
+                            / gathered_metric_stats[:, 1].sum().clamp_min(1.0).item()
+                        )
+                    for key, local_maximum in accumulated_metric_maxima.items():
+                        gathered_metric = self.accelerator.gather(
+                            torch.tensor(
+                                local_maximum, device=loss.device, dtype=torch.float32
+                            ).reshape(1)
+                        )
+                        global_loss_metrics[key] = float(gathered_metric.max().item())
+                    accumulated_loss_sum = 0.0
+                    accumulated_sample_count = 0
+                    accumulated_metric_sums.clear()
+                    accumulated_metric_maxima.clear()
                     ema_inputs = {"loss": global_loss, **global_loss_metrics}
                     for key, value in ema_inputs.items():
                         previous = self.metric_ema.get(key, value)

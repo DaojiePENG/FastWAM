@@ -149,6 +149,46 @@ def test_memory_causal_mode_must_match_model_configuration():
         model._validate_memory_compatibility(incompatible_memory)
 
 
+def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
+    source = _model(layers=30)
+    source.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=2,
+    )
+    memory = source.create_memory()
+    assert memory.config.replan_steps == 1
+    assert memory.config.action_horizon == 2
+    with pytest.raises(ValueError, match="replan_steps differs"):
+        source.create_memory(replan_steps=2, action_horizon=2)
+    with pytest.raises(ValueError, match="action_horizon differs"):
+        source.create_memory(replan_steps=1, action_horizon=3)
+
+    checkpoint = tmp_path / "clock.pt"
+    source.save_checkpoint(checkpoint)
+    loaded = _model(layers=30)
+    loaded.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=2,
+    )
+    loaded.load_checkpoint(checkpoint)
+    assert loaded.training_replan_steps == 1
+    assert loaded.training_action_horizon == 2
+
+    incompatible = _model(layers=30)
+    incompatible.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=3,
+    )
+    with pytest.raises(ValueError, match="action_horizon differs"):
+        incompatible.load_checkpoint(checkpoint)
+
+
 def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
     model = _model(layers=30).eval()
     feature_half = model.temporal_positions.feature_dim // 2

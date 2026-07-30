@@ -77,6 +77,8 @@ class LeapBotVA(FastWAM):
         self.history_training_mode = "packed_full_bptt"
         self.video_lora_config = VideoLoRAConfig()
         self.video_lora_merged = False
+        self.training_replan_steps: int | None = None
+        self.training_action_horizon: int | None = None
 
     def configure_finetuning(
         self,
@@ -165,6 +167,8 @@ class LeapBotVA(FastWAM):
         causal_mode: str = "interleaved",
         training_exit_depths: Sequence[int] = (30,),
         history_training_mode: str = "packed_full_bptt",
+        replan_steps: int | None = None,
+        action_horizon: int | None = None,
     ) -> None:
         if causal_mode not in VALID_CAUSAL_MODES:
             raise ValueError(f"unsupported causal mode: {causal_mode}")
@@ -184,6 +188,41 @@ class LeapBotVA(FastWAM):
                 f"{sorted(valid_history_modes)}, got {history_training_mode}"
             )
         self.history_training_mode = history_training_mode
+        if (replan_steps is None) != (action_horizon is None):
+            raise ValueError(
+                "replan_steps and action_horizon must be configured together"
+            )
+        if replan_steps is not None:
+            resolved_replan_steps = int(replan_steps)
+            resolved_action_horizon = int(action_horizon)
+            if resolved_replan_steps <= 0:
+                raise ValueError("replan_steps must be positive")
+            if resolved_action_horizon < resolved_replan_steps:
+                raise ValueError(
+                    "action_horizon must be greater than or equal to replan_steps"
+                )
+            self.training_replan_steps = resolved_replan_steps
+            self.training_action_horizon = resolved_action_horizon
+
+    def validate_temporal_contract(
+        self, *, replan_steps: int, action_horizon: int
+    ) -> None:
+        """Reject training/evaluation clocks that differ from the checkpoint."""
+
+        if self.training_replan_steps is not None and int(replan_steps) != int(
+            self.training_replan_steps
+        ):
+            raise ValueError(
+                "replan_steps differs from the model temporal contract: "
+                f"expected={self.training_replan_steps} got={replan_steps}"
+            )
+        if self.training_action_horizon is not None and int(action_horizon) != int(
+            self.training_action_horizon
+        ):
+            raise ValueError(
+                "action_horizon differs from the model temporal contract: "
+                f"expected={self.training_action_horizon} got={action_horizon}"
+            )
 
     def training_loss(self, sample, tiled: bool = False):
         if "history_video" not in sample:
@@ -208,8 +247,8 @@ class LeapBotVA(FastWAM):
         exit_depth: int = 30,
         causal_mode: str | None = None,
         max_history_blocks: int = 70,
-        action_horizon: int = 32,
-        replan_steps: int = 10,
+        action_horizon: int | None = None,
+        replan_steps: int | None = None,
     ) -> LeapMemoryState:
         if exit_depth not in self.exit_depths:
             raise ValueError(
@@ -221,13 +260,32 @@ class LeapBotVA(FastWAM):
                 "memory/model causal mode mismatch: "
                 f"memory={resolved_causal_mode} model={self.causal_mode}"
             )
+        resolved_action_horizon = (
+            self.training_action_horizon
+            if action_horizon is None
+            else int(action_horizon)
+        )
+        resolved_replan_steps = (
+            self.training_replan_steps if replan_steps is None else int(replan_steps)
+        )
+        # Directly constructed research/toy models predating the explicit
+        # contract retain the public FastWAM defaults. Production LeapBot models
+        # always configure and checkpoint these values.
+        if resolved_action_horizon is None:
+            resolved_action_horizon = 32
+        if resolved_replan_steps is None:
+            resolved_replan_steps = 10
+        self.validate_temporal_contract(
+            replan_steps=resolved_replan_steps,
+            action_horizon=resolved_action_horizon,
+        )
         return LeapMemoryState(
             config=LeapMemoryConfig(
                 exit_depth=exit_depth,
                 causal_mode=resolved_causal_mode,
                 max_history_blocks=max_history_blocks,
-                action_horizon=action_horizon,
-                replan_steps=replan_steps,
+                action_horizon=resolved_action_horizon,
+                replan_steps=resolved_replan_steps,
             )
         )
 
@@ -632,6 +690,8 @@ class LeapBotVA(FastWAM):
             "causal_mode": self.causal_mode,
             "training_strategy": self.training_strategy,
             "history_training_mode": self.history_training_mode,
+            "training_replan_steps": self.training_replan_steps,
+            "training_action_horizon": self.training_action_horizon,
             "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
             "torch_dtype": str(self.torch_dtype),
@@ -661,6 +721,20 @@ class LeapBotVA(FastWAM):
             raise ValueError(
                 "checkpoint/model history training mode mismatch: "
                 f"checkpoint={checkpoint_history_mode} model={self.history_training_mode}"
+            )
+        checkpoint_replan_steps = payload.get("training_replan_steps")
+        checkpoint_action_horizon = payload.get("training_action_horizon")
+        if (checkpoint_replan_steps is None) != (checkpoint_action_horizon is None):
+            raise ValueError(
+                "checkpoint temporal contract must contain both replan_steps and action_horizon"
+            )
+        if checkpoint_replan_steps is not None:
+            if self.training_replan_steps is None:
+                self.training_replan_steps = int(checkpoint_replan_steps)
+                self.training_action_horizon = int(checkpoint_action_horizon)
+            self.validate_temporal_contract(
+                replan_steps=int(checkpoint_replan_steps),
+                action_horizon=int(checkpoint_action_horizon),
             )
         checkpoint_lora = payload.get("video_lora_config")
         if checkpoint_lora is not None:

@@ -17,6 +17,10 @@ training_exit_depths: [30]
 # backpropagates the current losses through the complete packed sequence.
 # `incremental_detached_prefix` remains available only as a memory ablation.
 history_training_mode: packed_full_bptt
+# These values define the learned local/absolute action clock and are persisted
+# in every LeapBot checkpoint. Evaluation is rejected if either value changes.
+replan_steps: 10
+action_horizon: 32
 
 # The formal post-training run overrides this to video_lora_action_full.
 training_strategy: full_dit

@@ -266,6 +266,11 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         torch.as_tensor(full_history_flag, device=model.device).all().item()
     )
     replan_steps = int(sample["history_action"].shape[2])
+    action_horizon = int(action.shape[1])
+    model.validate_temporal_contract(
+        replan_steps=replan_steps,
+        action_horizon=action_horizon,
+    )
     history_counts = validate_packed_history_metadata(
         configured_history_valid,
         sample["history_block_positions"].to(model.device),
@@ -279,7 +284,6 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     # Cropping only a suffix that is invalid for every sample preserves every
     # real episode-prefix block while making full BPTT practical on H800s.
     history_valid = configured_history_valid[:, :max_history]
-    action_horizon = int(action.shape[1])
 
     history_video = sample["history_video"][:, :, :max_history].to(
         model.device, dtype=model.torch_dtype
@@ -692,13 +696,19 @@ def incremental_detached_prefix_training_loss(
     batch = int(current_latents.shape[0])
     action_horizon = int(action.shape[1])
     history_valid = sample["history_valid_blocks"].to(model.device, dtype=torch.bool)
-    history_counts = history_valid.sum(dim=1)
-    expected_valid = (
-        torch.arange(history_valid.shape[1], device=model.device).unsqueeze(0)
-        < history_counts.unsqueeze(1)
+    replan_steps = int(sample["history_action"].shape[2])
+    model.validate_temporal_contract(
+        replan_steps=replan_steps,
+        action_horizon=action_horizon,
     )
-    if not torch.equal(history_valid, expected_valid):
-        raise ValueError("full episode history must be left-aligned without internal gaps")
+    history_counts = validate_packed_history_metadata(
+        history_valid,
+        sample["history_block_positions"].to(model.device),
+        sample["current_block_position"].to(model.device),
+        sample["episode_step"].to(model.device),
+        replan_steps=replan_steps,
+        full_episode_history=True,
+    )
 
     history_video = sample["history_video"].to(
         model.device, dtype=model.torch_dtype, non_blocking=True
@@ -712,7 +722,6 @@ def incremental_detached_prefix_training_loss(
     history_positions = sample["history_block_positions"].to(model.device)
     current_block_positions = sample["current_block_position"].to(model.device)
     episode_steps = sample["episode_step"].to(model.device)
-    replan_steps = int(history_action.shape[2])
 
     noise_video = torch.randn_like(current_latents)
     timestep_video = model.train_video_scheduler.sample_training_t(

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Correct-architecture phase-A recipe:
+# Correct-architecture phase-A v2 recipe:
 #   * FastWAM release initialization
 #   * block-local RoPE + zero-initialized absolute episode timing
 #   * one raw causal-attention softmax (no history gate)
@@ -18,7 +18,7 @@ GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 GRAD_ACCUM="${GRAD_ACCUM:-5}"
 MAX_STEPS="${MAX_STEPS:-5000}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_hierarchical_raw_v1_${MODE}_peft_${MAX_STEPS}steps_bs80_lr1e5}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_hierarchical_raw_v2_${MODE}_peft_${MAX_STEPS}steps_bs80_lr1e5}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
@@ -26,8 +26,8 @@ MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29971}"
 MAX_PREFLIGHT_USED_MIB="${MAX_PREFLIGHT_USED_MIB:-2048}"
 WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and-techn}"
 WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
-WANDB_GROUP="${WANDB_GROUP:-final-hierarchical-raw-v1-seed42}"
-RUN_NAME="${RUN_NAME:-final-hierarchical-raw-v1-${MODE//_/-}-peft-${MAX_STEPS}steps-bs80-lr1e5-seed42}"
+WANDB_GROUP="${WANDB_GROUP:-final-hierarchical-raw-v2-seed42}"
+RUN_NAME="${RUN_NAME:-final-hierarchical-raw-v2-${MODE//_/-}-peft-${MAX_STEPS}steps-bs80-lr1e5-seed42}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 
@@ -101,7 +101,8 @@ else
 fi
 
 preflight_gpus
-log "start hierarchical raw-v1 PEFT: mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER resume=$RESUME_PATH"
+CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+log "start hierarchical raw-v2 PEFT: commit=$CODE_COMMIT mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     LEAPBOT_DATASET_STATS="$DATASET_STATS" \
@@ -157,4 +158,4 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "resume=$RESUME_PATH" \
     >>"$LOG_FILE" 2>&1
 
-log "hierarchical raw-v1 PEFT complete: $FINAL_CHECKPOINT"
+log "hierarchical raw-v2 PEFT complete: $FINAL_CHECKPOINT"

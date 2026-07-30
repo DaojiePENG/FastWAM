@@ -159,6 +159,15 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         stops = self.lerobot_dataset.episode_data_index["to"].tolist()
         for start, stop in zip(starts, stops):
             for relative_step in range(0, int(stop - start), self.replan_steps):
+                if (
+                    self.full_episode_history
+                    and relative_step // self.replan_steps >= self.max_history_blocks
+                ):
+                    raise ValueError(
+                        "episode exceeds configured total replanning-block capacity: "
+                        f"block={relative_step // self.replan_steps} "
+                        f"capacity={self.max_history_blocks}"
+                    )
                 index = int(start + relative_step)
                 self._valid_replan_indices.append(index)
                 self._episode_step[index] = relative_step
@@ -168,13 +177,29 @@ class LeapRobotVideoDataset(RobotVideoDataset):
     def __len__(self):
         return len(self._valid_replan_indices)
 
+    def sampler_grouping_lengths(self) -> tuple[int, ...] | None:
+        """Return exact prefix lengths for distributed compute-cost grouping.
+
+        Full-episode history has a deterministic length for every dataset item,
+        so grouping only changes permutation order and never the training
+        distribution.  Random short-window ablations deliberately opt out because
+        their length is sampled in ``_get`` and is not known to the sampler.
+        """
+
+        if not self.full_episode_history:
+            return None
+        return tuple(
+            self._episode_step[index] // self.replan_steps
+            for index in self._valid_replan_indices
+        )
+
     def _choose_history_blocks(self, sample_index: int) -> int:
         current_block = self._episode_step[sample_index] // self.replan_steps
         if self.full_episode_history:
-            if current_block > self.max_history_blocks:
+            if current_block >= self.max_history_blocks:
                 raise ValueError(
-                    "episode prefix exceeds configured history capacity: "
-                    f"{current_block}>{self.max_history_blocks}"
+                    "episode exceeds configured total replanning-block capacity: "
+                    f"block={current_block} capacity={self.max_history_blocks}"
                 )
             return current_block
         upper = min(self.max_history_blocks, current_block)
@@ -217,6 +242,13 @@ class LeapRobotVideoDataset(RobotVideoDataset):
     def _get(self, idx):
         mapped_idx = self._valid_replan_indices[int(idx)]
         sample = self.lerobot_dataset[mapped_idx]
+        loaded_idx = int(sample.get("idx", -1))
+        if loaded_idx != mapped_idx:
+            raise RuntimeError(
+                "underlying LeRobot loader substituted a different frame after an I/O "
+                f"failure: requested={mapped_idx} loaded={loaded_idx}; refusing to attach "
+                "causal metadata from another trajectory position"
+            )
         history_blocks = self._choose_history_blocks(mapped_idx)
         current_block = self._episode_step[mapped_idx] // self.replan_steps
         if self.full_episode_history:
@@ -321,3 +353,11 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "episode_step": torch.tensor(self._episode_step[mapped_idx], dtype=torch.long),
             "full_episode_history": torch.tensor(self.full_episode_history, dtype=torch.bool),
         }
+
+    def __getitem__(self, idx):
+        # RobotVideoDataset's generic fallback silently replaces failed items
+        # with random samples.  That is unacceptable for causal episode prefixes:
+        # an I/O error must fail fast instead of changing the trajectory/index.
+        if int(idx) < 0 or int(idx) >= len(self):
+            raise IndexError(f"Index {idx} out of bounds {len(self)}")
+        return self._get(int(idx))

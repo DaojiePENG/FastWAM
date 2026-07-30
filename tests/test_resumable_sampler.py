@@ -1,4 +1,5 @@
 import torch
+from accelerate.data_loader import DataLoaderShard
 
 from fastwam.utils.samplers import ResumableEpochSampler
 
@@ -9,6 +10,18 @@ class _Dataset:
 
     def __len__(self) -> int:
         return self.length
+
+    def __getitem__(self, index: int) -> int:
+        return int(index)
+
+
+class _LengthDataset(_Dataset):
+    def __init__(self, lengths):
+        super().__init__(len(lengths))
+        self.lengths = tuple(lengths)
+
+    def sampler_grouping_lengths(self):
+        return self.lengths
 
 
 def test_epoch_sampler_is_deterministic_full_permutation():
@@ -53,3 +66,85 @@ def test_resume_skips_only_consumed_global_batch_prefix():
 
     sampler.clear_resume_batch_offset()
     assert list(sampler) == full_epoch
+
+
+def test_resume_offset_applies_to_nonzero_epoch():
+    dataset = _Dataset(1000)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=7,
+        batch_size=4,
+        num_processes=8,
+    )
+    sampler.set_epoch(3)
+    full_epoch = list(sampler)
+    sampler.set_resume_batch_offset(5)
+    assert list(sampler) == full_epoch[5 * 4 * 8 :]
+
+
+def test_length_grouping_is_full_deterministic_permutation_without_curriculum():
+    global_batch_size = 8
+    lengths = [length for length in range(6) for _ in range(global_batch_size * 2)]
+    dataset = _LengthDataset(lengths)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=19,
+        batch_size=2,
+        num_processes=4,
+    )
+
+    epoch_zero = list(sampler)
+    assert sorted(epoch_zero) == list(range(len(dataset)))
+    assert epoch_zero == list(sampler)
+    grouped_costs = [
+        {lengths[index] for index in epoch_zero[offset : offset + global_batch_size]}
+        for offset in range(0, len(epoch_zero), global_batch_size)
+    ]
+    assert all(len(costs) == 1 for costs in grouped_costs)
+    # Complete global batches are shuffled rather than presented in increasing
+    # history order.
+    first_costs = [next(iter(costs)) for costs in grouped_costs]
+    assert first_costs != sorted(first_costs)
+
+    sampler.set_epoch(1)
+    epoch_one = list(sampler)
+    assert sorted(epoch_one) == list(range(len(dataset)))
+    assert epoch_one != epoch_zero
+
+
+def test_length_grouping_keeps_incomplete_tail_at_end_and_resume_exact():
+    lengths = [index // 3 for index in range(37)]
+    dataset = _LengthDataset(lengths)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=23,
+        batch_size=2,
+        num_processes=4,
+    )
+    full = list(sampler)
+    assert len(full) == 40
+    assert set(full) == set(range(len(dataset)))
+
+    # 37 real samples are deterministically padded to five full distributed
+    # batches. The exact padding is part of the absolute epoch order, so resume
+    # cannot change it.
+    assert full[-3:] == full[:3]
+    assert len(sampler) == 40
+    sampler.set_resume_batch_offset(2)
+    assert list(sampler) == full[16:]
+
+
+def test_accelerate_dataloader_shard_advances_sampler_epoch():
+    dataset = _Dataset(17)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=42,
+        batch_size=2,
+        num_processes=1,
+    )
+    loader = DataLoaderShard(dataset, batch_size=2, sampler=sampler)
+    first = [int(index) for batch in loader for index in batch]
+    assert sampler.epoch == 0
+    second = [int(index) for batch in loader for index in batch]
+    assert sampler.epoch == 1
+    assert first != second
