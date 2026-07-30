@@ -76,7 +76,7 @@ def main() -> None:
             if step not in logged_steps:
                 run.log(row, step=step)
                 logged_steps.add(step)
-        if "[done] max_steps reached step=1000" in text:
+        if "max_steps reached step=1000" in text:
             break
         time.sleep(args.poll_seconds)
     run.finish()

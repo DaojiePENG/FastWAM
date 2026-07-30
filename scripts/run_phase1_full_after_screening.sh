@@ -55,7 +55,7 @@ run_mode() {
 
     checkpoint="$(final_checkpoint "$mode")"
     if [[ -s "$checkpoint" ]] \
-        && grep -q "\[done\] max_steps reached step=$FINAL_STEP" "$log_file" 2>/dev/null; then
+        && grep -q "max_steps reached step=$FINAL_STEP" "$log_file" 2>/dev/null; then
         log "skip completed full training mode=$mode checkpoint=$checkpoint"
         return 0
     fi

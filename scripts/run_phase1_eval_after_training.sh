@@ -47,7 +47,7 @@ training_complete() {
         checkpoint="$(mode_checkpoint "$mode")"
         log_file="$TRAIN_ROOT/$mode/train.log"
         if [[ ! -s "$checkpoint" ]] \
-            || ! grep -q "\[done\] max_steps reached step=$FINAL_STEP" "$log_file"; then
+            || ! grep -q "max_steps reached step=$FINAL_STEP" "$log_file"; then
             return 1
         fi
     done
