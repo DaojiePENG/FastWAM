@@ -10,6 +10,9 @@ POLL_SECONDS="${POLL_SECONDS:-30}"
 FINAL_STEP="${FINAL_STEP:-892}"
 GRAD_ACCUM="${GRAD_ACCUM:-16}"
 SAVE_EVERY="${SAVE_EVERY:-223}"
+WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and-techn}"
+WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
+WANDB_GROUP="${WANDB_GROUP:-phase1-h8-d30-e1-bs32-seed42}"
 
 MODES=(interleaved vision_causal action_aggregator)
 GPU_PAIRS=(0,1 2,3 4,5)
@@ -67,6 +70,12 @@ run_mode() {
     CUDA_VISIBLE_DEVICES="$gpu_pair" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
+        WANDB_CONFIG_DIR="$ROOT_DIR/.cache/wandb/config" \
+        WANDB_CACHE_DIR="$ROOT_DIR/.cache/wandb/cache" \
+        WANDB_DATA_DIR="$ROOT_DIR/.cache/wandb/data" \
+        WANDB_DIR="$output_dir" \
+        WANDB_RUN_ID="phase1-e1-bs32-${mode}-seed42" \
+        WANDB_RESUME=allow \
         "$ROOT_DIR/.venv/bin/accelerate" launch \
         --config_file "$ROOT_DIR/scripts/accelerate_configs/accelerate_zero2_ds.yaml" \
         --num_processes 2 \
@@ -87,13 +96,23 @@ run_mode() {
         "save_every=$SAVE_EVERY" \
         eval_every=0 \
         seed=42 \
-        wandb.enabled=false \
+        wandb.enabled=true \
+        "wandb.workspace=$WANDB_ENTITY" \
+        "wandb.project=$WANDB_PROJECT" \
+        "wandb.group=$WANDB_GROUP" \
+        "wandb.name=phase1-e1-bs32-${mode}-seed42" \
+        wandb.mode=online \
         "resume=$resume_path" \
         >"$log_file" 2>&1
     log "done full training mode=$mode"
 }
 
-mkdir -p "$TRAIN_ROOT" "$EVAL_ROOT"
+mkdir -p \
+    "$TRAIN_ROOT" \
+    "$EVAL_ROOT" \
+    "$ROOT_DIR/.cache/wandb/config" \
+    "$ROOT_DIR/.cache/wandb/cache" \
+    "$ROOT_DIR/.cache/wandb/data"
 while ! screening_complete; do
     log "waiting for screening comparison: $SCREEN_EVAL_ROOT/pareto/pareto.json"
     sleep "$POLL_SECONDS"

@@ -12,8 +12,24 @@ NUM_GPUS="${NUM_GPUS:-8}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 FINAL_STEP="${FINAL_STEP:-1000}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
+GPU_IDS_CSV="${GPU_IDS_CSV:-}"
+INCLUDE_BASELINE="${INCLUDE_BASELINE:-true}"
 
 MODES=(interleaved vision_causal action_aggregator)
+if [[ -n "$GPU_IDS_CSV" ]]; then
+    IFS=',' read -r -a GPU_IDS <<<"$GPU_IDS_CSV"
+else
+    mapfile -t GPU_IDS < <(seq 0 $((NUM_GPUS - 1)))
+fi
+NUM_WORKERS="${#GPU_IDS[@]}"
+if (( NUM_WORKERS == 0 )); then
+    printf 'No evaluation GPUs configured.\n' >&2
+    exit 2
+fi
+EVAL_MODES=("${MODES[@]}")
+if [[ "$INCLUDE_BASELINE" == "true" ]]; then
+    EVAL_MODES=(fastwam_release "${EVAL_MODES[@]}")
+fi
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -125,12 +141,13 @@ run_task() {
 }
 
 worker() {
-    local gpu="$1"
+    local worker_index="$1"
+    local gpu="${GPU_IDS[$worker_index]}"
     local index=0
     local mode task_id
-    for mode in fastwam_release "${MODES[@]}"; do
+    for mode in "${EVAL_MODES[@]}"; do
         for task_id in $(seq 0 9); do
-            if (( index % NUM_GPUS == gpu )); then
+            if (( index % NUM_WORKERS == worker_index )); then
                 run_task "$gpu" "$mode" "$task_id"
             fi
             index=$((index + 1))
@@ -139,8 +156,8 @@ worker() {
 }
 
 worker_pids=()
-for gpu in $(seq 0 $((NUM_GPUS - 1))); do
-    worker "$gpu" &
+for worker_index in "${!GPU_IDS[@]}"; do
+    worker "$worker_index" &
     worker_pids+=("$!")
 done
 
