@@ -11,6 +11,7 @@ import hydra
 import numpy as np
 import torch
 from accelerate import PartialState
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
@@ -39,8 +40,22 @@ from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcess
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
-from leapbot_va.libero import executed_env_actions_to_model_space
-from libero.libero import benchmark, get_libero_path
+from leapbot_va.eval_contract import (
+    build_result_contract,
+    build_runtime_contract,
+    resolve_dataset_stats_path,
+    resolve_libero_task_and_initial_states,
+)
+from leapbot_va.eval_fingerprint import (
+    atomic_write_json,
+    build_verified_evaluation_fingerprint,
+    load_evaluation_fingerprint,
+)
+from leapbot_va.image_preprocessing import preprocess_uint8_libero_cameras
+from leapbot_va.libero import (
+    canonicalize_libero_env_action,
+    executed_env_actions_to_model_space,
+)
 from action_ensembler import ActionEnsembler
 
 OmegaConf.register_new_resolver("eval", eval)
@@ -80,6 +95,52 @@ def _mixed_precision_to_model_dtype(mixed_precision: str) -> torch.dtype:
     return torch.bfloat16
 
 
+def _build_result_fingerprint(
+    cfg: DictConfig,
+    *,
+    configured_causal_mode: Optional[str],
+    dataset_stats_path: Path,
+    task: Any,
+    initial_states_path: Path,
+) -> dict[str, Any]:
+    """Build identity from actual files and strictly verify preflight output."""
+    hydra_choices = OmegaConf.to_container(
+        HydraConfig.get().runtime.choices, resolve=True
+    )
+    config_name = str(HydraConfig.get().job.config_name)
+    runtime_contract = build_runtime_contract(
+        cfg,
+        config_name=config_name,
+        hydra_choices=hydra_choices,
+        dataset_stats_path=dataset_stats_path,
+        source_root=project_root,
+        configured_causal_mode=configured_causal_mode,
+    )
+    result_contract = build_result_contract(
+        cfg,
+        task=task,
+        initial_states_path=initial_states_path,
+    )
+    expected_path_cfg = cfg.EVALUATION.get("expected_fingerprint_path", None)
+    expected = None
+    if expected_path_cfg is not None:
+        expected_path = Path(
+            os.path.expanduser(os.path.expandvars(str(expected_path_cfg)))
+        ).resolve()
+        expected = load_evaluation_fingerprint(expected_path)
+    elif cfg.EVALUATION.get("result_fingerprint", None) is not None:
+        raise ValueError(
+            "EVALUATION.result_fingerprint is legacy and is not trusted by schema 3; "
+            "use EVALUATION.expected_fingerprint_path for strict preflight matching."
+        )
+    return build_verified_evaluation_fingerprint(
+        checkpoint_path=str(cfg.ckpt),
+        runtime_contract=runtime_contract,
+        result_contract=result_contract,
+        expected=expected,
+    )
+
+
 def _resolve_eval_device(cfg: DictConfig) -> str:
     eval_device = cfg.EVALUATION.get("device")
     if eval_device is not None:
@@ -88,31 +149,7 @@ def _resolve_eval_device(cfg: DictConfig) -> str:
 
 
 def _resolve_dataset_stats_path(cfg: DictConfig) -> Path:
-    explicit = cfg.EVALUATION.get("dataset_stats_path")
-    candidates: list[Path] = []
-
-    if explicit is not None:
-        candidates.append(Path(os.path.expanduser(os.path.expandvars(str(explicit)))))
-
-    ckpt = Path(os.path.expanduser(os.path.expandvars(str(cfg.ckpt))))
-    for parent in list(ckpt.parents)[:4]:
-        candidates.append(parent / "dataset_stats.json")
-
-    seen = set()
-    for path in candidates:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        if resolved.exists():
-            return resolved
-
-    msg = (
-        "Failed to locate dataset_stats.json. Tried explicit "
-        "EVALUATION.dataset_stats_path and checkpoint parent directories. "
-        "Please pass EVALUATION.dataset_stats_path=/path/to/dataset_stats.json."
-    )
-    raise FileNotFoundError(msg)
+    return resolve_dataset_stats_path(cfg)
 
 
 def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> dict:
@@ -153,18 +190,6 @@ def _load_model_checkpoint(model: torch.nn.Module, ckpt: str) -> dict:
     )
 
 
-def _center_crop_resize(image: np.ndarray, width: int, height: int) -> np.ndarray:
-    pil_image = Image.fromarray(image)
-    src_w, src_h = pil_image.size
-    scale = max(width / src_w, height / src_h)
-    resized = pil_image.resize((round(src_w * scale), round(src_h * scale)), resample=Image.BILINEAR)
-    rw, rh = resized.size
-    left = max((rw - width) // 2, 0)
-    top = max((rh - height) // 2, 0)
-    cropped = resized.crop((left, top, left + width, top + height))
-    return np.asarray(cropped, dtype=np.uint8)
-
-
 def _normalize_proprio(
     proprio: np.ndarray,
     processor: FastWAMProcessor,
@@ -192,50 +217,13 @@ def _obs_to_model_input(
     dtype: torch.dtype,
 ):
     imgs = get_libero_image(obs)
-    image_meta = processor.shape_meta["images"]
-    if len(image_meta) < int(processor.num_output_cameras):
-        raise ValueError(
-            f"shape_meta.images has {len(image_meta)} entries, "
-            f"but num_output_cameras={processor.num_output_cameras}."
-        )
-
-    def _meta_to_hw(meta: dict, camera_idx: int) -> tuple[int, int]:
-        shape = meta["shape"]
-        if len(shape) != 3:
-            raise ValueError(f"shape_meta.images[{camera_idx}].shape must be [C,H,W], got {shape}")
-        return int(shape[1]), int(shape[2])
-
     concatenation = cfg.data.train.get("concat_multi_camera", "horizontal")
-    num_cameras = processor.num_output_cameras
-    if num_cameras == 1:
-        primary_h, primary_w = _meta_to_hw(image_meta[0], camera_idx=0)
-        rgb = _center_crop_resize(imgs["image"], width=primary_w, height=primary_h)
-    elif num_cameras == 2:
-        primary_h, primary_w = _meta_to_hw(image_meta[0], camera_idx=0)
-        wrist_h, wrist_w = _meta_to_hw(image_meta[1], camera_idx=1)
-        primary = _center_crop_resize(imgs["image"], width=primary_w, height=primary_h)
-        wrist = _center_crop_resize(imgs["wrist_image"], width=wrist_w, height=wrist_h)
-        if concatenation == "horizontal":
-            rgb = np.concatenate([primary, wrist], axis=1)
-        elif concatenation == "vertical":
-            rgb = np.concatenate([primary, wrist], axis=0)
-        else:
-            raise ValueError(f"Invalid concat_multi_camera: {concatenation}")
-    else:
-        raise ValueError(f"LIBERO eval currently supports num_output_cameras in [1, 2], got {num_cameras}.")
-
-    actual_h, actual_w = int(rgb.shape[0]), int(rgb.shape[1])
-    expected_h, expected_w = int(height), int(width)
-    image_shapes = [meta["shape"] for meta in image_meta]
-    assert actual_h == expected_h and actual_w == expected_w, (
-        "Input image size mismatch after per-camera resize + concat: "
-        f"got (H,W)=({actual_h},{actual_w}), expected (H,W)=({expected_h},{expected_w}) "
-        f"from data.train.video_size={[expected_h, expected_w]}; "
-        f"shape_meta.images={image_shapes}, concat_multi_camera={concatenation}."
-    )
-
-    x = torch.tensor(rgb).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
-    x = x * (2.0 / 255.0) - 1.0
+    x = preprocess_uint8_libero_cameras(
+        imgs,
+        processor=processor,
+        concat_multi_camera=str(concatenation),
+        video_size=[height, width],
+    ).to(device=device, dtype=dtype)
 
     proprio = _normalize_proprio(_extract_sim_state(obs), processor)
 
@@ -484,6 +472,11 @@ def run_single_episode(
 
     memory_cfg = cfg.EVALUATION.get("memory", {})
     memory_enabled = bool(memory_cfg.get("enabled", False))
+    if memory_enabled and use_action_ensembler:
+        raise ValueError(
+            "LeapBot memory evaluation discards every unexecuted action prediction; "
+            "action ensembling across replans is therefore unsupported"
+        )
     memory = None
     if memory_enabled:
         if not hasattr(model, "create_memory") or not hasattr(model, "commit_executed_actions"):
@@ -492,6 +485,9 @@ def run_single_episode(
             exit_depth=int(memory_cfg.get("exit_depth", 30)),
             causal_mode=str(memory_cfg.get("causal_mode", "interleaved")),
             max_history_blocks=int(memory_cfg.get("max_history_blocks", 70)),
+            retained_history_blocks=memory_cfg.get(
+                "retained_history_blocks", None
+            ),
             action_horizon=action_horizon,
             replan_steps=replan_steps,
         )
@@ -568,11 +564,16 @@ def run_single_episode(
                 imgs = get_libero_image(obs)
                 replay_images.append(imgs.copy())
 
-        executed_action = pending_actions.pop(0)
+        executed_action = canonicalize_libero_env_action(
+            pending_actions.pop(0),
+            env.action_spec,
+            binarize_gripper=bool(cfg.EVALUATION.get("binarize_gripper", False)),
+        )
+        committed_action = executed_action.copy()
         obs, _, done, _ = env.step(executed_action)
         executed_control_steps += 1
         if memory_enabled:
-            current_executed_actions.append(list(executed_action))
+            current_executed_actions.append(committed_action)
         if visualize_future_video and current_predicted_future_clip is not None:
             current_replan_step += 1
             if current_replan_step in capture_steps:
@@ -657,6 +658,7 @@ def run_single_episode(
 
     if memory is not None:
         memory_metrics["completed_blocks"] = memory.completed_blocks
+        memory_metrics["retained_history_blocks"] = memory.retained_completed_blocks
         memory_metrics["final_cache_bytes"] = memory.cache_nbytes
         committed_steps = sum(
             int(replan.get("commit", {}).get("executed_actions", 0))
@@ -803,6 +805,18 @@ def eval_single_process(cfg: DictConfig):
     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
     checkpoint_payload = _load_model_checkpoint(model, str(cfg.ckpt))
+    checkpoint_training_strategy = checkpoint_payload.get("training_strategy")
+    configured_training_strategy = getattr(model, "training_strategy", None)
+    if (
+        checkpoint_training_strategy is not None
+        and configured_training_strategy is not None
+        and str(checkpoint_training_strategy) != str(configured_training_strategy)
+    ):
+        raise ValueError(
+            "checkpoint/evaluation training strategy mismatch: "
+            f"checkpoint={checkpoint_training_strategy} "
+            f"configured={configured_training_strategy}"
+        )
     checkpoint_causal_mode = checkpoint_payload.get("causal_mode")
     configured_causal_mode = getattr(model, "causal_mode", None)
     if (
@@ -843,8 +857,14 @@ def eval_single_process(cfg: DictConfig):
         raise ValueError(f"data.train.video_size must be [H, W], got {video_size}")
     input_h = int(video_size[0])
     input_w = int(video_size[1])
-    concat_multi_camera = cfg.data.train.get("concat_multi_camera", None)
-    shape_meta_images = [meta["shape"] for meta in processor.shape_meta["images"]]
+    _, task, initial_states_path = resolve_libero_task_and_initial_states(cfg)
+    evaluation_fingerprint = _build_result_fingerprint(
+        cfg,
+        configured_causal_mode=configured_causal_mode,
+        dataset_stats_path=dataset_stats_path,
+        task=task,
+        initial_states_path=initial_states_path,
+    )
 
     local_log_dir = Path(cfg.EVALUATION.output_dir)
     local_log_dir.mkdir(parents=True, exist_ok=True)
@@ -854,18 +874,10 @@ def eval_single_process(cfg: DictConfig):
     if bool(cfg.EVALUATION.get("visualize_future_video", False)):
         predicted_video_dir.mkdir(parents=True, exist_ok=True)
 
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
-    task = task_suite.get_task(cfg.EVALUATION.task_id)
     # LIBERO's helper calls ``torch.load`` without an explicit ``weights_only``
     # argument. PyTorch >=2.6 defaults that argument to True, while the trusted
     # official LIBERO init-state files contain NumPy arrays. Load the same file
     # explicitly so evaluation works without a process-wide unsafe-load flag.
-    initial_states_path = (
-        Path(get_libero_path("init_states"))
-        / task.problem_folder
-        / task.init_states_file
-    )
     initial_states = torch.load(initial_states_path, weights_only=False)
 
     while len(initial_states) < int(cfg.EVALUATION.num_trials):
@@ -896,6 +908,7 @@ def eval_single_process(cfg: DictConfig):
             "training_strategy": getattr(model, "training_strategy", None),
         },
         "memory_config": memory_config,
+        "evaluation_fingerprint": evaluation_fingerprint,
     }
 
     logging.info("Running LIBERO evaluation with env_num=1")
@@ -919,8 +932,7 @@ def eval_single_process(cfg: DictConfig):
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / f"gpu{cfg.gpu_id}_task{cfg.EVALUATION.task_id}_results.json"
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4, cls=NumpyEncoder)
+    atomic_write_json(output_file, results, indent=4, encoder_cls=NumpyEncoder)
 
     print(
         f"Task {cfg.EVALUATION.task_id} completed: "

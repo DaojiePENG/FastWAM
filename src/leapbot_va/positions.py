@@ -24,8 +24,8 @@ separate, initially no-op embedding::
 
 The episode embedding uses analytic sinusoidal features rather than a finite
 lookup table, so it supports arbitrarily long episodes.  All three output
-projections are exactly zero-initialized: adding this module to a FastWAM
-checkpoint is therefore an exact identity until the new projections train.
+projections are exactly zero-initialized, so the position extension leaves a
+FastWAM checkpoint's token inputs unchanged at initialization.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ _INTEGER_DTYPES = {
     torch.int32,
     torch.int64,
 }
+
+TEMPORAL_POSITION_SCHEME = "relative_local_rope_episode_v2"
 
 
 def sinusoidal_episode_features(
@@ -251,9 +253,10 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             raise ValueError(f"{name} must be non-negative")
         return position_ids.to(device=device, dtype=torch.long)
 
-    def _project(
+    def _project_relative(
         self,
         position_ids: torch.Tensor,
+        reference_ids: torch.Tensor,
         projection: nn.Linear,
         *,
         output_dtype: torch.dtype,
@@ -270,7 +273,13 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             max_period=self.max_period,
             dtype=projection.weight.dtype,
         )
-        return projection(features).to(dtype=output_dtype)
+        reference_features = sinusoidal_episode_features(
+            reference_ids,
+            self.feature_dim,
+            max_period=self.max_period,
+            dtype=projection.weight.dtype,
+        )
+        return projection(features - reference_features).to(dtype=output_dtype)
 
     def video_offsets(
         self,
@@ -295,8 +304,9 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             device=tokens.device,
             name="absolute_block_ids",
         )
-        frame_offsets = self._project(
+        frame_offsets = self._project_relative(
             block_ids,
+            torch.zeros_like(block_ids),
             self.video_projection,
             output_dtype=tokens.dtype,
             output_device=tokens.device,
@@ -308,8 +318,16 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
         tokens: torch.Tensor,
         absolute_control_ids: torch.Tensor,
         absolute_block_ids: torch.Tensor,
+        *,
+        local_control_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return summed coarse-block and fine-control action offsets."""
+        """Return episode offsets relative to the native local action clock.
+
+        The ActionDiT RoPE already represents positions local to each action
+        block.  Projecting ``absolute - local`` sinusoidal features adds only
+        episode progress: block zero receives exactly zero additive offset even
+        after these projections train.  This does not freeze the base model.
+        """
 
         self._validate_tokens(tokens, self.action_dim, "action")
         batch_size, sequence_length, _ = tokens.shape
@@ -327,14 +345,29 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             device=tokens.device,
             name="absolute_block_ids",
         )
-        control_offsets = self._project(
+        if local_control_ids is None:
+            local_control_ids = torch.arange(
+                sequence_length,
+                dtype=torch.long,
+                device=tokens.device,
+            )
+        local_ids = self._normalize_position_ids(
+            local_control_ids,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            device=tokens.device,
+            name="local_control_ids",
+        )
+        control_offsets = self._project_relative(
             control_ids,
+            local_ids,
             self.action_control_projection,
             output_dtype=tokens.dtype,
             output_device=tokens.device,
         )
-        block_offsets = self._project(
+        block_offsets = self._project_relative(
             block_ids,
+            torch.zeros_like(block_ids),
             self.action_block_projection,
             output_dtype=tokens.dtype,
             output_device=tokens.device,
@@ -361,6 +394,8 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
         tokens: torch.Tensor,
         absolute_control_ids: torch.Tensor,
         absolute_block_ids: torch.Tensor,
+        *,
+        local_control_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Add episode block and control-step embeddings to action tokens."""
 
@@ -368,6 +403,7 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             tokens,
             absolute_control_ids,
             absolute_block_ids,
+            local_control_ids=local_control_ids,
         )
 
     def apply_video_pre_dit(
@@ -406,13 +442,21 @@ class HierarchicalTemporalPositionEmbedding(nn.Module):
             tokens = pre_state["tokens"]
         except (KeyError, TypeError) as exc:
             raise ValueError("action pre_state must contain tokens") from exc
+        meta = dict(pre_state.get("meta", {}))
+        local_control_ids = meta.get("position_ids")
+        if local_control_ids is None:
+            local_control_ids = self.local_action_rope_ids(
+                int(tokens.shape[1]),
+                device=tokens.device,
+            )
         result = dict(pre_state)
         result["tokens"] = self.add_action(
             tokens,
             absolute_control_ids,
             absolute_block_ids,
+            local_control_ids=local_control_ids,
         )
-        result["meta"] = dict(pre_state.get("meta", {}))
+        result["meta"] = meta
         result["meta"]["absolute_control_ids"] = absolute_control_ids
         result["meta"]["absolute_block_ids"] = absolute_block_ids
         return result

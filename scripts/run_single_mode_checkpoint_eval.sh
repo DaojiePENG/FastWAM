@@ -14,6 +14,8 @@ VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-true}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-true}"
 MEMORY_ENABLED="${MEMORY_ENABLED:-true}"
 MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
+RETAINED_HISTORY_BLOCKS="${RETAINED_HISTORY_BLOCKS:-full}"
+EXIT_DEPTH="${EXIT_DEPTH:-30}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 CHECKPOINT="$TRAIN_ROOT/$MODE/checkpoints/weights/$FINAL_STEP_TAG.pt"
 
@@ -27,26 +29,116 @@ if [[ ! -s "$CHECKPOINT" ]]; then
     printf 'Checkpoint not ready: %s\n' "$CHECKPOINT" >&2
     exit 2
 fi
+case "$EXIT_DEPTH" in
+    8|16|24|30) ;;
+    *)
+        printf 'EXIT_DEPTH must be one of 8,16,24,30.\n' >&2
+        exit 2
+        ;;
+esac
+CHECKPOINT_SHA256="$(sha256sum "$CHECKPOINT" | awk '{print $1}')"
+if [[ "$MEMORY_ENABLED" == "true" ]]; then
+    FINGERPRINT_EPISODE_CAPACITY="$MAX_HISTORY_BLOCKS"
+    if [[ "$RETAINED_HISTORY_BLOCKS" == "full" ]]; then
+        MEMORY_RETENTION_OVERRIDE=null
+        FINGERPRINT_HISTORY_CAP="$MAX_HISTORY_BLOCKS"
+    elif [[ "$RETAINED_HISTORY_BLOCKS" =~ ^[0-9]+$ ]] \
+        && (( RETAINED_HISTORY_BLOCKS <= MAX_HISTORY_BLOCKS )); then
+        MEMORY_RETENTION_OVERRIDE="$RETAINED_HISTORY_BLOCKS"
+        FINGERPRINT_HISTORY_CAP="$RETAINED_HISTORY_BLOCKS"
+    else
+        printf 'RETAINED_HISTORY_BLOCKS must be full or an integer in [0,%s].\n' \
+            "$MAX_HISTORY_BLOCKS" >&2
+        exit 2
+    fi
+else
+    FINGERPRINT_EPISODE_CAPACITY=0
+    FINGERPRINT_HISTORY_CAP=0
+    MEMORY_RETENTION_OVERRIDE=null
+fi
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+fingerprint_path() {
+    local task_id="$1"
+    printf '%s/.fingerprints/%s_d%s_h%s_task%s.json\n' \
+        "$EVAL_ROOT" "$MODE" "$EXIT_DEPTH" "$FINGERPRINT_HISTORY_CAP" "$task_id"
+}
+
+build_task_fingerprint() {
+    local task_id="$1"
+    local fingerprint_file
+    fingerprint_file="$(fingerprint_path "$task_id")"
+
+    mkdir -p "$(dirname "$fingerprint_file")"
+    PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        --config-name sim_leapbot_libero \
+        --output "$fingerprint_file" \
+        --checkpoint-sha256 "$CHECKPOINT_SHA256" \
+        -- \
+        task=libero_leapbot_2cam224 \
+        "ckpt=$CHECKPOINT" \
+        EVALUATION.task_suite_name=libero_10 \
+        "EVALUATION.task_id=$task_id" \
+        "EVALUATION.num_trials=$NUM_TRIALS" \
+        EVALUATION.num_inference_steps=10 \
+        EVALUATION.replan_steps=10 \
+        EVALUATION.save_rollout_video=false \
+        "EVALUATION.dataset_stats_path=$DATASET_STATS" \
+        "model.causal_mode=$MODE" \
+        model.training_strategy=video_lora_action_full \
+        "model.video_lora.enabled=$VIDEO_LORA_ENABLED" \
+        "EVALUATION.merge_video_lora=$MERGE_VIDEO_LORA" \
+        "EVALUATION.memory.enabled=$MEMORY_ENABLED" \
+        "EVALUATION.memory.causal_mode=$MODE" \
+        "EVALUATION.memory.exit_depth=$EXIT_DEPTH" \
+        "EVALUATION.memory.max_history_blocks=$MAX_HISTORY_BLOCKS" \
+        "EVALUATION.memory.retained_history_blocks=$MEMORY_RETENTION_OVERRIDE" \
+        >/dev/null
+}
+
+result_matches_task() {
+    local result="$1"
+    local task_id="$2"
+    [[ -s "$result" ]] && PYTHONPATH="$ROOT_DIR/src" \
+        "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+        "$result" \
+        --expected "$(fingerprint_path "$task_id")"
+}
+
+# Validate the entire result tree before any worker can start an evaluator.
+# This keeps a stale result for a later task from racing with earlier tasks.
+for task_id in $(seq 0 9); do
+    build_task_fingerprint "$task_id"
+    for existing_result in "$EVAL_ROOT/$MODE/libero_10"/gpu*_task"${task_id}"_results.json; do
+        [[ -e "$existing_result" ]] || continue
+        if ! result_matches_task "$existing_result" "$task_id"; then
+            log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+            exit 2
+        fi
+    done
+done
 
 run_task() {
     local gpu="$1"
     local task_id="$2"
     local output_dir="$EVAL_ROOT/$MODE"
     local log_file="$EVAL_ROOT/task_logs/${MODE}_task${task_id}_gpu${gpu}.log"
+    local fingerprint_file
     local existing_result
+    fingerprint_file="$(fingerprint_path "$task_id")"
 
     for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
-        if [[ -s "$existing_result" ]] \
-            && [[ "$(jq -r '.total_episodes // 0' "$existing_result")" == "$NUM_TRIALS" ]] \
-            && jq -e '[.memory_metrics[]?.replans[]?.timing.total_inference_s] | length > 0' \
-                "$existing_result" >/dev/null; then
-            log "skip completed mode=$MODE task=$task_id result=$existing_result"
+        [[ -e "$existing_result" ]] || continue
+        if result_matches_task "$existing_result" "$task_id"; then
+            log "skip exact completed mode=$MODE task=$task_id result=$existing_result"
             return 0
         fi
+        log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+        return 2
     done
 
     mkdir -p "$output_dir"
@@ -74,12 +166,15 @@ run_task() {
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \
         "EVALUATION.output_dir=$output_dir" \
         "model.causal_mode=$MODE" \
+        model.training_strategy=video_lora_action_full \
         "model.video_lora.enabled=$VIDEO_LORA_ENABLED" \
         "EVALUATION.merge_video_lora=$MERGE_VIDEO_LORA" \
         "EVALUATION.memory.enabled=$MEMORY_ENABLED" \
         "EVALUATION.memory.causal_mode=$MODE" \
-        EVALUATION.memory.exit_depth=30 \
+        "EVALUATION.memory.exit_depth=$EXIT_DEPTH" \
         "EVALUATION.memory.max_history_blocks=$MAX_HISTORY_BLOCKS" \
+        "EVALUATION.memory.retained_history_blocks=$MEMORY_RETENTION_OVERRIDE" \
+        "+EVALUATION.expected_fingerprint_path=$fingerprint_file" \
         >"$log_file" 2>&1; then
         log "done mode=$MODE step=$FINAL_STEP task=$task_id gpu=$gpu"
     else

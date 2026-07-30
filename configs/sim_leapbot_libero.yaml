@@ -40,6 +40,9 @@ EVALUATION:
     exit_depth: 30
     causal_mode: ${model.causal_mode}
     max_history_blocks: 70
+    # None keeps the complete episode. Set 0/8/16/32 only for retention ablations;
+    # max_history_blocks remains the independent 700-control-step hard capacity.
+    retained_history_blocks: null
 
 hydra:
   job:

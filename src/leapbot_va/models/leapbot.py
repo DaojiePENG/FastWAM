@@ -24,7 +24,10 @@ from leapbot_va.memory import (
     LeapMemoryState,
     VALID_CAUSAL_MODES,
 )
-from leapbot_va.positions import HierarchicalTemporalPositionEmbedding
+from leapbot_va.positions import (
+    TEMPORAL_POSITION_SCHEME,
+    HierarchicalTemporalPositionEmbedding,
+)
 
 
 class LeapBotVA(FastWAM):
@@ -64,8 +67,8 @@ class LeapBotVA(FastWAM):
         self.video_exit_heads.to(device=self.device, dtype=self.torch_dtype)
         # Preserve FastWAM's pretrained, block-local RoPE coordinates.  The
         # episode-global block/control progress is injected separately through
-        # exact-zero projections, so a release checkpoint remains an identity
-        # at initialization.
+        # exact-zero projections, so the extension leaves a freshly loaded
+        # release checkpoint's token inputs unchanged at initialization.
         self.temporal_positions = HierarchicalTemporalPositionEmbedding(
             video_dim=int(self.video_expert.hidden_dim),
             action_dim=int(self.action_expert.hidden_dim),
@@ -246,6 +249,7 @@ class LeapBotVA(FastWAM):
         exit_depth: int = 30,
         causal_mode: str | None = None,
         max_history_blocks: int = 70,
+        retained_history_blocks: int | None = None,
         action_horizon: int | None = None,
         replan_steps: int | None = None,
     ) -> LeapMemoryState:
@@ -288,6 +292,7 @@ class LeapBotVA(FastWAM):
                 exit_depth=exit_depth,
                 causal_mode=resolved_causal_mode,
                 max_history_blocks=max_history_blocks,
+                retained_history_blocks=retained_history_blocks,
                 action_horizon=resolved_action_horizon,
                 replan_steps=resolved_replan_steps,
             )
@@ -298,6 +303,16 @@ class LeapBotVA(FastWAM):
         memory.reset()
 
     def _validate_memory_compatibility(self, memory: LeapMemoryState) -> None:
+        if memory.config.exit_depth not in self.exit_depths:
+            raise ValueError(
+                "memory exit depth is unsupported by this model: "
+                f"memory={memory.config.exit_depth} model={self.exit_depths}"
+            )
+        if memory.config.exit_depth not in self.trained_exit_depths:
+            raise ValueError(
+                "memory exit depth was not trained in the loaded checkpoint: "
+                f"memory={memory.config.exit_depth} trained={self.trained_exit_depths}"
+            )
         if memory.config.causal_mode != self.causal_mode:
             raise ValueError(
                 "memory/model causal mode mismatch: "
@@ -364,6 +379,13 @@ class LeapBotVA(FastWAM):
             context = context.to(device=self.device, dtype=self.torch_dtype)
             context_mask = context_mask.to(device=self.device, dtype=torch.bool)
 
+        if not bool(torch.isfinite(context).all().item()):
+            raise ValueError("language context contains non-finite values")
+        if self.proprio_encoder is not None and proprio is None:
+            raise ValueError(
+                "proprio is required for memory inference because the loaded "
+                "model was trained with proprio conditioning"
+            )
         if proprio is not None:
             if self.proprio_dim is None:
                 raise ValueError("proprio was provided but proprio_encoder is disabled")
@@ -373,6 +395,8 @@ class LeapBotVA(FastWAM):
                 raise ValueError(
                     f"proprio must be [D] or [1,D] with D={self.proprio_dim}"
                 )
+            if not bool(torch.isfinite(proprio).all().item()):
+                raise ValueError("proprio contains non-finite values")
             context, context_mask = self._append_proprio_to_context(
                 context=context,
                 context_mask=context_mask,
@@ -433,6 +457,8 @@ class LeapBotVA(FastWAM):
             raise ValueError("input_image must have shape [1,3,H,W] or [3,H,W]")
         if input_image.shape[-2] % 16 or input_image.shape[-1] % 16:
             raise ValueError("input_image height and width must be multiples of 16")
+        if not bool(torch.isfinite(input_image).all().item()):
+            raise ValueError("input_image contains non-finite values")
 
         snapshot = memory.snapshot()
         timings: dict[str, float] = {}
@@ -583,6 +609,8 @@ class LeapBotVA(FastWAM):
             if profile and self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             timings["action_denoise_s"] = time.perf_counter() - t1
+            if not bool(torch.isfinite(latents_action).all().item()):
+                raise RuntimeError("action denoising produced non-finite commands")
         except Exception:
             memory.rollback(snapshot)
             raise
@@ -591,6 +619,7 @@ class LeapBotVA(FastWAM):
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
             "memory": {
                 "completed_blocks": memory.completed_blocks,
+                "retained_history_blocks": memory.retained_completed_blocks,
                 "cache_bytes": memory.cache_nbytes,
                 "token_counts": memory.token_counts,
                 "phase": memory.phase.value,
@@ -622,6 +651,8 @@ class LeapBotVA(FastWAM):
             raise ValueError(
                 f"action dimension must be {self.action_expert.action_dim}"
             )
+        if not bool(torch.isfinite(actions_model_space).all().item()):
+            raise ValueError("actions_model_space contains non-finite values")
         executed = int(actions_model_space.shape[1])
         if executed <= 0 or executed > memory.config.replan_steps:
             raise ValueError(
@@ -695,6 +726,7 @@ class LeapBotVA(FastWAM):
         return {
             "executed_actions": executed,
             "completed_blocks": memory.completed_blocks,
+            "retained_history_blocks": memory.retained_completed_blocks,
             "cache_bytes": memory.cache_nbytes,
             "commit_s": time.perf_counter() - t0,
         }
@@ -705,6 +737,7 @@ class LeapBotVA(FastWAM):
             "action_exit_heads": self.action_exit_heads.state_dict(),
             "video_exit_heads": self.video_exit_heads.state_dict(),
             "temporal_positions": self.temporal_positions.state_dict(),
+            "temporal_position_scheme": TEMPORAL_POSITION_SCHEME,
             "exit_depths": self.exit_depths,
             "training_exit_depths": self.training_exit_depths,
             "trained_exit_depths": self.training_exit_depths,
@@ -727,6 +760,79 @@ class LeapBotVA(FastWAM):
     def load_checkpoint(self, path, optimizer=None):
         payload = super().load_checkpoint(path, optimizer=optimizer)
         checkpoint_causal_mode = payload.get("causal_mode")
+        native_marker_fields = {
+            "action_exit_heads",
+            "video_exit_heads",
+            "temporal_positions",
+            "temporal_position_scheme",
+            "exit_depths",
+            "training_exit_depths",
+            "trained_exit_depths",
+            "causal_mode",
+            "training_strategy",
+            "history_training_mode",
+            "training_replan_steps",
+            "training_action_horizon",
+            "history_vae_batch_chunk_size",
+            "video_lora_config",
+        }
+        is_native_leapbot = bool(native_marker_fields & set(payload))
+        if is_native_leapbot:
+            required_native_fields = {
+                "mot",
+                "action_exit_heads",
+                "video_exit_heads",
+                "temporal_positions",
+                "temporal_position_scheme",
+                "exit_depths",
+                "training_exit_depths",
+                "trained_exit_depths",
+                "causal_mode",
+                "training_strategy",
+                "history_training_mode",
+                "training_replan_steps",
+                "training_action_horizon",
+                "history_vae_batch_chunk_size",
+                "video_lora_config",
+            }
+            missing_native_fields = sorted(required_native_fields - set(payload))
+            if self.proprio_encoder is not None and "proprio_encoder" not in payload:
+                missing_native_fields.append("proprio_encoder")
+            if self.proprio_encoder is None and "proprio_encoder" in payload:
+                raise ValueError(
+                    "native LeapBot checkpoint contains proprio_encoder but the "
+                    "configured model has proprio conditioning disabled"
+                )
+            if missing_native_fields:
+                raise ValueError(
+                    "native LeapBot checkpoint is incomplete; missing fields="
+                    f"{sorted(set(missing_native_fields))}"
+                )
+            checkpoint_exit_depths = tuple(
+                int(depth) for depth in payload["exit_depths"]
+            )
+            if checkpoint_exit_depths != self.exit_depths:
+                raise ValueError(
+                    "checkpoint/model exit architecture mismatch: "
+                    f"checkpoint={checkpoint_exit_depths} model={self.exit_depths}"
+                )
+            checkpoint_position_scheme = str(payload["temporal_position_scheme"])
+            if checkpoint_position_scheme != TEMPORAL_POSITION_SCHEME:
+                raise ValueError(
+                    "checkpoint temporal-position scheme mismatch: "
+                    f"checkpoint={checkpoint_position_scheme!r} "
+                    f"model={TEMPORAL_POSITION_SCHEME!r}"
+                )
+        checkpoint_training_strategy = payload.get("training_strategy")
+        if (
+            checkpoint_training_strategy is not None
+            and str(checkpoint_training_strategy) != self.training_strategy
+        ):
+            raise ValueError(
+                "checkpoint/model training strategy mismatch: "
+                f"checkpoint={checkpoint_training_strategy} "
+                f"model={self.training_strategy}"
+            )
         if (
             checkpoint_causal_mode is not None
             and str(checkpoint_causal_mode) != self.causal_mode
@@ -770,12 +876,39 @@ class LeapBotVA(FastWAM):
             )
         checkpoint_lora = payload.get("video_lora_config")
         if checkpoint_lora is not None:
-            checkpoint_lora_enabled = bool(checkpoint_lora.get("enabled", False))
-            if checkpoint_lora_enabled != self.video_lora_config.enabled:
+            expected_lora = self.video_lora_config.__dict__
+            normalized_checkpoint_lora = {
+                "enabled": bool(checkpoint_lora.get("enabled", False)),
+                "rank": int(checkpoint_lora.get("rank", -1)),
+                "alpha": float(checkpoint_lora.get("alpha", float("nan"))),
+                "dropout": float(checkpoint_lora.get("dropout", float("nan"))),
+                "learning_rate_multiplier": float(
+                    checkpoint_lora.get("learning_rate_multiplier", float("nan"))
+                ),
+            }
+            if normalized_checkpoint_lora != expected_lora:
                 raise ValueError(
-                    "checkpoint/model video LoRA mismatch: "
-                    f"checkpoint enabled={checkpoint_lora_enabled}, "
-                    f"model enabled={self.video_lora_config.enabled}"
+                    "checkpoint/model video LoRA configuration mismatch: "
+                    f"checkpoint={normalized_checkpoint_lora}, model={expected_lora}"
+                )
+        # Original FastWAM releases intentionally lack LeapBot metadata and
+        # adapters, so their permissive load remains the initialization path.
+        # A native LeapBot checkpoint, however, must have an exact MoT key set:
+        # silently accepting missing LoRA/action weights would invalidate every
+        # downstream comparison even if causal metadata happened to match.
+        if is_native_leapbot:
+            checkpoint_mot = payload.get("mot")
+            if not isinstance(checkpoint_mot, dict):
+                raise ValueError("native LeapBot checkpoint is missing a mot state_dict")
+            expected_mot_keys = set(self.mot.state_dict().keys())
+            checkpoint_mot_keys = set(checkpoint_mot.keys())
+            missing_mot_keys = sorted(expected_mot_keys - checkpoint_mot_keys)
+            unexpected_mot_keys = sorted(checkpoint_mot_keys - expected_mot_keys)
+            if missing_mot_keys or unexpected_mot_keys:
+                raise ValueError(
+                    "native LeapBot checkpoint MoT key mismatch: "
+                    f"missing={missing_mot_keys[:8]} "
+                    f"unexpected={unexpected_mot_keys[:8]}"
                 )
         if "temporal_positions" in payload:
             self.temporal_positions.load_state_dict(
@@ -783,6 +916,10 @@ class LeapBotVA(FastWAM):
                 strict=True,
             )
         else:
+            if is_native_leapbot:
+                raise ValueError(
+                    "native LeapBot checkpoint is missing temporal_positions"
+                )
             # Loading an original FastWAM checkpoint must always restore the
             # identity extension, even if this model instance was previously
             # used with trained temporal-position weights.

@@ -136,6 +136,54 @@ def test_zero_initialized_projections_receive_gradients_and_can_distinguish_ids(
     assert not torch.equal(learned_offsets[:, 0], learned_offsets[:, 1])
 
 
+def test_trained_episode_offsets_are_exactly_zero_at_first_replan():
+    module = HierarchicalTemporalPositionEmbedding(
+        video_dim=4,
+        action_dim=3,
+        feature_dim=8,
+        dtype=torch.float64,
+    )
+    with torch.no_grad():
+        module.video_projection.weight.normal_(std=0.2)
+        module.action_block_projection.weight.normal_(std=0.2)
+        module.action_control_projection.weight.normal_(std=0.2)
+
+    video = torch.randn(1, 2, 4, dtype=torch.float64)
+    action = torch.randn(1, 4, 3, dtype=torch.float64)
+    local = torch.arange(4)
+    torch.testing.assert_close(
+        module.add_video(video, torch.tensor([0, 0]), tokens_per_frame=1),
+        video,
+        atol=0,
+        rtol=0,
+    )
+    torch.testing.assert_close(
+        module.add_action(
+            action,
+            local,
+            torch.zeros_like(local),
+            local_control_ids=local,
+        ),
+        action,
+        atol=0,
+        rtol=0,
+    )
+
+    assert not torch.equal(
+        module.add_video(video, torch.tensor([1, 1]), tokens_per_frame=1),
+        video,
+    )
+    assert not torch.equal(
+        module.add_action(
+            action,
+            local + 10,
+            torch.ones_like(local),
+            local_control_ids=local,
+        ),
+        action,
+    )
+
+
 def test_pre_dit_helpers_copy_state_and_preserve_metadata():
     module = HierarchicalTemporalPositionEmbedding(4, 3, feature_dim=8)
     video_pre = {

@@ -17,6 +17,9 @@ data:
     replan_steps: 10
     history_seed: ${seed}
     full_episode_history: true
+    # Repeat only genuine episode-start samples; every nonzero-H sample still
+    # contains its complete real prefix. Formal runs set this from an ablation.
+    initial_block_oversample: 1
     # Reuse release normalization statistics; the historical window does not
     # recompute them. Override on the CLI for a local checkpoint directory.
     pretrained_norm_stats: ${oc.env:LEAPBOT_DATASET_STATS,null}

@@ -1,13 +1,19 @@
+import pytest
 import torch
 
 from leapbot_va.training import (
     build_packed_history_attention_mask,
     build_query_context_masks,
-    current_video_segment_attention_mask,
     history_window_indices,
+    resolve_full_episode_history_batch,
     validate_packed_history_metadata,
 )
-from leapbot_va.data import full_episode_sparse_offsets
+from leapbot_va.data import (
+    LeapRobotVideoDataset,
+    _assert_finite_training_tensor,
+    full_episode_sparse_offsets,
+    oversample_episode_starts,
+)
 
 
 def _indices():
@@ -87,8 +93,6 @@ def test_history_window_is_aligned_and_cannot_cross_episode():
     assert observations == [50, 60, 70]
     assert actions == slice(50, 80)
     assert positions == [2, 3, 4]
-    import pytest
-
     with pytest.raises(ValueError, match="cross"):
         history_window_indices(
             current_episode_step=10,
@@ -98,15 +102,56 @@ def test_history_window_is_aligned_and_cannot_cross_episode():
         )
 
 
-def test_incremental_current_real_frame_cannot_read_future_supervision():
-    mask = current_video_segment_attention_mask(
-        tokens_per_frame=2,
-        num_frames=3,
-        device=torch.device("cpu"),
+def test_nonfinite_causal_training_values_fail_before_model_forward():
+    with pytest.raises(RuntimeError, match="non-finite.*history_action"):
+        _assert_finite_training_tensor(
+            torch.tensor([float("nan")]),
+            mapped_idx=12,
+            episode_step=20,
+            field="history_action",
+        )
+    _assert_finite_training_tensor(
+        torch.empty(0),
+        mapped_idx=0,
+        episode_step=0,
+        field="empty_history",
     )
-    assert mask[:2, :2].all()
-    assert not mask[:2, 2:].any()
-    assert mask[2:, :].all()
+
+
+def test_episode_start_oversampling_repeats_only_true_h0_samples():
+    indices = [10, 20, 30, 100, 110]
+    steps = {10: 0, 20: 10, 30: 20, 100: 0, 110: 10}
+    assert oversample_episode_starts(indices, steps, 3) == [
+        10,
+        20,
+        30,
+        100,
+        110,
+        10,
+        100,
+        10,
+        100,
+    ]
+    with pytest.raises(ValueError, match="positive integer"):
+        oversample_episode_starts(indices, steps, 0)
+
+
+def test_causal_dataset_rejects_nonunit_global_sample_stride(monkeypatch):
+    def fail_if_base_constructor_runs(*args, **kwargs):
+        raise AssertionError("stride validation must run before loading the dataset")
+
+    monkeypatch.setattr(
+        "fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset.__init__",
+        fail_if_base_constructor_runs,
+    )
+    common = {
+        "dataset_dirs": [],
+        "shape_meta": {},
+        "replan_steps": 10,
+    }
+    for stride in (True, 2, 0):
+        with pytest.raises(ValueError, match="global_sample_stride=1"):
+            LeapRobotVideoDataset(global_sample_stride=stride, **common)
 
 
 def test_full_episode_metadata_requires_complete_left_aligned_prefix():
@@ -147,6 +192,33 @@ def test_full_episode_metadata_requires_complete_left_aligned_prefix():
         )
 
 
+def test_packed_batch_rejects_mixed_full_and_short_history_contracts():
+    assert resolve_full_episode_history_batch(
+        torch.tensor([True, True]),
+        batch_size=2,
+        device=torch.device("cpu"),
+    )
+    assert not resolve_full_episode_history_batch(
+        torch.tensor([False, False]),
+        batch_size=2,
+        device=torch.device("cpu"),
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="homogeneous"):
+        resolve_full_episode_history_batch(
+            torch.tensor([True, False]),
+            batch_size=2,
+            device=torch.device("cpu"),
+        )
+    with pytest.raises(ValueError, match="one flag per sample"):
+        resolve_full_episode_history_batch(
+            torch.tensor([True, True, True]),
+            batch_size=2,
+            device=torch.device("cpu"),
+        )
+
 def test_full_episode_offsets_decode_only_replan_observations():
     observations, actions = full_episode_sparse_offsets(
         max_history_blocks=70,
@@ -160,3 +232,85 @@ def test_full_episode_offsets_decode_only_replan_observations():
     assert len(actions) == 732
     assert actions[0] == -700
     assert actions[-1] == 31
+
+
+class _FixedLeRobotSample:
+    def __init__(self, sample):
+        self.sample = sample
+
+    def __getitem__(self, mapped_idx):
+        assert mapped_idx == 17
+        return self.sample
+
+
+def _minimal_causal_dataset(sample):
+    dataset = object.__new__(LeapRobotVideoDataset)
+    dataset.lerobot_dataset = _FixedLeRobotSample(sample)
+    dataset._valid_replan_indices = [17]
+    dataset._episode_step = {17: 4}
+    dataset.max_history_blocks = 3
+    dataset.min_history_blocks = 0
+    dataset.replan_steps = 2
+    dataset.history_action_steps = 6
+    dataset.full_episode_history = True
+    dataset.video_sample_indices = [0, 2, 4]
+    dataset.num_frames = 5
+    dataset.override_instruction = None
+    dataset._format_camera_video = lambda full_video, indices: full_video[
+        0, indices
+    ].permute(1, 0, 2, 3)
+    dataset._get_cached_text_context = lambda instruction: (
+        torch.zeros(3, 4),
+        torch.tensor([True, True, False]),
+    )
+    return dataset
+
+
+def _minimal_causal_sample():
+    # H=2 at episode step 4. Observation slots 1/2 are the two historical
+    # replanning frames and slot 3 is current. Slots 4/5 are future supervision
+    # and are deliberately padded to prove that the fail-fast is causal-only.
+    return {
+        "idx": 17,
+        "pixel_values": torch.arange(1 * 6 * 3 * 2 * 2, dtype=torch.float32).reshape(
+            1, 6, 3, 2, 2
+        ),
+        "image_is_pad": torch.tensor([False, False, False, False, True, True]),
+        "action": torch.zeros(10, 7),
+        # History uses slots 2:6. Current slots 8/9 are allowed future padding.
+        "action_is_pad": torch.tensor(
+            [False, False, False, False, False, False, False, False, True, True]
+        ),
+        "proprio": torch.zeros(6, 8),
+        "proprio_is_pad": torch.tensor([False, False, False, False, True, True]),
+        "instruction": "move the object",
+    }
+
+
+def test_causal_dataset_accepts_real_prefix_and_padded_future_supervision():
+    output = _minimal_causal_dataset(_minimal_causal_sample())._get(0)
+    assert output["history_valid_blocks"].tolist() == [True, True, False]
+    assert output["image_is_pad"].tolist() == [False, True, True]
+    assert output["action_is_pad"].tolist() == [False, False, True, True]
+
+
+def test_causal_dataset_rejects_padding_in_any_real_history_source():
+    import pytest
+
+    injected = [
+        ("image_is_pad", 1, "history_observation.image_is_pad"),
+        ("action_is_pad", 2, "history_action.action_is_pad"),
+        ("proprio_is_pad", 2, "history_proprio.proprio_is_pad"),
+        ("image_is_pad", 3, "current_observation.image_is_pad"),
+        ("proprio_is_pad", 3, "current_proprio.proprio_is_pad"),
+    ]
+    for mask_name, source_slot, field in injected:
+        sample = _minimal_causal_sample()
+        sample[mask_name][source_slot] = True
+        with pytest.raises(RuntimeError) as error:
+            _minimal_causal_dataset(sample)._get(0)
+        message = str(error.value)
+        assert "mapped_idx=17" in message
+        assert "episode_step=4" in message
+        assert f"field={field}" in message
+        assert f"source_slots=[{source_slot}]" in message

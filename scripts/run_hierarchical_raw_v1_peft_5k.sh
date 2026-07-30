@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Correct-architecture phase-A v2 recipe:
 #   * FastWAM release initialization
-#   * block-local RoPE + zero-initialized absolute episode timing
+#   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
 #   * complete packed episode prefix with full BPTT
 #   * ActionDiT full fine-tuning + conservative VideoDiT LoRA
@@ -22,6 +22,7 @@ LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-2}"
+INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-1}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29971}"
 MAX_PREFLIGHT_USED_MIB="${MAX_PREFLIGHT_USED_MIB:-2048}"
@@ -110,6 +111,10 @@ case "$HISTORY_VAE_BATCH_CHUNK_SIZE" in
         exit 1
         ;;
 esac
+if ! [[ "$INITIAL_BLOCK_OVERSAMPLE" =~ ^[1-9][0-9]*$ ]]; then
+    log "initial block oversampling must be a positive integer; got $INITIAL_BLOCK_OVERSAMPLE"
+    exit 1
+fi
 if [[ "$ALLOW_DIRTY" != "true" ]] \
     && [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal)" ]]; then
     log "refusing formal training from a dirty worktree; commit the exact code first"
@@ -133,6 +138,7 @@ CONTRACT_PAYLOAD="$(printf '%s\n' \
     "lr_scheduler_type=$LR_SCHEDULER_TYPE" \
     "video_lora_multiplier=$VIDEO_LORA_MULTIPLIER" \
     "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     "save_every=$SAVE_EVERY" \
     "seed=$SEED" \
     "history_training_mode=packed_full_bptt" \
@@ -186,7 +192,7 @@ else
 fi
 
 preflight_gpus
-log "start hierarchical raw-v2 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE resume=$RESUME_PATH"
+log "start hierarchical raw-v2 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \
@@ -222,6 +228,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     data.train.full_episode_history=true \
     data.train.min_history_blocks=0 \
     data.train.max_history_blocks=70 \
+    "data.train.initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     'model.training_exit_depths=[30]' \
     "max_steps=$MAX_STEPS" \
     num_epochs=100 \

@@ -6,13 +6,13 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torchvision.transforms.functional as transforms_F
 from accelerate import PartialState
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from fastwam.datasets.lerobot.base_lerobot_dataset import BaseLerobotDataset
 from fastwam.datasets.lerobot.robot_video_dataset import RobotVideoDataset
+from leapbot_va.image_preprocessing import format_processed_camera_video
 from leapbot_va.training import history_window_indices
 
 
@@ -41,6 +41,83 @@ def full_episode_sparse_offsets(
     observation_offsets.extend(int(value) for value in current_video_offsets)
     action_offsets = list(range(-history_steps, current_action_horizon))
     return observation_offsets, action_offsets
+
+
+def oversample_episode_starts(
+    indices: list[int],
+    episode_steps: dict[int, int],
+    factor: int,
+) -> list[int]:
+    """Repeat genuine H0 samples without weakening any H>0 prefix."""
+
+    if isinstance(factor, bool) or not isinstance(factor, int) or factor < 1:
+        raise ValueError("episode-start oversampling factor must be a positive integer")
+    starts = [index for index in indices if episode_steps[index] == 0]
+    return [*indices, *(starts * (factor - 1))]
+
+
+def _assert_unpadded_causal_source(
+    pad_mask: torch.Tensor,
+    selector: list[int] | slice,
+    *,
+    mapped_idx: int,
+    episode_step: int,
+    field: str,
+) -> None:
+    """Reject episode-clamped values before they enter persistent history.
+
+    LeRobot clamps an out-of-episode query to the first/last real frame and
+    reports that substitution through the corresponding ``*_is_pad`` mask.  A
+    clamped value is acceptable for future flow-matching supervision, but it
+    must never be presented as a real observation, proprio state, or executed
+    historical action.
+    """
+
+    if not isinstance(pad_mask, torch.Tensor) or pad_mask.ndim != 1:
+        shape = None if not isinstance(pad_mask, torch.Tensor) else tuple(pad_mask.shape)
+        raise RuntimeError(
+            "invalid causal-source pad mask: "
+            f"mapped_idx={mapped_idx} episode_step={episode_step} "
+            f"field={field} shape={shape}"
+        )
+    if pad_mask.dtype != torch.bool:
+        raise RuntimeError(
+            "invalid causal-source pad mask dtype: "
+            f"mapped_idx={mapped_idx} episode_step={episode_step} "
+            f"field={field} dtype={pad_mask.dtype}"
+        )
+
+    selected_mask = pad_mask[selector]
+    if selected_mask.numel() == 0 or not bool(selected_mask.any().item()):
+        return
+    selected_slots = torch.arange(pad_mask.numel(), device=pad_mask.device)[selector]
+    padded_slots = selected_slots[selected_mask].detach().cpu().tolist()
+    raise RuntimeError(
+        "causal source unexpectedly contains episode padding: "
+        f"mapped_idx={mapped_idx} episode_step={episode_step} "
+        f"field={field} source_slots={padded_slots}"
+    )
+
+
+def _assert_finite_training_tensor(
+    tensor: torch.Tensor,
+    *,
+    mapped_idx: int,
+    episode_step: int,
+    field: str,
+) -> None:
+    """Fail before a malformed observation/action can poison a causal prefix."""
+
+    if not isinstance(tensor, torch.Tensor):
+        raise RuntimeError(
+            "invalid causal training tensor: "
+            f"mapped_idx={mapped_idx} episode_step={episode_step} field={field}"
+        )
+    if not bool(torch.isfinite(tensor).all().item()):
+        raise RuntimeError(
+            "causal training tensor contains non-finite values: "
+            f"mapped_idx={mapped_idx} episode_step={episode_step} field={field}"
+        )
 
 
 class LeapRobotVideoDataset(RobotVideoDataset):
@@ -76,6 +153,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         replan_steps: int = 10,
         history_seed: int = 42,
         full_episode_history: bool = False,
+        initial_block_oversample: int = 1,
     ):
         if max_history_blocks < 0:
             raise ValueError("max_history_blocks must be non-negative")
@@ -83,6 +161,17 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             raise ValueError("min_history_blocks must be in [0,max_history_blocks]")
         if replan_steps <= 0:
             raise ValueError("replan_steps must be positive")
+        if isinstance(global_sample_stride, bool) or global_sample_stride != 1:
+            raise ValueError(
+                "LeapBot causal history requires global_sample_stride=1 so each "
+                "historical action is one actual controller step"
+            )
+        if (
+            isinstance(initial_block_oversample, bool)
+            or not isinstance(initial_block_oversample, int)
+            or initial_block_oversample < 1
+        ):
+            raise ValueError("initial_block_oversample must be a positive integer")
 
         # Let the base class build transforms, text cache behavior, and the
         # release-compatible normalizer before replacing its temporal window.
@@ -114,6 +203,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         self.replan_steps = int(replan_steps)
         self.history_seed = int(history_seed)
         self.full_episode_history = bool(full_episode_history)
+        self.initial_block_oversample = int(initial_block_oversample)
         self.history_action_steps = self.max_history_blocks * self.replan_steps
         self.window_frames = self.history_action_steps + int(num_frames)
 
@@ -171,6 +261,11 @@ class LeapRobotVideoDataset(RobotVideoDataset):
                 index = int(start + relative_step)
                 self._valid_replan_indices.append(index)
                 self._episode_step[index] = relative_step
+        self._valid_replan_indices = oversample_episode_starts(
+            self._valid_replan_indices,
+            self._episode_step,
+            self.initial_block_oversample,
+        )
         if not self._valid_replan_indices:
             raise ValueError("no episode replanning boundaries found")
 
@@ -210,34 +305,15 @@ class LeapRobotVideoDataset(RobotVideoDataset):
     def _format_camera_video(self, full_video: torch.Tensor, indices: list[int]) -> torch.Tensor:
         if full_video.ndim == 5:
             video = full_video[:, indices]
-            num_cameras, steps, channels, height, width = video.shape
         elif full_video.ndim == 4:
-            video = full_video[indices].unsqueeze(0)
-            num_cameras, steps, channels, height, width = video.shape
+            video = full_video[indices]
         else:
             raise ValueError(f"unexpected pixel_values shape: {tuple(full_video.shape)}")
-
-        if self.concat_multi_camera == "robotwin":
-            if num_cameras != 3:
-                raise ValueError("robotwin camera layout requires exactly 3 cameras")
-            top = transforms_F.resize(video[0], [256, 320], antialias=True)
-            left = transforms_F.resize(video[1], [128, 160], antialias=True)
-            right = transforms_F.resize(video[2], [128, 160], antialias=True)
-            video = torch.cat([top, torch.cat([left, right], dim=-1)], dim=-2)
-        elif num_cameras > 1:
-            if self.concat_multi_camera == "horizontal":
-                video = torch.cat([video[i] for i in range(num_cameras)], dim=-1)
-            elif self.concat_multi_camera == "vertical":
-                video = torch.cat([video[i] for i in range(num_cameras)], dim=-2)
-            else:
-                raise ValueError(f"invalid concat_multi_camera: {self.concat_multi_camera}")
-        else:
-            video = video.squeeze(0)
-
-        video = self.resize_transform(video)
-        video = self.crop_transform(video)
-        video = self.normalize_transform(video)
-        return video.permute(1, 0, 2, 3)  # [C,T,H,W]
+        return format_processed_camera_video(
+            video,
+            concat_multi_camera=self.concat_multi_camera,
+            video_size=self.video_size,
+        )
 
     def _get(self, idx):
         mapped_idx = self._valid_replan_indices[int(idx)]
@@ -249,8 +325,9 @@ class LeapRobotVideoDataset(RobotVideoDataset):
                 f"failure: requested={mapped_idx} loaded={loaded_idx}; refusing to attach "
                 "causal metadata from another trajectory position"
             )
+        episode_step = self._episode_step[mapped_idx]
         history_blocks = self._choose_history_blocks(mapped_idx)
-        current_block = self._episode_step[mapped_idx] // self.replan_steps
+        current_block = episode_step // self.replan_steps
         if self.full_episode_history:
             observation_history_slots = self.max_history_blocks
             current_indices = list(
@@ -262,8 +339,6 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         else:
             offset = self.history_action_steps
             current_indices = [offset + value for value in self.video_sample_indices]
-        video = self._format_camera_video(sample["pixel_values"], current_indices)
-        current_image_is_pad = sample["image_is_pad"][current_indices]
 
         if self.full_episode_history:
             history_start = self.max_history_blocks - history_blocks
@@ -276,11 +351,51 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             absolute_history_positions = list(range(history_blocks))
         else:
             history_indices, history_action_slice, absolute_history_positions = history_window_indices(
-                current_episode_step=self._episode_step[mapped_idx],
+                current_episode_step=episode_step,
                 history_blocks=history_blocks,
                 replan_steps=self.replan_steps,
                 current_window_offset=offset,
             )
+
+        current_observation_index = current_indices[0]
+        _assert_unpadded_causal_source(
+            sample["image_is_pad"],
+            [current_observation_index],
+            mapped_idx=mapped_idx,
+            episode_step=episode_step,
+            field="current_observation.image_is_pad",
+        )
+        _assert_unpadded_causal_source(
+            sample["proprio_is_pad"],
+            [current_observation_index],
+            mapped_idx=mapped_idx,
+            episode_step=episode_step,
+            field="current_proprio.proprio_is_pad",
+        )
+        _assert_unpadded_causal_source(
+            sample["image_is_pad"],
+            history_indices,
+            mapped_idx=mapped_idx,
+            episode_step=episode_step,
+            field="history_observation.image_is_pad",
+        )
+        _assert_unpadded_causal_source(
+            sample["proprio_is_pad"],
+            history_indices,
+            mapped_idx=mapped_idx,
+            episode_step=episode_step,
+            field="history_proprio.proprio_is_pad",
+        )
+        _assert_unpadded_causal_source(
+            sample["action_is_pad"],
+            history_action_slice,
+            mapped_idx=mapped_idx,
+            episode_step=episode_step,
+            field="history_action.action_is_pad",
+        )
+
+        video = self._format_camera_video(sample["pixel_values"], current_indices)
+        current_image_is_pad = sample["image_is_pad"][current_indices]
         channels, _, height, width = video.shape
         history_video = torch.zeros(
             (channels, self.max_history_blocks, height, width), dtype=video.dtype
@@ -318,7 +433,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         if self.full_episode_history:
             # Only the current proprio is consumed by LeapBot training.  Keep
             # the public FastWAM-shaped field aligned with the action horizon.
-            current_proprio = sample["proprio"][self.max_history_blocks]
+            current_proprio = sample["proprio"][current_observation_index]
             proprio = current_proprio.unsqueeze(0).expand(self.num_frames - 1, -1).clone()
             proprio_is_pad = torch.zeros(
                 self.num_frames - 1, dtype=torch.bool, device=proprio.device
@@ -334,6 +449,22 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         context, context_mask = self._get_cached_text_context(instruction)
         context[~context_mask] = 0.0
         context_mask = torch.ones_like(context_mask)
+        finite_fields = {
+            "video": video,
+            "action": action,
+            "proprio": proprio,
+            "history_video": history_video,
+            "history_action": history_action,
+            "history_proprio": history_proprio,
+            "context": context,
+        }
+        for field, tensor in finite_fields.items():
+            _assert_finite_training_tensor(
+                tensor,
+                mapped_idx=mapped_idx,
+                episode_step=episode_step,
+                field=field,
+            )
         return {
             "video": video,
             "action": action,
@@ -350,7 +481,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "history_valid_blocks": history_valid,
             "history_block_positions": history_positions,
             "current_block_position": torch.tensor(current_block, dtype=torch.long),
-            "episode_step": torch.tensor(self._episode_step[mapped_idx], dtype=torch.long),
+            "episode_step": torch.tensor(episode_step, dtype=torch.long),
             "full_episode_history": torch.tensor(self.full_episode_history, dtype=torch.bool),
         }
 

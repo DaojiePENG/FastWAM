@@ -10,7 +10,7 @@ from leapbot_va.lora import VideoLoRAConfig
 from fastwam.trainer import Wan22Trainer
 
 
-def _model():
+def _model(*, proprio_dim=None):
     video = WanVideoDiT(
         hidden_dim=12,
         in_dim=4,
@@ -45,6 +45,7 @@ def _model():
         mot=mot,
         vae=nn.Identity(),
         text_dim=6,
+        proprio_dim=proprio_dim,
         device="cpu",
     )
 
@@ -131,7 +132,7 @@ def test_lora_checkpoint_roundtrip_requires_matching_model(tmp_path):
 
     loaded = _model()
     loaded.configure_finetuning(
-        training_strategy="full_dit",
+        training_strategy="video_lora_action_full",
         video_lora_config=config,
     )
     loaded.load_checkpoint(path)
@@ -144,6 +145,93 @@ def test_lora_checkpoint_roundtrip_requires_matching_model(tmp_path):
     try:
         incompatible.load_checkpoint(path)
     except ValueError as error:
-        assert "LoRA mismatch" in str(error)
+        assert "training strategy mismatch" in str(error)
     else:
         raise AssertionError("LoRA checkpoint loaded without LoRA modules")
+
+
+def test_native_checkpoint_rejects_strategy_and_complete_lora_contract(tmp_path):
+    config = VideoLoRAConfig(
+        enabled=True,
+        rank=2,
+        alpha=2,
+        dropout=0.0,
+        learning_rate_multiplier=3,
+    )
+    source = _model()
+    source.configure_finetuning(
+        training_strategy="video_lora_action_full",
+        video_lora_config=config,
+    )
+    path = tmp_path / "native.pt"
+    source.save_checkpoint(path)
+
+    wrong_strategy = _model()
+    wrong_strategy.configure_finetuning(
+        training_strategy="full_dit",
+        video_lora_config=config,
+    )
+    with pytest.raises(ValueError, match="training strategy mismatch"):
+        wrong_strategy.load_checkpoint(path)
+
+    wrong_multiplier = _model()
+    wrong_multiplier.configure_finetuning(
+        training_strategy="video_lora_action_full",
+        video_lora_config=VideoLoRAConfig(
+            enabled=True,
+            rank=2,
+            alpha=2,
+            dropout=0.0,
+            learning_rate_multiplier=4,
+        ),
+    )
+    with pytest.raises(ValueError, match="LoRA configuration mismatch"):
+        wrong_multiplier.load_checkpoint(path)
+
+
+def test_native_checkpoint_rejects_missing_mot_weight(tmp_path):
+    source = _model()
+    path = tmp_path / "native.pt"
+    source.save_checkpoint(path)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    removed_key = next(iter(payload["mot"]))
+    del payload["mot"][removed_key]
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="MoT key mismatch"):
+        _model().load_checkpoint(path)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "causal_mode",
+        "temporal_positions",
+        "temporal_position_scheme",
+        "proprio_encoder",
+    ],
+)
+def test_native_checkpoint_rejects_missing_learned_auxiliary_state(
+    tmp_path, missing_field
+):
+    source = _model(proprio_dim=2)
+    path = tmp_path / "native.pt"
+    source.save_checkpoint(path)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    del payload[missing_field]
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match=f"missing fields=.*{missing_field}"):
+        _model(proprio_dim=2).load_checkpoint(path)
+
+
+def test_native_checkpoint_rejects_obsolete_temporal_position_semantics(tmp_path):
+    source = _model()
+    path = tmp_path / "native.pt"
+    source.save_checkpoint(path)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload["temporal_position_scheme"] = "absolute_episode_v1"
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="temporal-position scheme mismatch"):
+        _model().load_checkpoint(path)

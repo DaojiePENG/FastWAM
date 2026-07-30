@@ -10,6 +10,8 @@ from typing import Any
 
 import torch
 
+from leapbot_va.positions import TEMPORAL_POSITION_SCHEME
+
 
 def _state_dict_summary(state_dict: Any, name: str) -> dict[str, int]:
     if not isinstance(state_dict, dict) or not state_dict:
@@ -64,6 +66,7 @@ def validate_checkpoint(
         "training_strategy": expected_training_strategy,
         "training_replan_steps": int(expected_replan_steps),
         "training_action_horizon": int(expected_action_horizon),
+        "temporal_position_scheme": TEMPORAL_POSITION_SCHEME,
     }
     for key, expected in expected_metadata.items():
         actual = payload.get(key)

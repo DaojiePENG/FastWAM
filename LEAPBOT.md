@@ -36,6 +36,12 @@ capacity. A checkpoint may use only exit depths recorded as actually trained;
 a D30-only checkpoint cannot silently run D8/16/24. `memory=None` retains the
 original FastWAM inference behavior.
 
+The LIBERO bridge canonicalizes each final command after any postprocessing:
+it clips to `env.action_spec`, applies deterministic gripper binarization, and
+passes the same array to both `env.step` and the memory commit conversion.
+Cross-replan action ensembling is rejected when memory is enabled, so the 22
+unexecuted predictions in a 32-step chunk cannot enter later history.
+
 The causal modes are:
 
 - `interleaved`: a new observation reads historical observation and action KV.
@@ -69,6 +75,11 @@ The downloader uses the official FastWAM Hugging Face repositories
 The production training path is raw causal attention with
 `packed_full_bptt`: every real observation/action block before the current
 replan remains in the graph. There is no history gate and no detached prefix.
+Native block-local RoPE is preserved, while a learned episode clock is expressed
+relative to those local coordinates; block zero is therefore an exact position
+no-op even after the clock parameters train. This does not freeze the shared
+DiT weights, so release-behavior retention is measured separately with paired
+H0 samples.
 All comparison runs use the same FastWAM release initialization, split, update
 count, global batch, scheduler, and seed. The launcher refuses a dirty worktree
 and binds every resumable state to a hash of the exact commit, release weights,
@@ -83,7 +94,8 @@ training; see [the acceptance report](./reports/HISTORY_VAE_BATCHING.md).
 # Phase 1: after the paired LR audit selects a learning rate, train all three
 # modes sequentially with the complete episode prefix, D30, BF16, the same
 # 8-GPU topology/global batch, and a 5% warmup + cosine schedule.
-SELECTED_LR=1.0e-4 bash scripts/run_causal_full_bptt_comparison.sh
+SELECTED_LR=1.0e-4 INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
+  bash scripts/run_causal_full_bptt_comparison.sh
 
 # Phase 2: initialize from the winning D30 history checkpoint and train exits.
 accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
@@ -95,6 +107,9 @@ accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
 
 Short 0-8 or 0-16 windows are optional controlled ablations, not the main
 recipe and not substitutes for complete-prefix training.
+The released LIBERO training episodes provide real prefixes through H=50. The
+70-block setting is a capacity and inference extrapolation bound; H=51..69 is
+not represented as observed training history and must be reported as such.
 
 For phase 3 the objective is exactly
 `L30 + (L8 + L16 + L24) / 3`; every `Ld` contains video and action
@@ -106,6 +121,8 @@ flow-matching losses.
 python experiments/libero/eval_libero_single.py \
   --config-name sim_leapbot_libero \
   ckpt=/path/to/leapbot.pt \
+  model.training_strategy=video_lora_action_full \
+  model.video_lora.enabled=true \
   EVALUATION.task_id=0 \
   EVALUATION.num_trials=10 \
   EVALUATION.memory.exit_depth=16

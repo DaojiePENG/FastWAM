@@ -15,6 +15,8 @@ POLL_SECONDS="${POLL_SECONDS:-30}"
 MAX_GPU_USED_MIB="${MAX_GPU_USED_MIB:-2048}"
 MODES=(fastwam_release action_aggregator interleaved vision_causal)
 FINAL_TAG="step_$(printf '%06d' "$FINAL_STEP")"
+declare -A CHECKPOINT_BY_MODE
+declare -A CHECKPOINT_SHA256_BY_MODE
 
 IFS=',' read -r -a GPU_IDS <<<"$GPU_IDS_CSV"
 NUM_WORKERS="${#GPU_IDS[@]}"
@@ -53,34 +55,36 @@ for mode in action_aggregator interleaved vision_causal; do
         exit 2
     fi
 done
+if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
+    printf 'FastWAM release checkpoint missing: %s\n' "$RELEASE_CHECKPOINT" >&2
+    exit 2
+fi
 
-while ! selected_gpus_are_free; do
-    log "waiting for all final-evaluation GPUs: $GPU_IDS_CSV"
-    sleep "$POLL_SECONDS"
+CHECKPOINT_BY_MODE[fastwam_release]="$RELEASE_CHECKPOINT"
+for mode in action_aggregator interleaved vision_causal; do
+    CHECKPOINT_BY_MODE[$mode]="$(mode_checkpoint "$mode")"
+done
+for mode in "${MODES[@]}"; do
+    log "hashing checkpoint once for result identity: mode=$mode"
+    CHECKPOINT_SHA256_BY_MODE[$mode]="$(sha256sum "${CHECKPOINT_BY_MODE[$mode]}" | awk '{print $1}')"
 done
 
-run_task() {
-    local gpu="$1"
-    local mode="$2"
-    local task_id="$3"
-    local output_dir="$EVAL_ROOT/$mode"
-    local log_file="$EVAL_ROOT/task_logs/${mode}_task${task_id}_gpu${gpu}.log"
-    local existing_result checkpoint config_name task_choice
+fingerprint_path() {
+    local mode="$1"
+    local task_id="$2"
+    printf '%s/.fingerprints/%s_task%s.json\n' "$EVAL_ROOT" "$mode" "$task_id"
+}
+
+build_mode_fingerprint() {
+    local mode="$1"
+    local task_id="$2"
+    local checkpoint="${CHECKPOINT_BY_MODE[$mode]}"
+    local checkpoint_sha256="${CHECKPOINT_SHA256_BY_MODE[$mode]}"
+    local expected
+    local config_name task_choice
     local -a mode_args
-
-    for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
-        if [[ -s "$existing_result" ]] \
-            && [[ "$(jq -r '.total_episodes // 0' "$existing_result")" == "$NUM_TRIALS" ]] \
-            && jq -e '[.memory_metrics[]?.replans[]?.timing.total_inference_s] | length > 0' \
-                "$existing_result" >/dev/null; then
-            log "skip completed final mode=$mode task=$task_id result=$existing_result"
-            return 0
-        fi
-    done
-
-    mkdir -p "$output_dir"
+    expected="$(fingerprint_path "$mode" "$task_id")"
     if [[ "$mode" == "fastwam_release" ]]; then
-        checkpoint="$RELEASE_CHECKPOINT"
         config_name=sim_libero
         task_choice=libero_uncond_2cam224_1e-4
         mode_args=(
@@ -88,19 +92,129 @@ run_task() {
             EVALUATION.binarize_gripper=true
         )
     else
-        checkpoint="$(mode_checkpoint "$mode")"
         config_name=sim_leapbot_libero
         task_choice=libero_leapbot_2cam224
         mode_args=(
             "model.causal_mode=$mode"
+            model.training_strategy=video_lora_action_full
             model.video_lora.enabled=true
             EVALUATION.merge_video_lora=true
             EVALUATION.memory.enabled=true
             "EVALUATION.memory.causal_mode=$mode"
             EVALUATION.memory.exit_depth=30
             EVALUATION.memory.max_history_blocks=70
+            EVALUATION.memory.retained_history_blocks=null
         )
     fi
+    mkdir -p "$(dirname "$expected")"
+    PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        --config-name "$config_name" \
+        --output "$expected" \
+        --checkpoint-sha256 "$checkpoint_sha256" \
+        -- \
+        "task=$task_choice" \
+        "ckpt=$checkpoint" \
+        EVALUATION.task_suite_name=libero_10 \
+        "EVALUATION.task_id=$task_id" \
+        "EVALUATION.num_trials=$NUM_TRIALS" \
+        EVALUATION.num_inference_steps=10 \
+        EVALUATION.replan_steps=10 \
+        EVALUATION.save_rollout_video=false \
+        "EVALUATION.dataset_stats_path=$DATASET_STATS" \
+        "${mode_args[@]}" \
+        >/dev/null
+}
+
+result_matches_mode() {
+    local result="$1"
+    local mode="$2"
+    local task_id="$3"
+    [[ -s "$result" ]] && PYTHONPATH="$ROOT_DIR/src" \
+        "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+        "$result" \
+        --expected "$(fingerprint_path "$mode" "$task_id")"
+}
+
+# Refuse a mixed result tree before any worker can acquire a GPU. Matching
+# results remain resumable; legacy or differently configured results require a
+# fresh EVAL_ROOT (or explicit operator cleanup after audit).
+pending_evaluations=0
+for mode in "${MODES[@]}"; do
+    for task_id in $(seq 0 9); do
+        matching_result_found=false
+        build_mode_fingerprint "$mode" "$task_id"
+        for existing_result in "$EVAL_ROOT/$mode/libero_10"/gpu*_task"${task_id}"_results.json; do
+            [[ -e "$existing_result" ]] || continue
+            if ! result_matches_mode "$existing_result" "$mode" "$task_id"; then
+                log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+                log "use a fresh EVAL_ROOT or remove the mismatched result after auditing it"
+                exit 2
+            fi
+            matching_result_found=true
+        done
+        if [[ "$matching_result_found" != "true" ]]; then
+            pending_evaluations=$((pending_evaluations + 1))
+        fi
+    done
+done
+
+if (( pending_evaluations > 0 )); then
+    while ! selected_gpus_are_free; do
+        log "waiting for all final-evaluation GPUs: $GPU_IDS_CSV"
+        sleep "$POLL_SECONDS"
+    done
+else
+    log "all final-evaluation results exactly match; no GPU wait required"
+fi
+
+run_task() {
+    local gpu="$1"
+    local mode="$2"
+    local task_id="$3"
+    local output_dir="$EVAL_ROOT/$mode"
+    local log_file="$EVAL_ROOT/task_logs/${mode}_task${task_id}_gpu${gpu}.log"
+    local existing_result checkpoint checkpoint_sha256 config_name task_choice
+    local expected_fingerprint
+    local -a mode_args
+
+    checkpoint="${CHECKPOINT_BY_MODE[$mode]}"
+    checkpoint_sha256="${CHECKPOINT_SHA256_BY_MODE[$mode]}"
+    expected_fingerprint="$(fingerprint_path "$mode" "$task_id")"
+    if [[ "$mode" == "fastwam_release" ]]; then
+        config_name=sim_libero
+        task_choice=libero_uncond_2cam224_1e-4
+        mode_args=(
+            EVALUATION.visualize_future_video=false
+            EVALUATION.binarize_gripper=true
+        )
+    else
+        config_name=sim_leapbot_libero
+        task_choice=libero_leapbot_2cam224
+        mode_args=(
+            "model.causal_mode=$mode"
+            model.training_strategy=video_lora_action_full
+            model.video_lora.enabled=true
+            EVALUATION.merge_video_lora=true
+            EVALUATION.memory.enabled=true
+            "EVALUATION.memory.causal_mode=$mode"
+            EVALUATION.memory.exit_depth=30
+            EVALUATION.memory.max_history_blocks=70
+            EVALUATION.memory.retained_history_blocks=null
+        )
+    fi
+    for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
+        [[ -e "$existing_result" ]] || continue
+        if result_matches_mode "$existing_result" "$mode" "$task_id"; then
+            log "skip exact completed final mode=$mode task=$task_id result=$existing_result"
+            return 0
+        fi
+        log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+        log "use a fresh EVAL_ROOT or remove the mismatched result after auditing it"
+        return 2
+    done
+
+    mkdir -p "$output_dir"
 
     log "start final mode=$mode task=$task_id trials=$NUM_TRIALS gpu=$gpu"
     if env -u CUDA_VISIBLE_DEVICES \
@@ -126,6 +240,7 @@ run_task() {
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \
         "EVALUATION.output_dir=$output_dir" \
         "${mode_args[@]}" \
+        "+EVALUATION.expected_fingerprint_path=$expected_fingerprint" \
         >"$log_file" 2>&1; then
         log "done final mode=$mode task=$task_id gpu=$gpu"
     else

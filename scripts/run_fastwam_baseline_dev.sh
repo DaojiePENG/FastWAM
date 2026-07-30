@@ -7,11 +7,65 @@ EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/phase1_h8_d30_s1000_dev10}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
-GPU_IDS=(6 7)
+GPU_IDS_CSV="${GPU_IDS_CSV:-6,7}"
+IFS=',' read -r -a GPU_IDS <<<"$GPU_IDS_CSV"
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+if (( ${#GPU_IDS[@]} == 0 )); then
+    printf 'No evaluation GPUs configured.\n' >&2
+    exit 2
+fi
+if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
+    printf 'FastWAM release checkpoint missing: %s\n' "$RELEASE_CHECKPOINT" >&2
+    exit 2
+fi
+CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')"
+
+fingerprint_path() {
+    local task_id="$1"
+    printf '%s/.fingerprints/fastwam_release_task%s.json\n' "$EVAL_ROOT" "$task_id"
+}
+
+build_task_fingerprint() {
+    local task_id="$1"
+    local expected
+    expected="$(fingerprint_path "$task_id")"
+    mkdir -p "$(dirname "$expected")"
+    PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        --config-name sim_libero \
+        --output "$expected" \
+        --checkpoint-sha256 "$CHECKPOINT_SHA256" \
+        -- \
+        task=libero_uncond_2cam224_1e-4 \
+        "ckpt=$RELEASE_CHECKPOINT" \
+        EVALUATION.task_suite_name=libero_10 \
+        "EVALUATION.task_id=$task_id" \
+        "EVALUATION.num_trials=$NUM_TRIALS" \
+        EVALUATION.num_inference_steps=10 \
+        EVALUATION.replan_steps=10 \
+        EVALUATION.binarize_gripper=true \
+        EVALUATION.visualize_future_video=false \
+        "EVALUATION.dataset_stats_path=$DATASET_STATS" \
+        >/dev/null
+}
+
+for task_id in $(seq 0 9); do
+    build_task_fingerprint "$task_id"
+    for existing_result in "$EVAL_ROOT/fastwam_release/libero_10"/gpu*_task"${task_id}"_results.json; do
+        [[ -e "$existing_result" ]] || continue
+        if ! PYTHONPATH="$ROOT_DIR/src" \
+            "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+            "$existing_result" \
+            --expected "$(fingerprint_path "$task_id")"; then
+            log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+            exit 2
+        fi
+    done
+done
 
 run_task() {
     local gpu="$1"
@@ -19,15 +73,21 @@ run_task() {
     local output_dir="$EVAL_ROOT/fastwam_release"
     local log_dir="$EVAL_ROOT/task_logs"
     local log_file="$log_dir/fastwam_release_task${task_id}_gpu${gpu}.log"
-    local result_file="$output_dir/libero_10/gpu${gpu}_task${task_id}_results.json"
+    local expected_fingerprint="$(fingerprint_path "$task_id")"
+    local existing_result
 
-    if [[ -s "$result_file" ]] \
-        && [[ "$(jq -r '.total_episodes // 0' "$result_file")" == "$NUM_TRIALS" ]] \
-        && jq -e '[.memory_metrics[]?.replans[]?.timing.total_inference_s] | length > 0' \
-            "$result_file" >/dev/null; then
-        log "skip completed baseline task=$task_id gpu=$gpu"
-        return 0
-    fi
+    for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
+        [[ -e "$existing_result" ]] || continue
+        if PYTHONPATH="$ROOT_DIR/src" \
+            "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+            "$existing_result" \
+            --expected "$expected_fingerprint"; then
+            log "skip exact completed baseline task=$task_id result=$existing_result"
+            return 0
+        fi
+        log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
+        return 2
+    done
 
     mkdir -p "$output_dir" "$log_dir" "$ROOT_DIR/.cache/matplotlib"
     log "start baseline task=$task_id gpu=$gpu"
@@ -54,6 +114,7 @@ run_task() {
         EVALUATION.visualize_future_video=false \
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \
         "EVALUATION.output_dir=$output_dir" \
+        "+EVALUATION.expected_fingerprint_path=$expected_fingerprint" \
         >"$log_file" 2>&1
     log "done baseline task=$task_id gpu=$gpu"
 }

@@ -38,6 +38,7 @@ class LeapMemoryConfig:
     exit_depth: int = 30
     causal_mode: CausalMode = "interleaved"
     max_history_blocks: int = 70
+    retained_history_blocks: int | None = None
     action_horizon: int = 32
     replan_steps: int = 10
 
@@ -52,6 +53,17 @@ class LeapMemoryConfig:
             )
         if self.max_history_blocks <= 0:
             raise ValueError("max_history_blocks must be positive")
+        if self.retained_history_blocks is not None:
+            if isinstance(self.retained_history_blocks, bool) or not isinstance(
+                self.retained_history_blocks, int
+            ):
+                raise ValueError("retained_history_blocks must be an integer or None")
+            if self.retained_history_blocks < 0:
+                raise ValueError("retained_history_blocks must be non-negative or None")
+            if self.retained_history_blocks > self.max_history_blocks:
+                raise ValueError(
+                    "retained_history_blocks cannot exceed max_history_blocks"
+                )
         if self.action_horizon <= 0:
             raise ValueError("action_horizon must be positive")
         if self.replan_steps <= 0 or self.replan_steps > self.action_horizon:
@@ -115,7 +127,11 @@ class KVSegment:
 
 @dataclass
 class MemorySnapshot:
-    segment_count: int
+    # Keep references to the immutable/detached segments rather than only a
+    # tail length.  A completed commit may evict segments from the front, and
+    # rollback must be able to restore that transaction without copying the KV
+    # tensors themselves.
+    segments: tuple[KVSegment, ...]
     phase: MemoryPhase
     completed_blocks: int
     next_action_position: int
@@ -139,7 +155,7 @@ class LeapMemoryState:
 
     def snapshot(self) -> MemorySnapshot:
         return MemorySnapshot(
-            segment_count=len(self.segments),
+            segments=tuple(self.segments),
             phase=self.phase,
             completed_blocks=self.completed_blocks,
             next_action_position=self.next_action_position,
@@ -149,7 +165,7 @@ class LeapMemoryState:
         )
 
     def rollback(self, snapshot: MemorySnapshot) -> None:
-        del self.segments[snapshot.segment_count :]
+        self.segments[:] = snapshot.segments
         self.phase = snapshot.phase
         self.completed_blocks = snapshot.completed_blocks
         self.next_action_position = snapshot.next_action_position
@@ -236,6 +252,29 @@ class LeapMemoryState:
         self.pending_context = None
         self.pending_context_mask = None
         self.phase = MemoryPhase.EXPECT_OBSERVATION
+        if segment.num_tokens == self.config.replan_steps:
+            self._evict_completed_history()
+
+    def _evict_completed_history(self) -> None:
+        """Apply the inference-only retention window at a safe block boundary.
+
+        ``completed_blocks`` and ``next_action_position`` are absolute episode
+        clocks and are deliberately untouched.  This method is called only
+        after a full action block has been appended, so every segment older
+        than the cutoff belongs to a completed video/action block.  In
+        particular, an observation awaiting its action commit is never
+        eligible for eviction.
+        """
+
+        retained = self.config.retained_history_blocks
+        if retained is None:
+            return
+        first_retained_block = self.completed_blocks - retained
+        self.segments[:] = [
+            segment
+            for segment in self.segments
+            if segment.block_index >= first_retained_block
+        ]
 
     def _validate_depth(self, segment: KVSegment) -> None:
         if segment.num_layers != self.config.exit_depth:
@@ -282,6 +321,24 @@ class LeapMemoryState:
             )
             for modality in ("video", "action")
         }
+
+    @property
+    def retained_completed_blocks(self) -> int:
+        """Number of completed action blocks still represented in the cache.
+
+        ``completed_blocks`` is the absolute episode clock and therefore keeps
+        increasing under a rolling retention ablation.  Action segments are
+        the unambiguous completed-block marker: the current observation may
+        already be present while it is still awaiting its action commit.
+        """
+
+        return len(
+            {
+                segment.block_index
+                for segment in self.segments
+                if segment.modality == "action"
+            }
+        )
 
     def reset(self) -> None:
         self.segments.clear()

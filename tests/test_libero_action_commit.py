@@ -1,7 +1,10 @@
 import numpy as np
 import torch
 
-from leapbot_va.libero import executed_env_actions_to_model_space
+from leapbot_va.libero import (
+    canonicalize_libero_env_action,
+    executed_env_actions_to_model_space,
+)
 
 
 class _AffineNormalizer:
@@ -33,3 +36,26 @@ def test_ensembled_command_not_unexecuted_prediction_is_used():
     normalized = executed_env_actions_to_model_space(executed, _Processor())
     assert normalized.shape == (1, 3)
     assert normalized[0, -1].item() == 1.0
+
+
+def test_executed_command_is_clipped_and_gripper_is_strictly_binary():
+    spec = (
+        np.array([-1.0, -0.5, -1.0], dtype=np.float32),
+        np.array([1.0, 0.5, 1.0], dtype=np.float32),
+    )
+    command = canonicalize_libero_env_action(
+        np.array([2.0, -2.0, 0.0], dtype=np.float32),
+        spec,
+        binarize_gripper=True,
+    )
+    np.testing.assert_array_equal(command, np.array([1.0, -0.5, 1.0], np.float32))
+
+
+def test_executed_command_rejects_nonfinite_values():
+    spec = (np.full(3, -1.0, np.float32), np.full(3, 1.0, np.float32))
+    with np.testing.assert_raises_regex(ValueError, "non-finite"):
+        canonicalize_libero_env_action(
+            np.array([0.0, np.nan, 1.0], dtype=np.float32),
+            spec,
+            binarize_gripper=True,
+        )

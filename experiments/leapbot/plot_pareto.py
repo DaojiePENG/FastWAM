@@ -30,9 +30,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def _short_label(config: str) -> str:
-    if config.startswith("fastwam/"):
+    if config.startswith("fastwam_release/"):
         return "FastWAM"
-    return config.split("/", 1)[0]
+    parts = config.split("/")
+    if len(parts) >= 4 and parts[1].startswith("d"):
+        return "/".join(parts[:4])
+    return parts[0]
 
 
 def plot_pareto(artifact_dir: Path, output_dir: Path) -> list[Path]:

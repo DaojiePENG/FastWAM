@@ -10,6 +10,8 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
+from leapbot_va.eval_fingerprint import normalize_evaluation_fingerprint
+
 
 def percentile(values: list[float], q: float) -> float:
     if not values:
@@ -38,17 +40,35 @@ def wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[fl
 
 
 def config_key(payload: dict, path: Path) -> str:
-    memory = payload.get("memory_config") or {}
-    if memory.get("enabled"):
+    """Return a readable identity that cannot merge distinct run contracts."""
+
+    try:
+        fingerprint = normalize_evaluation_fingerprint(
+            payload["evaluation_fingerprint"]
+        )
+    except (KeyError, TypeError, ValueError):
+        # ``validate_inputs`` rejects this legacy identity before formal
+        # aggregation.  The fallback keeps standalone diagnostic helpers able
+        # to explain which old file was encountered.
+        return f"legacy/{path.stem}"
+    runtime = fingerprint["runtime_contract"]
+    memory = runtime["memory"]
+    runtime_tag = fingerprint["runtime_contract_sha256"][:12]
+    checkpoint_tag = fingerprint["checkpoint_sha256"][:12]
+    if memory["enabled"]:
         return "/".join(
             [
-                str(memory.get("causal_mode", "unknown")),
-                f"d{memory.get('exit_depth', 'unknown')}",
-                f"h{memory.get('max_history_blocks', 'unknown')}",
-                Path(str(payload.get("checkpoint", path.parent))).stem,
+                str(memory["causal_mode"]),
+                f"d{memory['exit_depth']}",
+                f"h{memory['effective_history_cap']}",
+                f"cap{memory['episode_capacity']}",
+                f"rt-{runtime_tag}",
+                f"ckpt-{checkpoint_tag}",
             ]
         )
-    return f"fastwam/{Path(str(payload.get('checkpoint', path.parent))).stem}"
+    config_name = str(runtime["config"]["name"])
+    family = "fastwam_release" if config_name == "sim_libero" else "leapbot_no_memory"
+    return f"{family}/rt-{runtime_tag}/ckpt-{checkpoint_tag}"
 
 
 def _new_group() -> dict:
@@ -183,19 +203,39 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
             "action_denoise": [],
             "action_commit": [],
             "total_replan": [],
+            "episode_blocks": [],
         }
     )
     for path in paths:
         payload = json.loads(path.read_text())
         key = config_key(payload, path)
+        fingerprint = normalize_evaluation_fingerprint(
+            payload["evaluation_fingerprint"]
+        )
+        runtime_memory = fingerprint["runtime_contract"]["memory"]
+        retention_cap = int(runtime_memory["effective_history_cap"])
         for episode in payload.get("memory_metrics", []):
             for replan in episode.get("replans", []):
                 memory = replan.get("memory", {})
                 if "completed_blocks" not in memory:
                     continue
-                history_blocks = int(memory["completed_blocks"])
-                group = groups[(key, history_blocks)]
+                episode_blocks = int(memory["completed_blocks"])
+                retained_blocks = int(
+                    memory.get(
+                        "retained_history_blocks",
+                        min(episode_blocks, retention_cap),
+                    )
+                )
+                expected_retained = min(episode_blocks, retention_cap)
+                if retained_blocks != expected_retained:
+                    raise ValueError(
+                        f"{path}: runtime retained history {retained_blocks} does not "
+                        f"match min(episode_blocks={episode_blocks}, "
+                        f"retention_cap={retention_cap})={expected_retained}"
+                    )
+                group = groups[(key, retained_blocks)]
                 group["samples"] += 1
+                group["episode_blocks"].append(float(episode_blocks))
                 if "cache_bytes" in memory:
                     group["cache_after_observation"].append(float(memory["cache_bytes"]))
 
@@ -230,6 +270,12 @@ def aggregate_by_history(paths: list[Path]) -> list[dict]:
             {
                 "config": key,
                 "history_blocks_before_replan": history_blocks,
+                "p50_episode_blocks_before_replan": optional_percentile(
+                    values["episode_blocks"], 0.50
+                ),
+                "p95_episode_blocks_before_replan": optional_percentile(
+                    values["episode_blocks"], 0.95
+                ),
                 "samples": values["samples"],
                 "p50_cache_after_observation_gib": cache_percentile(
                     values["cache_after_observation"], 0.50
@@ -286,7 +332,15 @@ def validate_inputs(
     errors: list[str] = []
     for path in paths:
         payload = json.loads(path.read_text())
-        key = config_key(payload, path)
+        try:
+            fingerprint = normalize_evaluation_fingerprint(
+                payload["evaluation_fingerprint"]
+            )
+            key = config_key(payload, path)
+        except (KeyError, TypeError, ValueError) as error:
+            key = f"invalid/{path.stem}"
+            fingerprint = None
+            errors.append(f"{path}: invalid or legacy evaluation fingerprint: {error}")
         task_id = int(payload.get("task_id", -1))
         if task_id in groups[key]:
             errors.append(
@@ -295,6 +349,52 @@ def validate_inputs(
         groups[key][task_id] = path
 
         episodes = int(payload.get("total_episodes", 0))
+        if fingerprint is not None:
+            result_contract = fingerprint["result_contract"]
+            runtime_memory = fingerprint["runtime_contract"]["memory"]
+            if str(payload.get("task_suite")) != str(result_contract["suite"]):
+                errors.append(
+                    f"{key}/task{task_id}: payload task_suite does not match fingerprint"
+                )
+            if task_id != int(result_contract["task"]["id"]):
+                errors.append(
+                    f"{key}/task{task_id}: payload task_id does not match fingerprint"
+                )
+            if episodes != int(result_contract["trials"]):
+                errors.append(
+                    f"{key}/task{task_id}: total_episodes does not match fingerprint trials"
+                )
+
+            payload_memory = payload.get("memory_config") or {}
+            payload_enabled = bool(payload_memory.get("enabled", False))
+            if payload_enabled != bool(runtime_memory["enabled"]):
+                errors.append(
+                    f"{key}/task{task_id}: memory enabled flag does not match fingerprint"
+                )
+            if payload_enabled:
+                expected_memory = {
+                    "causal_mode": str(runtime_memory["causal_mode"]),
+                    "exit_depth": int(runtime_memory["exit_depth"]),
+                    "max_history_blocks": int(runtime_memory["episode_capacity"]),
+                    "retained_history_blocks": runtime_memory[
+                        "retained_history_blocks"
+                    ],
+                }
+                actual_memory = {
+                    "causal_mode": str(payload_memory.get("causal_mode")),
+                    "exit_depth": int(payload_memory.get("exit_depth", -1)),
+                    "max_history_blocks": int(
+                        payload_memory.get("max_history_blocks", -1)
+                    ),
+                    "retained_history_blocks": payload_memory.get(
+                        "retained_history_blocks", None
+                    ),
+                }
+                if actual_memory != expected_memory:
+                    errors.append(
+                        f"{key}/task{task_id}: memory_config does not match fingerprint: "
+                        f"actual={actual_memory} expected={expected_memory}"
+                    )
         if expected_trials_per_task is not None and episodes != expected_trials_per_task:
             errors.append(
                 f"{key}/task{task_id}: expected {expected_trials_per_task} episodes, got {episodes}"
