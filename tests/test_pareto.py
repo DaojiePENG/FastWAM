@@ -103,3 +103,35 @@ def test_validate_inputs_rejects_incomplete_or_unprofiled_results(tmp_path):
         assert "peak GPU metric missing" in message
     else:
         raise AssertionError("incomplete evaluation unexpectedly passed validation")
+
+
+def test_validate_inputs_requires_causal_latency_breakdown(tmp_path):
+    payload = {
+        "task_id": 0,
+        "checkpoint": "/tmp/model.pt",
+        "memory_config": {"enabled": True, "causal_mode": "interleaved"},
+        "successes": 1,
+        "total_episodes": 1,
+        "completion_steps": [100],
+        "memory_metrics": [
+            {
+                "peak_cache_bytes": 1,
+                "peak_gpu_bytes": 2,
+                "replans": [{"timing": {"total_inference_s": 0.5}}],
+            }
+        ],
+    }
+    path = tmp_path / "gpu0_task0_results.json"
+    path.write_text(json.dumps(payload))
+
+    try:
+        pareto.validate_inputs(
+            [path], expected_tasks=1, expected_trials_per_task=1, require_profiled=True
+        )
+    except ValueError as error:
+        message = str(error)
+        assert "observation_prefill_s" in message
+        assert "action_denoise_s" in message
+        assert "action commit timing" in message
+    else:
+        raise AssertionError("causal result without latency breakdown unexpectedly passed")

@@ -206,6 +206,7 @@ def validate_inputs(
                 f"{key}/task{task_id}: memory_metrics length does not match episodes"
             )
         if require_profiled:
+            memory_enabled = bool((payload.get("memory_config") or {}).get("enabled"))
             for episode_index, episode in enumerate(metrics):
                 replans = episode.get("replans", [])
                 if not replans:
@@ -222,6 +223,34 @@ def validate_inputs(
                         f"{key}/task{task_id}/episode{episode_index}: "
                         f"{missing}/{len(replans)} replans lack total_inference_s"
                     )
+                if memory_enabled:
+                    missing_prefill = sum(
+                        "observation_prefill_s" not in replan.get("timing", {})
+                        for replan in replans
+                    )
+                    missing_denoise = sum(
+                        "action_denoise_s" not in replan.get("timing", {})
+                        for replan in replans
+                    )
+                    missing_commit = sum(
+                        "commit_s" not in replan.get("commit", {})
+                        for replan in replans
+                    )
+                    if missing_prefill:
+                        errors.append(
+                            f"{key}/task{task_id}/episode{episode_index}: "
+                            f"{missing_prefill}/{len(replans)} replans lack observation_prefill_s"
+                        )
+                    if missing_denoise:
+                        errors.append(
+                            f"{key}/task{task_id}/episode{episode_index}: "
+                            f"{missing_denoise}/{len(replans)} replans lack action_denoise_s"
+                        )
+                    if missing_commit:
+                        errors.append(
+                            f"{key}/task{task_id}/episode{episode_index}: "
+                            f"{missing_commit}/{len(replans)} replans lack action commit timing"
+                        )
                 if "peak_gpu_bytes" not in episode:
                     errors.append(
                         f"{key}/task{task_id}/episode{episode_index}: peak GPU metric missing"
