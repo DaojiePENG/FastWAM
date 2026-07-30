@@ -16,6 +16,7 @@ GPU_IDS_CSV="${GPU_IDS_CSV:-}"
 INCLUDE_BASELINE="${INCLUDE_BASELINE:-true}"
 VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-false}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-false}"
+REQUIRE_TRAINING_COMPLETE="${REQUIRE_TRAINING_COMPLETE:-true}"
 
 MODES=(interleaved vision_causal action_aggregator)
 if [[ -n "$GPU_IDS_CSV" ]]; then
@@ -47,8 +48,11 @@ training_complete() {
     for mode in "${MODES[@]}"; do
         checkpoint="$(mode_checkpoint "$mode")"
         log_file="$TRAIN_ROOT/$mode/train.log"
-        if [[ ! -s "$checkpoint" ]] \
-            || ! grep -q "max_steps reached step=$FINAL_STEP" "$log_file"; then
+        if [[ ! -s "$checkpoint" ]]; then
+            return 1
+        fi
+        if [[ "$REQUIRE_TRAINING_COMPLETE" == "true" ]] \
+            && ! grep -q "max_steps reached step=$FINAL_STEP" "$log_file"; then
             return 1
         fi
     done

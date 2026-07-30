@@ -39,6 +39,7 @@ for step in "${STEPS[@]}"; do
     INCLUDE_BASELINE=false \
     VIDEO_LORA_ENABLED=true \
     MERGE_VIDEO_LORA=true \
+    REQUIRE_TRAINING_COMPLETE=false \
     bash "$ROOT_DIR/scripts/run_phase1_eval_after_training.sh"
 done
 log "all intermediate checkpoint evaluations complete: $EVAL_ROOT"
