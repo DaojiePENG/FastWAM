@@ -10,6 +10,8 @@ RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/
 NUM_TRIALS="${NUM_TRIALS:-10}"
 NUM_GPUS="${NUM_GPUS:-8}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
+FINAL_STEP="${FINAL_STEP:-1000}"
+FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
 
 MODES=(interleaved vision_causal action_aggregator)
 
@@ -19,7 +21,7 @@ log() {
 
 mode_checkpoint() {
     local mode="$1"
-    printf '%s/%s/checkpoints/weights/step_001000.pt\n' "$TRAIN_ROOT" "$mode"
+    printf '%s/%s/checkpoints/weights/%s.pt\n' "$TRAIN_ROOT" "$mode" "$FINAL_STEP_TAG"
 }
 
 training_complete() {
@@ -27,7 +29,8 @@ training_complete() {
     for mode in "${MODES[@]}"; do
         checkpoint="$(mode_checkpoint "$mode")"
         log_file="$TRAIN_ROOT/$mode/train.log"
-        if [[ ! -s "$checkpoint" ]] || ! grep -q '\[done\] max_steps reached step=1000' "$log_file"; then
+        if [[ ! -s "$checkpoint" ]] \
+            || ! grep -q "\[done\] max_steps reached step=$FINAL_STEP" "$log_file"; then
             return 1
         fi
     done
@@ -39,7 +42,7 @@ mkdir -p "$EVAL_ROOT/task_logs" "$ROOT_DIR/.cache/matplotlib"
 while ! training_complete; do
     progress=()
     for mode in "${MODES[@]}"; do
-        step="$({ grep -o 'step=[0-9]\+/1000' "$TRAIN_ROOT/$mode/train.log" 2>/dev/null || true; } | tail -1)"
+        step="$({ grep -o "step=[0-9]\\+/$FINAL_STEP" "$TRAIN_ROOT/$mode/train.log" 2>/dev/null || true; } | tail -1)"
         progress+=("$mode:${step:-initializing}")
     done
     log "waiting for phase-1 checkpoints (${progress[*]})"
