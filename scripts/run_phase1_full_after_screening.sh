@@ -14,6 +14,7 @@ SAVE_EVERY="${SAVE_EVERY:-223}"
 WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and-techn}"
 WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
 WANDB_GROUP="${WANDB_GROUP:-phase1-h8-d30-e1-bs32-seed42}"
+FINAL_EVAL_GPU_IDS_CSV="${FINAL_EVAL_GPU_IDS_CSV:-}"
 
 MODES=(interleaved vision_causal action_aggregator)
 GPU_PAIRS=(0,1 2,3 4,5)
@@ -143,11 +144,23 @@ if (( failed )); then
     exit 1
 fi
 
+if [[ -z "$FINAL_EVAL_GPU_IDS_CSV" ]]; then
+    if grep -q "all intermediate checkpoint evaluations complete" \
+        "$ROOT_DIR/runs/phase1_intermediate_eval_supervisor.log" 2>/dev/null; then
+        FINAL_EVAL_GPU_IDS_CSV="0,1,2,3,4,5,6,7"
+    else
+        # GPUs 6-7 run the checkpoint learning-curve evaluation concurrently.
+        FINAL_EVAL_GPU_IDS_CSV="0,1,2,3,4,5"
+    fi
+fi
+
 log "all full-training workers complete; starting formal 10x10 evaluation"
+log "formal evaluation GPUs: $FINAL_EVAL_GPU_IDS_CSV"
 TRAIN_ROOT="$TRAIN_ROOT" \
 EVAL_ROOT="$EVAL_ROOT" \
 FINAL_STEP="$FINAL_STEP" \
 NUM_TRIALS=10 \
+GPU_IDS_CSV="$FINAL_EVAL_GPU_IDS_CSV" \
 VIDEO_LORA_ENABLED=true \
 MERGE_VIDEO_LORA=true \
 bash "$ROOT_DIR/scripts/run_phase1_eval_after_training.sh"
