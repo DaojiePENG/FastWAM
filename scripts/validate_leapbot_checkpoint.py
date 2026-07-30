@@ -42,6 +42,7 @@ def validate_checkpoint(
     expected_video_lora_multiplier: float = 1.0,
     expected_replan_steps: int = 10,
     expected_action_horizon: int = 32,
+    expected_history_vae_batch_chunk_size: int | None = None,
 ) -> dict[str, Any]:
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
@@ -71,10 +72,27 @@ def validate_checkpoint(
                 f"checkpoint metadata mismatch for {key}: expected={expected!r} "
                 f"actual={actual!r}"
             )
+    if expected_history_vae_batch_chunk_size is not None:
+        expected_chunk = int(expected_history_vae_batch_chunk_size)
+        actual_chunk = payload.get("history_vae_batch_chunk_size")
+        if actual_chunk != expected_chunk:
+            raise ValueError(
+                "checkpoint metadata mismatch for history_vae_batch_chunk_size: "
+                f"expected={expected_chunk!r} actual={actual_chunk!r}"
+            )
+        expected_metadata["history_vae_batch_chunk_size"] = expected_chunk
 
     exit_depths = tuple(int(depth) for depth in payload.get("training_exit_depths", ()))
     if exit_depths != (30,):
         raise ValueError(f"expected training_exit_depths=(30,), got {exit_depths}")
+    trained_exit_depths = tuple(
+        int(depth) for depth in payload.get("trained_exit_depths", exit_depths)
+    )
+    if trained_exit_depths != (30,):
+        raise ValueError(
+            "checkpoint unexpectedly advertises shallow exits in the D30 phase: "
+            f"{trained_exit_depths}"
+        )
 
     video_lora = payload.get("video_lora_config")
     if not isinstance(video_lora, dict):
@@ -99,6 +117,7 @@ def validate_checkpoint(
         "checkpoint_bytes": int(checkpoint.stat().st_size),
         **expected_metadata,
         "training_exit_depths": list(exit_depths),
+        "trained_exit_depths": list(trained_exit_depths),
         "video_lora_config": video_lora,
         "mot": _state_dict_summary(payload.get("mot"), "mot"),
         "action_exit_heads": _state_dict_summary(
@@ -151,6 +170,7 @@ def main() -> None:
     parser.add_argument("--expected-video-lora-multiplier", type=float, default=1.0)
     parser.add_argument("--expected-replan-steps", type=int, default=10)
     parser.add_argument("--expected-action-horizon", type=int, default=32)
+    parser.add_argument("--expected-history-vae-batch-chunk-size", type=int)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -165,6 +185,9 @@ def main() -> None:
         expected_video_lora_multiplier=args.expected_video_lora_multiplier,
         expected_replan_steps=args.expected_replan_steps,
         expected_action_horizon=args.expected_action_horizon,
+        expected_history_vae_batch_chunk_size=(
+            args.expected_history_vae_batch_chunk_size
+        ),
     )
     output = (
         args.output

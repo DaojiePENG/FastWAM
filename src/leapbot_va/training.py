@@ -13,6 +13,146 @@ if TYPE_CHECKING:
     from leapbot_va.models.leapbot import LeapBotVA
 
 
+DEFAULT_HISTORY_VAE_BATCH_CHUNK_SIZE = 2
+
+
+def _encode_single_frame_video_batch(
+    model: "LeapBotVA",
+    videos: torch.Tensor,
+    *,
+    tiled: bool,
+) -> torch.Tensor:
+    """Encode a batch whose members are independent one-frame videos.
+
+    ``WanVideoVAE.encode`` deliberately iterates over its leading dimension and
+    invokes ``single_encode`` once per member.  Its underlying ``VideoVAE_.encode``
+    is batch-separable, however: temporal cache tensors retain the batch axis and
+    no layer mixes different batch members.  Calling ``single_encode`` with a
+    small batch therefore runs exactly the same T=1 temporal program while
+    avoiding one heavyweight encoder launch per observation.
+
+    Non-Wan or tiled encoders retain the public model path.  In particular, this
+    helper never silently bypasses a custom encoder's tiling semantics.
+    """
+
+    if videos.ndim != 5 or int(videos.shape[2]) != 1:
+        raise ValueError(
+            "independent history observations must be [N,C,1,H,W]; "
+            f"got {tuple(videos.shape)}"
+        )
+    if not tiled:
+        from fastwam.models.wan22.wan_video_vae import WanVideoVAE
+
+        if isinstance(model.vae, WanVideoVAE):
+            return model.vae.single_encode(videos, device=model.device)
+    return model._encode_video_latents(videos, tiled=tiled)
+
+
+@torch.no_grad()
+def encode_independent_history_video_latents(
+    model: "LeapBotVA",
+    history_video: torch.Tensor,
+    history_valid_blocks: torch.Tensor,
+    *,
+    empty_latent_reference: torch.Tensor,
+    tiled: bool = False,
+    chunk_size: int = DEFAULT_HISTORY_VAE_BATCH_CHUNK_SIZE,
+) -> torch.Tensor:
+    """Encode valid ``[B,C,H,Y,X]`` history frames as independent T=1 videos.
+
+    Valid ``(batch, history)`` pairs are visited in row-major order, encoded in
+    bounded chunks along a synthetic batch dimension, and scattered back to
+    ``[B,C_latent,H,Y_latent,X_latent]``.  History is never placed on the VAE
+    temporal axis, so causal VAE state cannot leak across replanning blocks.
+    Invalid/padded blocks remain zero and H=0 performs no encoder call.
+    """
+
+    if history_video.ndim != 5:
+        raise ValueError(
+            "history_video must be [B,C,H,Y,X], "
+            f"got {tuple(history_video.shape)}"
+        )
+    batch, _, history_blocks, _, _ = history_video.shape
+    if history_valid_blocks.dtype != torch.bool or history_valid_blocks.shape != (
+        batch,
+        history_blocks,
+    ):
+        raise ValueError(
+            "history_valid_blocks must be bool [B,H] matching history_video"
+        )
+    if history_valid_blocks.device != history_video.device:
+        raise ValueError("history_video and history_valid_blocks must share a device")
+    if empty_latent_reference.ndim != 5 or int(empty_latent_reference.shape[0]) != batch:
+        raise ValueError("empty_latent_reference must be [B,C,T,Y,X] with matching B")
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError("history VAE batch chunk_size must be positive")
+
+    latent_channels = int(empty_latent_reference.shape[1])
+    latent_height = int(empty_latent_reference.shape[3])
+    latent_width = int(empty_latent_reference.shape[4])
+    if history_blocks == 0:
+        return empty_latent_reference[:, :, :0]
+
+    valid_pairs = torch.nonzero(history_valid_blocks, as_tuple=False)
+    if valid_pairs.numel() == 0:
+        return empty_latent_reference.new_zeros(
+            (batch, latent_channels, history_blocks, latent_height, latent_width)
+        )
+
+    flat_latents = None
+    for start in range(0, int(valid_pairs.shape[0]), chunk_size):
+        pairs = valid_pairs[start : start + chunk_size]
+        # Advanced indexing gathers [N,C,Y,X].  The explicit singleton below is
+        # the only temporal dimension ever presented to the VAE.
+        video_chunk = history_video[pairs[:, 0], :, pairs[:, 1]].unsqueeze(2)
+        latent_chunk = _encode_single_frame_video_batch(
+            model,
+            video_chunk,
+            tiled=tiled,
+        )
+        if not isinstance(latent_chunk, torch.Tensor) or latent_chunk.ndim != 5:
+            raise ValueError("history VAE encoder must return a [N,C,T,Y,X] tensor")
+        expected = (
+            int(pairs.shape[0]),
+            latent_channels,
+            1,
+            latent_height,
+            latent_width,
+        )
+        if tuple(latent_chunk.shape) != expected:
+            raise ValueError(
+                "each independent T=1 history observation must encode to one latent "
+                f"frame with shape {expected}, got {tuple(latent_chunk.shape)}"
+            )
+        if flat_latents is None:
+            flat_latents = latent_chunk.new_zeros(
+                (
+                    batch * history_blocks,
+                    latent_channels,
+                    1,
+                    latent_height,
+                    latent_width,
+                )
+            )
+        flat_indices = pairs[:, 0] * history_blocks + pairs[:, 1]
+        flat_latents.index_copy_(0, flat_indices, latent_chunk)
+
+    if flat_latents is None:  # Kept explicit for static analyzers.
+        raise RuntimeError("valid history observations produced no latent chunks")
+    return (
+        flat_latents.reshape(
+            batch,
+            history_blocks,
+            latent_channels,
+            latent_height,
+            latent_width,
+        )
+        .permute(0, 2, 1, 3, 4)
+        .contiguous()
+    )
+
+
 def history_window_indices(
     *,
     current_episode_step: int,
@@ -288,15 +428,19 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     history_video = sample["history_video"][:, :, :max_history].to(
         model.device, dtype=model.torch_dtype
     )
-    history_latents = []
-    for block_index in range(max_history):
-        history_latents.append(
-            model._encode_video_latents(history_video[:, :, block_index : block_index + 1], tiled=tiled)
-        )
-    history_latents = (
-        torch.cat(history_latents, dim=2)
-        if history_latents
-        else current_latents[:, :, :0]
+    history_latents = encode_independent_history_video_latents(
+        model,
+        history_video,
+        history_valid,
+        empty_latent_reference=current_latents,
+        tiled=tiled,
+        chunk_size=int(
+            getattr(
+                model,
+                "history_vae_batch_chunk_size",
+                DEFAULT_HISTORY_VAE_BATCH_CHUNK_SIZE,
+            )
+        ),
     )
 
     noise_video = torch.randn_like(current_latents)

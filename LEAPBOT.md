@@ -32,7 +32,9 @@ model.reset_memory(memory)  # at episode end
 
 The state machine rejects a second observation before an action commit,
 mid-episode prompt changes, depth changes, and history beyond the configured
-capacity. `memory=None` retains the original FastWAM inference behavior.
+capacity. A checkpoint may use only exit depths recorded as actually trained;
+a D30-only checkpoint cannot silently run D8/16/24. `memory=None` retains the
+original FastWAM inference behavior.
 
 The causal modes are:
 
@@ -64,27 +66,35 @@ The downloader uses the official FastWAM Hugging Face repositories
 
 ## Training phases
 
-All comparison runs should use the same FastWAM release initialization, split,
-step count, and seed.
+The production training path is raw causal attention with
+`packed_full_bptt`: every real observation/action block before the current
+replan remains in the graph. There is no history gate and no detached prefix.
+All comparison runs use the same FastWAM release initialization, split, update
+count, global batch, scheduler, and seed. The launcher refuses a dirty worktree
+and binds every resumable state to a hash of the exact commit, release weights,
+data statistics, topology, optimizer, and temporal/history configuration.
+
+Real Wan/H800 testing selected history-VAE batch chunk 2: its fixed-noise
+complete action-loss delta from strict per-observation encoding was `2.32e-4`.
+Chunk 4 exceeded the `1e-3` acceptance threshold and is blocked from formal
+training; see [the acceptance report](./reports/HISTORY_VAE_BATCHING.md).
 
 ```bash
-# Phase 1: train three separate 0-8-history, 30-layer checkpoints.
-accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
-  model.causal_mode=interleaved model.training_exit_depths='[30]'
-accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
-  model.causal_mode=vision_causal model.training_exit_depths='[30]'
-accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
-  model.causal_mode=action_aggregator model.training_exit_depths='[30]'
+# Phase 1: after the paired LR audit selects a learning rate, train all three
+# modes sequentially with the complete episode prefix, D30, BF16, the same
+# 8-GPU topology/global batch, and a 5% warmup + cosine schedule.
+SELECTED_LR=1.0e-4 bash scripts/run_causal_full_bptt_comparison.sh
 
-# Phase 2: repeat the winning mode with 0-16 history.
-accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
-  data.train.max_history_blocks=16 model.causal_mode=<winner>
-
-# Phase 3: initialize from the winning history checkpoint and train all exits.
+# Phase 2: initialize from the winning D30 history checkpoint and train exits.
 accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
   resume=<winner.pt> model.causal_mode=<winner> \
+  model.history_training_mode=packed_full_bptt \
+  data.train.full_episode_history=true \
   model.training_exit_depths='[8,16,24,30]'
 ```
+
+Short 0-8 or 0-16 windows are optional controlled ablations, not the main
+recipe and not substitutes for complete-prefix training.
 
 For phase 3 the objective is exactly
 `L30 + (L8 + L16 + L24) / 3`; every `Ld` contains video and action
@@ -126,11 +136,12 @@ python scripts/smoke_leapbot_h800.py \
 ```
 
 Unit coverage includes causal leakage, action/observation state transitions,
-rollback/reset/capacity, absolute RoPE positions, incremental-vs-one-shot KV
-equivalence, executed gripper re-normalization, multi-depth outputs, and Pareto
-selection. Full 6B H800 training and 500-episode benchmark runs require the
-release assets and trained LeapBot checkpoints; unit tests do not fabricate
-those results.
+rollback/reset/capacity, exact context fingerprints, hierarchical positions,
+three-mode H=8 FP32/BF16 incremental-vs-one-shot KV equivalence, executed
+gripper re-normalization, deterministic pre-instantiation seeding, resume-run
+contracts, trained-exit enforcement, multi-depth outputs, and Pareto selection. Full 6B
+H800 training and 500-episode benchmark runs require the release assets and
+trained LeapBot checkpoints; unit tests do not fabricate those results.
 
 The completed 6B single-step and 70-block H800 measurements are recorded in
 [reports/SMOKE_H800.md](./reports/SMOKE_H800.md).

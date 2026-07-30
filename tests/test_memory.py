@@ -104,6 +104,34 @@ def test_capacity_is_measured_in_completed_replan_blocks():
         state.begin_observation()
 
 
+def test_capacity_70_allows_700_actions_and_rejects_71st_observation():
+    state = _state(capacity=70)
+    context = torch.zeros(1, 2, 3)
+    mask = torch.ones(1, 2, dtype=torch.bool)
+
+    for block in range(70):
+        assert state.begin_observation() == block
+        state.append_observation(
+            _segment("video", block, [block]),
+            context=context,
+            context_mask=mask,
+        )
+        action_start = block * state.config.replan_steps
+        state.append_actions(
+            _segment(
+                "action",
+                block,
+                range(action_start, action_start + state.config.replan_steps),
+            )
+        )
+
+    assert state.completed_blocks == 70
+    assert state.next_action_position == 700
+    assert state.token_counts == {"video": 70, "action": 700}
+    with pytest.raises(RuntimeError, match="capacity exceeded"):
+        state.begin_observation()
+
+
 def test_snapshot_rollback_restores_pending_context():
     state = _state()
     context = torch.randn(1, 2, 3)

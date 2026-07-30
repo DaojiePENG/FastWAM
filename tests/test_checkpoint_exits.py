@@ -1,4 +1,5 @@
 import torch
+import pytest
 from torch import nn
 
 from fastwam.models.wan22.action_dit import ActionDiT
@@ -61,6 +62,9 @@ def test_release_or_full_depth_checkpoint_reinitializes_shallow_heads(tmp_path):
         loaded.action_exit_heads["8"].weight, loaded.action_expert.head.weight
     )
     assert loaded.action_exit_heads["8"].weight[0, 0].item() == 2.0
+    assert loaded.trained_exit_depths == (30,)
+    with pytest.raises(ValueError, match="was not trained"):
+        loaded.create_memory(exit_depth=8, action_horizon=2, replan_steps=1)
 
 
 def test_trained_multi_exit_checkpoint_preserves_exit_heads(tmp_path):
@@ -73,6 +77,18 @@ def test_trained_multi_exit_checkpoint_preserves_exit_heads(tmp_path):
     loaded = _model()
     loaded.load_checkpoint(path)
     assert loaded.action_exit_heads["8"].weight[0, 0].item() == 4.0
+    assert loaded.trained_exit_depths == (8, 16, 24, 30)
+    memory = loaded.create_memory(exit_depth=8, action_horizon=2, replan_steps=1)
+    assert memory.config.exit_depth == 8
+
+
+def test_detached_history_training_is_rejected():
+    model = _model()
+    with pytest.raises(ValueError, match="drops historical gradients"):
+        model.configure_causal_training(
+            training_exit_depths=(30,),
+            history_training_mode="incremental_detached_prefix",
+        )
 
 
 def test_hybrid_strategy_freezes_video_base_and_fully_trains_action():

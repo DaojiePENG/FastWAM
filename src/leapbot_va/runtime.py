@@ -35,6 +35,7 @@ def create_leapbot(
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
     history_training_mode: str = "packed_full_bptt",
+    history_vae_batch_chunk_size: int = 2,
     replan_steps: int = 10,
     action_horizon: int = 32,
     training_strategy: str = "full_dit",
@@ -105,4 +106,8 @@ def create_leapbot(
         replan_steps=int(replan_steps),
         action_horizon=int(action_horizon),
     )
+    resolved_history_vae_chunk = int(history_vae_batch_chunk_size)
+    if resolved_history_vae_chunk <= 0:
+        raise ValueError("history_vae_batch_chunk_size must be positive")
+    model.history_vae_batch_chunk_size = resolved_history_vae_chunk
     return model

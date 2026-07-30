@@ -73,12 +73,16 @@ class LeapBotVA(FastWAM):
         )
         self.causal_mode = "interleaved"
         self.training_exit_depths = (num_layers,)
+        # Architecture support alone does not mean that a shallow head has
+        # received training. This is replaced from checkpoint metadata on load.
+        self.trained_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
         self.history_training_mode = "packed_full_bptt"
         self.video_lora_config = VideoLoRAConfig()
         self.video_lora_merged = False
         self.training_replan_steps: int | None = None
         self.training_action_horizon: int | None = None
+        self.history_vae_batch_chunk_size = 2
 
     def configure_finetuning(
         self,
@@ -181,11 +185,11 @@ class LeapBotVA(FastWAM):
             )
         self.causal_mode = causal_mode
         self.training_exit_depths = depths
-        valid_history_modes = {"packed_full_bptt", "incremental_detached_prefix"}
-        if history_training_mode not in valid_history_modes:
+        if history_training_mode != "packed_full_bptt":
             raise ValueError(
-                "history_training_mode must be one of "
-                f"{sorted(valid_history_modes)}, got {history_training_mode}"
+                "LeapBot causal training requires packed_full_bptt; detached-prefix "
+                f"training is retired because it drops historical gradients, got "
+                f"{history_training_mode}"
             )
         self.history_training_mode = history_training_mode
         if (replan_steps is None) != (action_horizon is None):
@@ -227,13 +231,8 @@ class LeapBotVA(FastWAM):
     def training_loss(self, sample, tiled: bool = False):
         if "history_video" not in sample:
             return super().training_loss(sample, tiled=tiled)
-        from leapbot_va.training import (
-            causal_history_training_loss,
-            incremental_detached_prefix_training_loss,
-        )
+        from leapbot_va.training import causal_history_training_loss
 
-        if self.history_training_mode == "incremental_detached_prefix":
-            return incremental_detached_prefix_training_loss(self, sample, tiled=tiled)
         return causal_history_training_loss(self, sample, tiled=tiled)
 
     def auxiliary_trainable_modules(self) -> tuple[nn.Module, ...]:
@@ -253,6 +252,11 @@ class LeapBotVA(FastWAM):
         if exit_depth not in self.exit_depths:
             raise ValueError(
                 f"model supports exit depths {self.exit_depths}, got {exit_depth}"
+            )
+        if exit_depth not in self.trained_exit_depths:
+            raise ValueError(
+                f"exit depth {exit_depth} was not trained in the loaded checkpoint; "
+                f"available trained exits are {self.trained_exit_depths}"
             )
         resolved_causal_mode = self.causal_mode if causal_mode is None else causal_mode
         if resolved_causal_mode != self.causal_mode:
@@ -300,23 +304,37 @@ class LeapBotVA(FastWAM):
                 f"memory={memory.config.causal_mode} model={self.causal_mode}; "
                 "reset and create memory from this model"
             )
+        self.validate_temporal_contract(
+            replan_steps=memory.config.replan_steps,
+            action_horizon=memory.config.action_horizon,
+        )
 
     @staticmethod
     def _prompt_fingerprint(
         prompt: Optional[str],
         context: Optional[torch.Tensor],
+        context_mask: Optional[torch.Tensor],
     ) -> str:
         if prompt is not None:
-            payload = f"prompt:{prompt}".encode("utf-8")
-        elif context is not None:
-            summary = context.detach().float()
-            payload = (
-                f"context:{tuple(context.shape)}:{context.dtype}:"
-                f"{float(summary.sum().cpu()):.8g}:{float(summary.square().sum().cpu()):.8g}"
-            ).encode("utf-8")
-        else:
-            raise ValueError("either prompt or context is required")
-        return hashlib.sha256(payload).hexdigest()
+            if context is not None or context_mask is not None:
+                raise ValueError("prompt and context/context_mask are mutually exclusive")
+            return hashlib.sha256(f"prompt:{prompt}".encode("utf-8")).hexdigest()
+        if context is None or context_mask is None:
+            raise ValueError("either prompt or both context/context_mask are required")
+
+        # Hash the complete caller-provided language state.  Moment summaries
+        # are not injective (for example, a token permutation has the same sum
+        # and squared sum) and could silently let a context switch reuse an
+        # incompatible episode cache.  Proprio is deliberately excluded: it is
+        # expected to change at every replanning boundary.
+        digest = hashlib.sha256()
+        for label, tensor in (("context", context), ("context_mask", context_mask)):
+            value = tensor.detach().to(device="cpu").contiguous()
+            digest.update(
+                f"{label}:{tuple(value.shape)}:{value.dtype}:".encode("utf-8")
+            )
+            digest.update(value.view(torch.uint8).numpy().tobytes())
+        return digest.hexdigest()
 
     def _prepare_inference_context(
         self,
@@ -419,7 +437,9 @@ class LeapBotVA(FastWAM):
         snapshot = memory.snapshot()
         timings: dict[str, float] = {}
         try:
-            memory.bind_prompt(self._prompt_fingerprint(prompt, context))
+            memory.bind_prompt(
+                self._prompt_fingerprint(prompt, context, context_mask)
+            )
             block_index = memory.begin_observation()
             context, context_mask = self._prepare_inference_context(
                 prompt=prompt,
@@ -687,11 +707,13 @@ class LeapBotVA(FastWAM):
             "temporal_positions": self.temporal_positions.state_dict(),
             "exit_depths": self.exit_depths,
             "training_exit_depths": self.training_exit_depths,
+            "trained_exit_depths": self.training_exit_depths,
             "causal_mode": self.causal_mode,
             "training_strategy": self.training_strategy,
             "history_training_mode": self.history_training_mode,
             "training_replan_steps": self.training_replan_steps,
             "training_action_horizon": self.training_action_horizon,
+            "history_vae_batch_chunk_size": self.history_vae_batch_chunk_size,
             "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
             "torch_dtype": str(self.torch_dtype),
@@ -736,6 +758,16 @@ class LeapBotVA(FastWAM):
                 replan_steps=int(checkpoint_replan_steps),
                 action_horizon=int(checkpoint_action_horizon),
             )
+        checkpoint_vae_chunk = payload.get("history_vae_batch_chunk_size")
+        if (
+            checkpoint_vae_chunk is not None
+            and int(checkpoint_vae_chunk) != int(self.history_vae_batch_chunk_size)
+        ):
+            raise ValueError(
+                "checkpoint/model history VAE batch chunk mismatch: "
+                f"checkpoint={checkpoint_vae_chunk} "
+                f"model={self.history_vae_batch_chunk_size}"
+            )
         checkpoint_lora = payload.get("video_lora_config")
         if checkpoint_lora is not None:
             checkpoint_lora_enabled = bool(checkpoint_lora.get("enabled", False))
@@ -755,7 +787,27 @@ class LeapBotVA(FastWAM):
             # identity extension, even if this model instance was previously
             # used with trained temporal-position weights.
             self.temporal_positions.reset_parameters()
-        trained_exits = tuple(int(depth) for depth in payload.get("training_exit_depths", ()))
+        trained_exits = tuple(
+            sorted(
+                {
+                    int(depth)
+                    for depth in payload.get(
+                        "trained_exit_depths",
+                        payload.get("training_exit_depths", (self.mot.num_layers,)),
+                    )
+                }
+            )
+        )
+        if not trained_exits:
+            trained_exits = (self.mot.num_layers,)
+        if self.mot.num_layers not in trained_exits or any(
+            depth not in self.exit_depths for depth in trained_exits
+        ):
+            raise ValueError(
+                "checkpoint trained exits are incompatible with this model: "
+                f"checkpoint={trained_exits} model={self.exit_depths}"
+            )
+        self.trained_exit_depths = trained_exits
         has_trained_shallow_exits = any(depth != self.mot.num_layers for depth in trained_exits)
         if "action_exit_heads" in payload and has_trained_shallow_exits:
             self.action_exit_heads.load_state_dict(payload["action_exit_heads"], strict=True)

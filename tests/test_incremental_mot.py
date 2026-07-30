@@ -575,6 +575,82 @@ def test_future_video_tokens_cannot_change_or_receive_gradient_from_current_acti
     "causal_mode",
     ["interleaved", "vision_causal", "action_aggregator"],
 )
+def test_current_action_backpropagates_through_every_valid_history_modality(
+    causal_mode,
+):
+    """The production packed path is full BPTT, not a detached-prefix proxy."""
+
+    torch.manual_seed(353)
+    history_blocks = 2
+    replan_steps = 2
+    action_horizon = 3
+    video, action = _experts(layers=2)
+    mot = MoT(
+        {"video": video, "action": action},
+        mot_checkpoint_mixed_attn=False,
+    ).eval()
+    history_video = torch.randn(
+        1, history_blocks, video.hidden_dim, requires_grad=True
+    )
+    current_video = torch.randn(1, 1, video.hidden_dim, requires_grad=True)
+    history_action = torch.randn(
+        1,
+        history_blocks * replan_steps,
+        action.hidden_dim,
+        requires_grad=True,
+    )
+    current_action = torch.randn(
+        1, action_horizon, action.hidden_dim, requires_grad=True
+    )
+    mask = build_packed_history_attention_mask(
+        torch.ones(1, history_blocks, dtype=torch.bool),
+        video_tokens_per_frame=1,
+        current_video_frames=1,
+        replan_steps=replan_steps,
+        action_horizon=action_horizon,
+        causal_mode=causal_mode,
+    )
+    video_freqs = precompute_freqs_cis(6, end=1).view(1, 1, -1).expand(
+        history_blocks + 1, -1, -1
+    )
+    action_freqs = torch.cat(
+        [
+            precompute_freqs_cis(6, end=replan_steps).view(
+                replan_steps, 1, -1
+            )
+            for _ in range(history_blocks)
+        ]
+        + [
+            precompute_freqs_cis(6, end=action_horizon).view(
+                action_horizon, 1, -1
+            )
+        ],
+        dim=0,
+    )
+    output = mot(
+        embeds_all={
+            "video": torch.cat([history_video, current_video], dim=1),
+            "action": torch.cat([history_action, current_action], dim=1),
+        },
+        attention_mask=mask,
+        freqs_all={"video": video_freqs, "action": action_freqs},
+        context_all={"video": None, "action": None},
+        t_mod_all={
+            "video": torch.zeros(1, 6, video.hidden_dim),
+            "action": torch.zeros(1, 6, action.hidden_dim),
+        },
+    )["action"][:, -action_horizon:]
+    gradients = torch.autograd.grad(
+        output.square().sum(),
+        (history_video, history_action, current_video, current_action),
+    )
+    assert all(torch.count_nonzero(gradient) > 0 for gradient in gradients)
+
+
+@pytest.mark.parametrize(
+    "causal_mode",
+    ["interleaved", "vision_causal", "action_aggregator"],
+)
 def test_padded_history_contents_cannot_affect_valid_current_action(causal_mode):
     torch.manual_seed(401)
     video, action = _experts(layers=2)

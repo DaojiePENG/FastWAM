@@ -151,6 +151,7 @@ def test_memory_causal_mode_must_match_model_configuration():
 
 def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
     source = _model(layers=30)
+    source.history_vae_batch_chunk_size = 3
     source.configure_causal_training(
         causal_mode="action_aggregator",
         training_exit_depths=(30,),
@@ -168,6 +169,7 @@ def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
     checkpoint = tmp_path / "clock.pt"
     source.save_checkpoint(checkpoint)
     loaded = _model(layers=30)
+    loaded.history_vae_batch_chunk_size = 3
     loaded.configure_causal_training(
         causal_mode="action_aggregator",
         training_exit_depths=(30,),
@@ -177,6 +179,7 @@ def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
     loaded.load_checkpoint(checkpoint)
     assert loaded.training_replan_steps == 1
     assert loaded.training_action_horizon == 2
+    assert loaded.history_vae_batch_chunk_size == 3
 
     incompatible = _model(layers=30)
     incompatible.configure_causal_training(
@@ -187,6 +190,48 @@ def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
     )
     with pytest.raises(ValueError, match="action_horizon differs"):
         incompatible.load_checkpoint(checkpoint)
+
+    wrong_vae_chunk = _model(layers=30)
+    wrong_vae_chunk.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=2,
+    )
+    with pytest.raises(ValueError, match="history VAE batch chunk mismatch"):
+        wrong_vae_chunk.load_checkpoint(checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("replan_steps", "action_horizon", "expected_error"),
+    [
+        (2, 2, "replan_steps differs"),
+        (1, 3, "action_horizon differs"),
+    ],
+)
+def test_handcrafted_memory_cannot_bypass_model_temporal_contract(
+    replan_steps,
+    action_horizon,
+    expected_error,
+):
+    model = _model(layers=30)
+    model.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=2,
+    )
+    memory = LeapMemoryState(
+        LeapMemoryConfig(
+            exit_depth=30,
+            causal_mode="action_aggregator",
+            replan_steps=replan_steps,
+            action_horizon=action_horizon,
+        )
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        model._validate_memory_compatibility(memory)
 
 
 def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():

@@ -1,6 +1,7 @@
 import logging
 import os
 import inspect
+import random
 from pathlib import Path
 
 import torch
@@ -17,6 +18,24 @@ from .utils.video_io import save_mp4
 from .utils import misc
 
 logger = get_logger(__name__)
+
+
+def _seed_model_initialization(seed: int) -> None:
+    """Give every rank/run identical parameters before distributed wrapping.
+
+    The trainer later applies rank-aware seeds for dataloader workers and flow
+    noise. Model construction is different: newly introduced adapters and
+    heads must start bit-identically on every rank and controlled run.
+    """
+
+    seed = int(seed)
+    if not 0 < seed < int(np.iinfo(np.uint32).max):
+        raise ValueError("model initialization seed must lie inside uint32 bounds")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _normalize_mixed_precision(mixed_precision: str) -> str:
@@ -369,6 +388,10 @@ def run_training(cfg: DictConfig):
     model_device = _resolve_train_device()
     mixed_precision = _normalize_mixed_precision(cfg.mixed_precision)
     model_dtype = _mixed_precision_to_model_dtype(mixed_precision)
+    # LeapBot injects randomly initialized LoRA-A matrices while constructing
+    # the model. Seeding only in Trainer is too late and makes otherwise
+    # controlled runs start from different trainable bases.
+    _seed_model_initialization(int(cfg.seed))
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
     train_ds, val_ds = build_datasets(cfg.data)
 

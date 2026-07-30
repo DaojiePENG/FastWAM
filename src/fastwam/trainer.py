@@ -363,7 +363,8 @@ class Wan22Trainer:
                 f"Expected tensor video for evaluation, got {type(video)}. "
                 "Evaluation now expects `video` with shape [3,T,H,W] or [B,3,T,H,W]."
             )
-        if video.ndim == 4:
+        sample_was_unbatched = video.ndim == 4
+        if sample_was_unbatched:
             video = video.unsqueeze(0)
         if video.ndim != 5:
             raise ValueError(f"Expected video shape [3,T,H,W] or [B,3,T,H,W], got {tuple(video.shape)}")
@@ -418,7 +419,7 @@ class Wan22Trainer:
                     f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
                 )
 
-        return {
+        result = {
             "video": video,
             "prompt": prompt,
             "action": action,
@@ -427,6 +428,27 @@ class Wan22Trainer:
             "context_mask": context_mask,
             "action_horizon": action_horizon,
         }
+        # Preserve model-specific supervision instead of silently reducing an
+        # extended dataset item to FastWAM's six legacy fields.  LeapBot relies
+        # on this for the complete real observation/action prefix, its padding
+        # masks, absolute episode clocks, and full-prefix assertion.  The
+        # validation dataset is normally indexed one item at a time, hence all
+        # additional tensors receive the same leading batch dimension as video.
+        converted = {
+            "video",
+            "prompt",
+            "action",
+            "proprio",
+            "context",
+            "context_mask",
+        }
+        for key, value in sample.items():
+            if key in converted:
+                continue
+            if isinstance(value, torch.Tensor) and sample_was_unbatched:
+                value = value.unsqueeze(0)
+            result[key] = value
+        return result
 
     @torch.no_grad()
     def evaluate(self):
@@ -446,6 +468,25 @@ class Wan22Trainer:
         with self.accelerator.autocast():
             val_loss, _ = model.training_loss(sample)
             val_loss = val_loss.float().item()
+
+        if "history_video" in sample:
+            # The generic FastWAM `infer()` path below generates video without
+            # LeapBot's observation->executed-action memory state machine.  Its
+            # action/video metrics would therefore be mislabeled H=0 results.
+            # Keep the correctly history-conditioned packed loss here; policy
+            # metrics belong to the external LIBERO memory rollout evaluator.
+            gathered_val_loss = self.accelerator.gather_for_metrics(
+                torch.tensor(
+                    [val_loss], device=self.accelerator.device, dtype=torch.float32
+                )
+            )
+            if was_dit_training:
+                self._set_dit_only_train_mode()
+            return {
+                "val_loss": float(gathered_val_loss.mean().item()),
+                "history_conditioned": True,
+                "rollout_metrics_skipped": True,
+            }
         
         prompt = sample["prompt"][0]
         video0 = sample["video"][0] # Tensor [3, T, H, W] in (-1, 1)
@@ -625,6 +666,28 @@ class Wan22Trainer:
         model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step)
         return ckpt_path
 
+    @staticmethod
+    def _run_contract_metadata() -> dict[str, str]:
+        metadata = {}
+        contract = os.environ.get("LEAPBOT_RUN_CONTRACT_SHA256")
+        commit = os.environ.get("LEAPBOT_CODE_COMMIT")
+        if contract:
+            metadata["run_contract_sha256"] = contract
+        if commit:
+            metadata["code_commit"] = commit
+        return metadata
+
+    @staticmethod
+    def _validate_resume_run_contract(payload: dict) -> None:
+        expected = Wan22Trainer._run_contract_metadata()
+        for key, value in expected.items():
+            actual = payload.get(key)
+            if actual != value:
+                raise ValueError(
+                    "training-state run contract mismatch for "
+                    f"{key}: checkpoint={actual!r} current={value!r}"
+                )
+
     def _save_trainer_state(self, state_path: str):
         state_file = os.path.join(state_path, "trainer_state.json")
         epoch = int(self.epoch)
@@ -649,6 +712,7 @@ class Wan22Trainer:
             "batch_size_per_process": int(self.batch_size),
             "num_processes": int(self.accelerator.num_processes),
             "micro_batches_per_epoch": micro_batches_per_epoch,
+            **self._run_contract_metadata(),
         }
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
@@ -672,11 +736,22 @@ class Wan22Trainer:
         return {"weights_path": ckpt_path, "state_path": state_path}
 
     def load_training_state(self, state_dir: str):
-        self.accelerator.load_state(input_dir=state_dir)
         state_file = Path(state_dir) / "trainer_state.json"
+        payload = None
         if state_file.exists():
             with open(state_file, "r", encoding="utf-8") as f:
                 payload = json.load(f)
+            self._validate_resume_run_contract(payload)
+        elif self._run_contract_metadata():
+            raise ValueError(
+                "contract-bound training state is missing trainer_state.json: "
+                f"{state_file}"
+            )
+
+        # Validate cheap metadata before loading optimizer/model shards so a
+        # stale output directory cannot partially mutate the current run.
+        self.accelerator.load_state(input_dir=state_dir)
+        if payload is not None:
             self.global_step = int(payload["global_step"])
 
             if "epoch" in payload and "batch_in_epoch" in payload:
@@ -929,12 +1004,17 @@ class Wan22Trainer:
                         metrics = self.evaluate()
                         self.accelerator.wait_for_everyone()
                         if metrics is not None and self.accelerator.is_main_process:
-                            description = "[eval] step=%d val_loss=%.4f infer_psnr=%.4f infer_ssim=%.4f" % (
+                            description = "[eval] step=%d val_loss=%.4f" % (
                                 self.global_step,
                                 metrics["val_loss"],
-                                metrics["psnr_rd"],
-                                metrics["ssim_rd"],
                             )
+                            if "psnr_rd" in metrics:
+                                description += " infer_psnr=%.4f infer_ssim=%.4f" % (
+                                    metrics["psnr_rd"],
+                                    metrics["ssim_rd"],
+                                )
+                            elif metrics.get("rollout_metrics_skipped", False):
+                                description += " memory_rollout_metrics=external_only"
                             if "action_l2" in metrics:
                                 description += " action_l2=%.4f" % metrics["action_l2"]
                             if "action_l1" in metrics:
@@ -942,13 +1022,17 @@ class Wan22Trainer:
                             logger.info(description)
                             eval_payload = {
                                 "eval/val_loss": float(metrics["val_loss"]),
-                                "eval/psnr_rg": float(metrics["psnr_rg"]),
-                                "eval/ssim_rg": float(metrics["ssim_rg"]),
-                                "eval/psnr_rd": float(metrics["psnr_rd"]),
-                                "eval/ssim_rd": float(metrics["ssim_rd"]),
-                                "eval/psnr_dg": float(metrics["psnr_dg"]),
-                                "eval/ssim_dg": float(metrics["ssim_dg"]),
                             }
+                            for key in (
+                                "psnr_rg",
+                                "ssim_rg",
+                                "psnr_rd",
+                                "ssim_rd",
+                                "psnr_dg",
+                                "ssim_dg",
+                            ):
+                                if key in metrics:
+                                    eval_payload[f"eval/{key}"] = float(metrics[key])
                             if "action_l2" in metrics:
                                 eval_payload["eval/action_l2"] = float(metrics["action_l2"])
                             if "action_l1" in metrics:
