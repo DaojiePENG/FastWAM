@@ -41,8 +41,17 @@ log() {
 }
 
 latest_state() {
-    { find "$OUTPUT_DIR/checkpoints/state" -mindepth 1 -maxdepth 1 \
-        -type d -name 'step_*' 2>/dev/null || true; } | sort | tail -1
+    local state
+    while IFS= read -r state; do
+        # trainer_state.json is written only after every DeepSpeed shard and RNG
+        # state has completed, so never resume a half-written checkpoint.
+        if [[ -s "$state/trainer_state.json" ]]; then
+            printf '%s\n' "$state"
+        fi
+    done < <(
+        { find "$OUTPUT_DIR/checkpoints/state" -mindepth 1 -maxdepth 1 \
+            -type d -name 'step_*' 2>/dev/null || true; } | sort
+    ) | tail -1
 }
 
 preflight_gpus() {
@@ -156,6 +165,15 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "wandb.name=$RUN_NAME" \
     "wandb.mode=$WANDB_MODE" \
     "resume=$RESUME_PATH" \
+    >>"$LOG_FILE" 2>&1
+
+"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+    "$FINAL_CHECKPOINT" \
+    --expected-step "$MAX_STEPS" \
+    --expected-mode "$MODE" \
+    --expected-video-lora-multiplier "$VIDEO_LORA_MULTIPLIER" \
+    --state-dir "$OUTPUT_DIR/checkpoints/state/$FINAL_TAG" \
+    --output "$OUTPUT_DIR/checkpoint_validation.json" \
     >>"$LOG_FILE" 2>&1
 
 log "hierarchical raw-v2 PEFT complete: $FINAL_CHECKPOINT"
