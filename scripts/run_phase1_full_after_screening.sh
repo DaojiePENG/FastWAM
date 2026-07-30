@@ -15,6 +15,7 @@ WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and
 WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
 WANDB_GROUP="${WANDB_GROUP:-phase1-h8-d30-e1-bs32-seed42}"
 FINAL_EVAL_GPU_IDS_CSV="${FINAL_EVAL_GPU_IDS_CSV:-}"
+WAIT_FOR_SCREENING="${WAIT_FOR_SCREENING:-true}"
 
 MODES=(interleaved vision_causal action_aggregator)
 GPU_PAIRS=(0,1 2,3 4,5)
@@ -121,10 +122,14 @@ mkdir -p \
     "$ROOT_DIR/.cache/wandb/config" \
     "$ROOT_DIR/.cache/wandb/cache" \
     "$ROOT_DIR/.cache/wandb/data"
-while ! screening_complete; do
-    log "waiting for screening comparison: $SCREEN_EVAL_ROOT/pareto/pareto.json"
-    sleep "$POLL_SECONDS"
-done
+if [[ "$WAIT_FOR_SCREENING" == "true" ]]; then
+    while ! screening_complete; do
+        log "waiting for screening comparison: $SCREEN_EVAL_ROOT/pareto/pareto.json"
+        sleep "$POLL_SECONDS"
+    done
+else
+    log "screening comparison gate disabled; launching independent formal training"
+fi
 
 log "screening comparison complete; launching one-full-epoch causal comparison"
 pids=()
