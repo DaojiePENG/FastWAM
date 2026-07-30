@@ -27,11 +27,6 @@ log "GPUs 6-7 reserved for action_aggregator learning-curve evaluation"
 
 for epoch in $(seq 1 "$NUM_EPOCHS"); do
     step=$((epoch * STEPS_PER_EPOCH))
-    # The final five-epoch checkpoint receives the full 10x10 evaluation after
-    # recipe selection; curve screening covers epochs 1-4 at two trials/task.
-    if (( epoch == NUM_EPOCHS )); then
-        break
-    fi
     tag="$(printf 'step_%06d' "$step")"
     while ! checkpoint_ready "$step"; do
         log "waiting for action_aggregator epoch=$epoch checkpoint=$tag"
@@ -46,4 +41,4 @@ for epoch in $(seq 1 "$NUM_EPOCHS"); do
     GPU_IDS_CSV=6,7 \
     bash "$ROOT_DIR/scripts/run_single_mode_checkpoint_eval.sh"
 done
-log "action_aggregator epoch 1-4 intermediate evaluations complete: $EVAL_ROOT"
+log "action_aggregator epoch 1-5 intermediate evaluations complete: $EVAL_ROOT"
