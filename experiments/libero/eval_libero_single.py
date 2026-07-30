@@ -39,6 +39,7 @@ from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcess
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+from leapbot_va.libero import executed_env_actions_to_model_space
 from libero.libero import benchmark
 from action_ensembler import ActionEnsembler
 
@@ -367,7 +368,8 @@ def _predict_action_chunk(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[np.ndarray, dict, Optional[list[Image.Image]]]:
+    memory=None,
+) -> tuple[np.ndarray, dict, Optional[list[Image.Image]], dict[str, Any]]:
     num_inference_steps_cfg = cfg.EVALUATION.get("num_inference_steps", None)
     if num_inference_steps_cfg is None:
         num_inference_steps = int(cfg.get("eval_num_inference_steps", 20))
@@ -405,6 +407,11 @@ def _predict_action_chunk(
     }
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
     predicted_future_frames = None
+    if memory is not None:
+        if visualize_future_video:
+            raise ValueError("LeapBot memory inference never predicts/decodes future video")
+        infer_kwargs["memory"] = memory
+        infer_kwargs["profile"] = True
     if visualize_future_video:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
@@ -426,7 +433,10 @@ def _predict_action_chunk(
     action = invert_gripper_action(action)
     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
         action[..., -1] = np.sign(action[..., -1])
-    return action, imgs, predicted_future_frames
+    return action, imgs, predicted_future_frames, {
+        "timing": pred.get("timing", {}),
+        "memory": pred.get("memory", {}),
+    }
 
 
 def _get_max_steps(task_suite_name: str) -> int:
@@ -455,13 +465,29 @@ def run_single_episode(
     input_w: int,
     input_h: int,
     model_device: str,
-) -> tuple[bool, list, list[dict[str, Any]], Optional[float]]:
+) -> tuple[bool, list, list[dict[str, Any]], Optional[float], dict[str, Any]]:
     max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
     use_action_ensembler = bool(cfg.EVALUATION.get("use_action_ensembler", False))
     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
     capture_steps = set(_get_future_frame_capture_steps(cfg)[1:])
+
+    memory_cfg = cfg.EVALUATION.get("memory", {})
+    memory_enabled = bool(memory_cfg.get("enabled", False))
+    memory = None
+    if memory_enabled:
+        if not hasattr(model, "create_memory") or not hasattr(model, "commit_executed_actions"):
+            raise TypeError("EVALUATION.memory.enabled requires a LeapBotVA model")
+        memory = model.create_memory(
+            exit_depth=int(memory_cfg.get("exit_depth", 30)),
+            causal_mode=str(memory_cfg.get("causal_mode", "interleaved")),
+            max_history_blocks=int(memory_cfg.get("max_history_blocks", 70)),
+            action_horizon=action_horizon,
+            replan_steps=replan_steps,
+        )
+        if visualize_future_video:
+            raise ValueError("future-video visualization is incompatible with LeapBot memory")
 
     env.reset()
     obs = env.set_init_state(initial_state)
@@ -476,6 +502,15 @@ def run_single_episode(
     current_predicted_future_clip: Optional[dict[str, Any]] = None
     current_replan_step = 0
     current_replan_idx = -1
+    current_executed_actions: list[list[float]] = []
+    executed_control_steps = 0
+    memory_metrics: dict[str, Any] = {
+        "enabled": memory_enabled,
+        "replans": [],
+        "peak_cache_bytes": 0,
+    }
+    if memory_enabled and str(model_device).startswith("cuda"):
+        torch.cuda.reset_peak_memory_stats(torch.device(model_device))
 
     t = 0
     done = False
@@ -488,7 +523,7 @@ def run_single_episode(
             continue
 
         if len(pending_actions) == 0:
-            action_chunk, imgs, predicted_future_frames = _predict_action_chunk(
+            action_chunk, imgs, predicted_future_frames, inference_metrics = _predict_action_chunk(
                 obs=obs,
                 task_description=task_description,
                 model=model,
@@ -498,7 +533,11 @@ def run_single_episode(
                 input_w=input_w,
                 input_h=input_h,
                 model_device=model_device,
+                memory=memory,
             )
+            current_executed_actions = []
+            if memory_enabled:
+                memory_metrics["replans"].append(inference_metrics)
             if predicted_future_frames is not None:
                 current_replan_idx += 1
                 current_predicted_future_clip = {
@@ -519,7 +558,11 @@ def run_single_episode(
             imgs = get_libero_image(obs)
             replay_images.append(imgs.copy())
 
-        obs, _, done, _ = env.step(pending_actions.pop(0))
+        executed_action = pending_actions.pop(0)
+        obs, _, done, _ = env.step(executed_action)
+        executed_control_steps += 1
+        if memory_enabled:
+            current_executed_actions.append(list(executed_action))
         if visualize_future_video and current_predicted_future_clip is not None:
             current_replan_step += 1
             if current_replan_step in capture_steps:
@@ -570,15 +613,59 @@ def run_single_episode(
                     episode_future_clip_psnr.append(clip_psnr)
                 predicted_future_video_clips.append(current_predicted_future_clip)
                 current_predicted_future_clip = None
+        if memory_enabled and (done or len(pending_actions) == 0):
+            model_actions = executed_env_actions_to_model_space(
+                np.asarray(current_executed_actions, dtype=np.float32),
+                processor,
+            )
+            commit_metrics = model.commit_executed_actions(
+                memory,
+                model_actions,
+                profile=True,
+            )
+            memory_metrics["replans"][-1]["commit"] = commit_metrics
+            memory_metrics["peak_cache_bytes"] = max(
+                int(memory_metrics["peak_cache_bytes"]),
+                int(commit_metrics["cache_bytes"]),
+            )
+            current_executed_actions = []
         if done:
             break
         t += 1
+    if memory_enabled and current_executed_actions:
+        model_actions = executed_env_actions_to_model_space(
+            np.asarray(current_executed_actions, dtype=np.float32), processor
+        )
+        commit_metrics = model.commit_executed_actions(memory, model_actions, profile=True)
+        memory_metrics["replans"][-1]["commit"] = commit_metrics
+        memory_metrics["peak_cache_bytes"] = max(
+            int(memory_metrics["peak_cache_bytes"]), int(commit_metrics["cache_bytes"])
+        )
+        current_executed_actions = []
     pbar.close()
+    memory_metrics["control_steps"] = executed_control_steps
+
+    if memory is not None:
+        memory_metrics["completed_blocks"] = memory.completed_blocks
+        memory_metrics["final_cache_bytes"] = memory.cache_nbytes
+        committed_steps = sum(
+            int(replan.get("commit", {}).get("executed_actions", 0))
+            for replan in memory_metrics["replans"]
+        )
+        if committed_steps != executed_control_steps:
+            raise AssertionError(
+                f"executed/committed action mismatch: {executed_control_steps} vs {committed_steps}"
+            )
+        if str(model_device).startswith("cuda"):
+            memory_metrics["peak_gpu_bytes"] = int(
+                torch.cuda.max_memory_allocated(torch.device(model_device))
+            )
+        model.reset_memory(memory)
 
     episode_mean_psnr = (
         float(np.mean(episode_future_clip_psnr)) if len(episode_future_clip_psnr) > 0 else None
     )
-    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr
+    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr, memory_metrics
 
 
 def run_single_task(
@@ -602,13 +689,16 @@ def run_single_task(
         "failure_episodes": [],
         "success_episodes": [],
         "task_description": task_description,
+        "completion_steps": [],
     }
     if visualize_future_video:
         results["episode_future_video_psnr"] = []
         results["future_video_psnr_mean"] = None
+    if bool(cfg.EVALUATION.get("memory", {}).get("enabled", False)):
+        results["memory_metrics"] = []
 
     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
-        success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
+        success, replay_images, predicted_future_video_clips, episode_mean_psnr, memory_metrics = run_single_episode(
             env=env,
             initial_state=initial_states[trial_idx],
             task_description=task_description,
@@ -626,8 +716,11 @@ def run_single_task(
             results["success_episodes"].append(trial_idx)
         else:
             results["failure_episodes"].append(trial_idx)
+        results["completion_steps"].append(memory_metrics["control_steps"])
         if visualize_future_video:
             results["episode_future_video_psnr"].append(episode_mean_psnr)
+        if memory_metrics["enabled"]:
+            results["memory_metrics"].append(memory_metrics)
 
         save_rollout_video(
             video_dir,
@@ -672,6 +765,7 @@ def run_single_task(
         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
         if len(valid_episode_psnr) > 0:
             results["future_video_psnr_mean"] = float(np.mean(valid_episode_psnr))
+    results["mean_completion_steps"] = float(np.mean(results["completion_steps"]))
     return results
 
 
@@ -750,6 +844,10 @@ def eval_single_process(cfg: DictConfig):
         "failure_episodes": [],
         "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": 0,
+        "checkpoint": str(cfg.ckpt),
+        "memory_config": OmegaConf.to_container(
+            cfg.EVALUATION.get("memory", {}), resolve=True
+        ),
     }
 
     logging.info("Running LIBERO evaluation with env_num=1")

@@ -1,0 +1,44 @@
+# @package _global_
+
+defaults:
+  - override /data: libero_2cam
+  - override /model: leapbot
+  - _self_
+
+batch_size: 1
+num_workers: 8
+seed: 42
+
+data:
+  train:
+    _target_: leapbot_va.data.LeapRobotVideoDataset
+    max_history_blocks: 8
+    min_history_blocks: 0
+    replan_steps: 10
+    history_seed: ${seed}
+    # Reuse release normalization statistics; the historical window does not
+    # recompute them. Override on the CLI for a local checkpoint directory.
+    pretrained_norm_stats: ${oc.env:LEAPBOT_DATASET_STATS,null}
+
+model:
+  causal_mode: interleaved
+  training_exit_depths: [30]
+  mot_checkpoint_mixed_attn: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+
+learning_rate: 1.0e-5
+lr_scheduler_type: cosine
+num_epochs: 1
+max_steps: null
+log_every: 10
+save_every: 2000
+eval_every: 200
+gradient_accumulation_steps: 16
+weight_decay: 1.0e-2
+resume: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
+
+# Reproducible phase presets (Hydra CLI examples):
+# phase 1: model.causal_mode={interleaved,vision_causal,action_aggregator}
+# phase 2: data.train.max_history_blocks=16
+# phase 3: model.training_exit_depths=[8,16,24,30]

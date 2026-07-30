@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fastwam"
+name = "leapbot-va"
 version = "0.1.0"
-description = "FastWAM: standalone Wan2.2-TI2V-5B training/inference package"
+description = "LeapBot-VA: real-history causal-KV world action model derived from FastWAM"
 requires-python = ">=3.10"
 dependencies = [
   "accelerate==1.12.0",
@@ -45,4 +45,16 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["fastwam*"]
+include = ["fastwam*", "leapbot_va*"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

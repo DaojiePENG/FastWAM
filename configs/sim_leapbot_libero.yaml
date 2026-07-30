@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - train
+  - override /task: libero_leapbot_2cam224
+  - _self_
+
+ckpt: null
+gpu_id: 0
+
+model:
+  load_text_encoder: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+
+EVALUATION:
+  task_suite_name: libero_10
+  task_id: 0
+  num_trials: 10
+  output_dir: ./evaluate_results/leapbot/${model.causal_mode}/d${EVALUATION.memory.exit_depth}
+  env_num: 1
+  num_steps_wait: 30
+  replan_steps: 10
+  binarize_gripper: true
+  use_action_ensembler: false
+  visualize_future_video: false
+  action_horizon: 32
+  num_inference_steps: ${eval_num_inference_steps}
+  sigma_shift: null
+  text_cfg_scale: 1.0
+  negative_prompt: ""
+  rand_device: cpu
+  tiled: false
+  dataset_stats_path: ${oc.env:LEAPBOT_DATASET_STATS,null}
+  device: cuda
+  memory:
+    enabled: true
+    exit_depth: 30
+    causal_mode: ${model.causal_mode}
+    max_history_blocks: 70
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

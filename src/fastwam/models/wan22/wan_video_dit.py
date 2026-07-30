@@ -515,6 +515,8 @@ class WanVideoDiT(torch.nn.Module):
         action: Optional[torch.Tensor] = None,
         fuse_vae_embedding_in_latents: bool = False,
         control_camera_latents_input: Optional[torch.Tensor] = None,
+        frame_position_ids: Optional[torch.Tensor] = None,
+        frame_timesteps: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         x, timestep, context_mask = self._validate_forward_inputs(
             x=x,
@@ -538,12 +540,19 @@ class WanVideoDiT(torch.nn.Module):
             if not hasattr(self, "patch_size") or len(self.patch_size) < 3:
                 raise ValueError(f"Invalid dit.patch_size: {getattr(self, 'patch_size', None)}")
             
-            token_timesteps = torch.ones(
-                (batch_size, x.shape[2], tokens_per_frame),
-                dtype=timestep.dtype,
-                device=timestep.device,
-            ) * timestep.view(batch_size, 1, 1)
-            token_timesteps[:, 0, :] = 0
+            if frame_timesteps is None:
+                frame_timesteps = timestep.view(batch_size, 1).expand(-1, x.shape[2]).clone()
+                frame_timesteps[:, 0] = 0
+            else:
+                if frame_timesteps.shape != (batch_size, x.shape[2]):
+                    raise ValueError(
+                        "frame_timesteps must have shape "
+                        f"({batch_size}, {x.shape[2]}), got {tuple(frame_timesteps.shape)}"
+                    )
+                frame_timesteps = frame_timesteps.to(device=timestep.device, dtype=timestep.dtype)
+            token_timesteps = frame_timesteps.unsqueeze(-1).expand(
+                -1, -1, tokens_per_frame
+            )
             token_timesteps = token_timesteps.reshape(batch_size, -1)
             token_t_emb = sinusoidal_embedding_1d(self.freq_dim, token_timesteps.reshape(-1))
             t = self.time_embedding(token_t_emb).reshape(batch_size, -1, self.hidden_dim)
@@ -598,12 +607,41 @@ class WanVideoDiT(torch.nn.Module):
             context_mask = context_mask.unsqueeze(1).expand(-1, f * h * w, -1) # (B, seq_len, L)
 
         x_tokens = rearrange(x, "b c f h w -> b (f h w) c").contiguous()
+        if frame_position_ids is None:
+            frame_position_ids = torch.arange(f, device=x_tokens.device)
+        if frame_position_ids.ndim not in (1, 2):
+            raise ValueError("frame_position_ids must be [F] or [B,F]")
+        if frame_position_ids.shape[-1] != f:
+            raise ValueError(
+                f"frame_position_ids length must be {f}, got {frame_position_ids.shape[-1]}"
+            )
+        if frame_position_ids.ndim == 2 and frame_position_ids.shape[0] != batch_size:
+            raise ValueError("batched frame_position_ids must match video batch size")
+        if bool((frame_position_ids < 0).any().item()):
+            raise ValueError("frame_position_ids must be non-negative")
 
-        freqs = torch.cat([
-            self.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            self.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            self.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
-        ], dim=-1).reshape(f * h * w, 1, -1).to(x_tokens.device)
+        max_frame_position = int(frame_position_ids.max().item()) if frame_position_ids.numel() else 0
+        if max_frame_position < self.freqs[0].shape[0]:
+            temporal_table = self.freqs[0]
+        else:
+            temporal_dim = self.attn_head_dim - 2 * (self.attn_head_dim // 3)
+            temporal_table = precompute_freqs_cis(temporal_dim, end=max_frame_position + 1)
+        temporal = temporal_table.to(x_tokens.device)[frame_position_ids.long()]
+        height_freqs = self.freqs[1][:h].to(x_tokens.device)
+        width_freqs = self.freqs[2][:w].to(x_tokens.device)
+
+        if frame_position_ids.ndim == 1:
+            freqs = torch.cat([
+                temporal.view(f, 1, 1, -1).expand(f, h, w, -1),
+                height_freqs.view(1, h, 1, -1).expand(f, h, w, -1),
+                width_freqs.view(1, 1, w, -1).expand(f, h, w, -1),
+            ], dim=-1).reshape(f * h * w, 1, -1)
+        else:
+            freqs = torch.cat([
+                temporal.view(batch_size, f, 1, 1, -1).expand(batch_size, f, h, w, -1),
+                height_freqs.view(1, 1, h, 1, -1).expand(batch_size, f, h, w, -1),
+                width_freqs.view(1, 1, 1, w, -1).expand(batch_size, f, h, w, -1),
+            ], dim=-1).reshape(batch_size, f * h * w, 1, -1)
 
         return {
             "tokens": x_tokens,
@@ -616,6 +654,8 @@ class WanVideoDiT(torch.nn.Module):
                 "grid_size": (f, h, w),
                 "tokens_per_frame": tokens_per_frame,
                 "batch_size": batch_size,
+                "frame_position_ids": frame_position_ids,
+                "frame_timesteps": frame_timesteps,
             },
         }
 
@@ -633,6 +673,8 @@ class WanVideoDiT(torch.nn.Module):
         context_mask: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         fuse_vae_embedding_in_latents: bool = False,
+        frame_position_ids: Optional[torch.Tensor] = None,
+        frame_timesteps: Optional[torch.Tensor] = None,
     ):
         pre_state = self.pre_dit(
             x=x,
@@ -641,6 +683,8 @@ class WanVideoDiT(torch.nn.Module):
             context_mask=context_mask,
             action=action,
             fuse_vae_embedding_in_latents=fuse_vae_embedding_in_latents,
+            frame_position_ids=frame_position_ids,
+            frame_timesteps=frame_timesteps,
         )
         x_tokens = pre_state["tokens"]
         context_emb = pre_state["context"]

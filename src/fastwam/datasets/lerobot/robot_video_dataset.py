@@ -92,6 +92,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                     logger.info("Calculating dataset stats for normalization...")
                     dataset_stats = self.lerobot_dataset.get_dataset_stats(processor)
                     work_dir = misc.get_work_dir()
+                    os.makedirs(work_dir, exist_ok=True)
                     save_dataset_stats_to_json(dataset_stats, os.path.join(work_dir, "dataset_stats.json"))
                 else:
                     dataset_stats = None
@@ -104,6 +105,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
                 logger.info(f"Using dataset stats: {pretrained_norm_stats}")
                 if PartialState().is_main_process:
                     work_dir = misc.get_work_dir()
+                    os.makedirs(work_dir, exist_ok=True)
                     save_dataset_stats_to_json(dataset_stats, os.path.join(work_dir, "dataset_stats.json"))
 
             processor.set_normalizer_from_stats(dataset_stats)

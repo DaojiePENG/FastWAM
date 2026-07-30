@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -82,6 +82,8 @@ class MoT(nn.Module):
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         attn_mask = attention_mask.to(device=q_cat.device)
+        if attn_mask.dim() == 3:
+            attn_mask = attn_mask.unsqueeze(1)
 
         def _forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
             return flash_attention(q=q, k=k, v=v, num_heads=self.num_heads, ctx_mask=attn_mask)
@@ -340,6 +342,166 @@ class MoT(nn.Module):
             kv_cache.append({"k": k, "v": v})
         return kv_cache
 
+    def prefill_expert_segment(
+        self,
+        *,
+        expert_name: str,
+        tokens: torch.Tensor,
+        freqs: torch.Tensor,
+        t_mod: torch.Tensor,
+        context_payload: Optional[dict],
+        history_kv: Optional[list[dict[str, torch.Tensor]]] = None,
+        max_layers: Optional[int] = None,
+    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+        """Incrementally encode one clean segment and return its layer-wise KV.
+
+        ``history_kv`` is already filtered according to the selected LeapBot
+        causal ablation.  Current tokens attend bidirectionally inside their
+        synchronized observation/action block and causally to the immutable
+        prefix.  The returned tensors contain only the current segment, so the
+        caller can commit them transactionally.
+        """
+
+        if expert_name not in self.mixtures:
+            raise ValueError(f"unknown expert: {expert_name}")
+        if max_layers is None:
+            max_layers = self.num_layers
+        max_layers = int(max_layers)
+        if max_layers <= 0 or max_layers > self.num_layers:
+            raise ValueError(
+                f"max_layers must be in [1,{self.num_layers}], got {max_layers}"
+            )
+        if history_kv is not None and len(history_kv) < max_layers:
+            raise ValueError(
+                f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
+            )
+
+        expert = self.mixtures[expert_name]
+        x = tokens
+        segment_kv: list[dict[str, torch.Tensor]] = []
+        for layer_idx in range(max_layers):
+            block = expert.blocks[layer_idx]
+            (
+                q,
+                k,
+                v,
+                residual_x,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+                use_gradient_checkpointing,
+            ) = self._build_expert_attention_io(
+                expert=expert,
+                block=block,
+                x=x,
+                freqs=freqs,
+                t_mod=t_mod,
+            )
+
+            if history_kv is None:
+                k_all, v_all = k, v
+            else:
+                layer_history = history_kv[layer_idx]
+                k_all = torch.cat([layer_history["k"], k], dim=1)
+                v_all = torch.cat([layer_history["v"], v], dim=1)
+            attention_mask = torch.ones(
+                (q.shape[1], k_all.shape[1]),
+                dtype=torch.bool,
+                device=q.device,
+            )
+            mixed = self._mixed_attention(
+                q_cat=q,
+                k_cat=k_all,
+                v_cat=v_all,
+                attention_mask=attention_mask,
+            )
+            x = self._apply_post_with_optional_checkpoint(
+                block=block,
+                residual_x=residual_x,
+                gate_msa=gate_msa,
+                shift_mlp=shift_mlp,
+                scale_mlp=scale_mlp,
+                gate_mlp=gate_mlp,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                mixed_slice=mixed,
+                context_payload=context_payload,
+            )
+            segment_kv.append({"k": k, "v": v})
+        return x, segment_kv
+
+    def forward_action_with_history(
+        self,
+        *,
+        action_tokens: torch.Tensor,
+        action_freqs: torch.Tensor,
+        action_t_mod: torch.Tensor,
+        action_context_payload: Optional[dict],
+        history_kv: list[dict[str, torch.Tensor]],
+        max_layers: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Denoise a transient action block against persistent mixed history."""
+
+        if max_layers is None:
+            max_layers = self.num_layers
+        max_layers = int(max_layers)
+        if max_layers <= 0 or max_layers > self.num_layers:
+            raise ValueError(
+                f"max_layers must be in [1,{self.num_layers}], got {max_layers}"
+            )
+        if len(history_kv) < max_layers:
+            raise ValueError(
+                f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
+            )
+
+        expert = self.mixtures["action"]
+        x = action_tokens
+        for layer_idx in range(max_layers):
+            block = expert.blocks[layer_idx]
+            (
+                q_action,
+                k_action,
+                v_action,
+                residual_x,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+                use_gradient_checkpointing,
+            ) = self._build_expert_attention_io(
+                expert=expert,
+                block=block,
+                x=x,
+                freqs=action_freqs,
+                t_mod=action_t_mod,
+            )
+            layer_history = history_kv[layer_idx]
+            k_all = torch.cat([layer_history["k"], k_action], dim=1)
+            v_all = torch.cat([layer_history["v"], v_action], dim=1)
+            attention_mask = torch.ones(
+                (q_action.shape[1], k_all.shape[1]),
+                dtype=torch.bool,
+                device=q_action.device,
+            )
+            mixed = self._mixed_attention(
+                q_cat=q_action,
+                k_cat=k_all,
+                v_cat=v_all,
+                attention_mask=attention_mask,
+            )
+            x = self._apply_post_with_optional_checkpoint(
+                block=block,
+                residual_x=residual_x,
+                gate_msa=gate_msa,
+                shift_mlp=shift_mlp,
+                scale_mlp=scale_mlp,
+                gate_mlp=gate_mlp,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                mixed_slice=mixed,
+                context_payload=action_context_payload,
+            )
+        return x
+
     def forward_action_with_video_cache(
         self,
         action_tokens: torch.Tensor,
@@ -451,6 +613,7 @@ class MoT(nn.Module):
         freqs_all: Dict[str, torch.Tensor],
         context_all: Dict[str, Optional[dict]],
         t_mod_all: Dict[str, torch.Tensor],
+        exit_depths: Optional[Sequence[int]] = None,
     ):
         missing = [k for k in self.expert_order if k not in embeds_all]
         if missing:
@@ -462,10 +625,20 @@ class MoT(nn.Module):
         if missing:
             raise ValueError(f"Missing expert t_mod for {missing}")
 
-        if attention_mask.ndim != 2:
-            raise ValueError(f"`attention_mask` must be 2D [S, S], got shape {tuple(attention_mask.shape)}")
-        if attention_mask.shape[0] != attention_mask.shape[1]:
+        if attention_mask.ndim not in (2, 3):
+            raise ValueError(
+                "`attention_mask` must be [S,S] or [B,S,S], "
+                f"got shape {tuple(attention_mask.shape)}"
+            )
+        if attention_mask.shape[-2] != attention_mask.shape[-1]:
             raise ValueError(f"`attention_mask` must be square, got shape {tuple(attention_mask.shape)}")
+
+        requested_exits = None
+        if exit_depths is not None:
+            requested_exits = {int(depth) for depth in exit_depths}
+            if not requested_exits or min(requested_exits) <= 0 or max(requested_exits) > self.num_layers:
+                raise ValueError(f"invalid exit_depths: {sorted(requested_exits)}")
+        exit_outputs = {}
 
         tokens_all = {k: v for k, v in embeds_all.items()}
 
@@ -521,7 +694,7 @@ class MoT(nn.Module):
             v_cat = torch.cat(v_chunks, dim=1)
 
             total_seq = q_cat.shape[1]
-            if attention_mask.shape[0] != total_seq:
+            if attention_mask.shape[-1] != total_seq:
                 raise ValueError(
                     "Attention mask seq length mismatch: "
                     f"mask={attention_mask.shape[0]} vs tokens={total_seq}"
@@ -553,4 +726,10 @@ class MoT(nn.Module):
                 tokens_all[name] = updated_tokens
                 start = end
 
+            depth = layer_idx + 1
+            if requested_exits is not None and depth in requested_exits:
+                exit_outputs[depth] = dict(tokens_all)
+
+        if requested_exits is not None:
+            return exit_outputs
         return tokens_all

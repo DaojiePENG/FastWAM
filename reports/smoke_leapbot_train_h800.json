@@ -1,0 +1,13 @@
+{
+  "device": "NVIDIA H800",
+  "causal_mode": "interleaved",
+  "training_exit_depths": [
+    30
+  ],
+  "loss": 0.0971016064286232,
+  "metrics": {
+    "loss_video_d30": 0.05940397456288338,
+    "loss_action_d30": 0.03769763186573982
+  },
+  "peak_gpu_bytes": 25613558784
+}

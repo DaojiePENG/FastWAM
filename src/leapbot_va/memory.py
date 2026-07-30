@@ -1,0 +1,319 @@
+"""Explicit, per-episode causal KV memory for LeapBot-VA.
+
+The runtime deliberately keeps memory outside the model module.  This avoids
+global mutable caches, makes concurrent evaluation environments safe, and
+makes the observation/action commit protocol testable without loading a 6B
+parameter checkpoint.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Iterable, Literal, Sequence
+
+import torch
+
+
+CausalMode = Literal["interleaved", "vision_causal", "action_aggregator"]
+Modality = Literal["video", "action"]
+
+VALID_CAUSAL_MODES: tuple[str, ...] = (
+    "interleaved",
+    "vision_causal",
+    "action_aggregator",
+)
+VALID_EXIT_DEPTHS: tuple[int, ...] = (8, 16, 24, 30)
+
+
+class MemoryPhase(str, Enum):
+    EXPECT_OBSERVATION = "expect_observation"
+    EXPECT_ACTION_COMMIT = "expect_action_commit"
+
+
+@dataclass(frozen=True)
+class LeapMemoryConfig:
+    """Immutable settings that must remain fixed for one episode."""
+
+    exit_depth: int = 30
+    causal_mode: CausalMode = "interleaved"
+    max_history_blocks: int = 70
+    action_horizon: int = 32
+    replan_steps: int = 10
+
+    def __post_init__(self) -> None:
+        if self.exit_depth not in VALID_EXIT_DEPTHS:
+            raise ValueError(
+                f"exit_depth must be one of {VALID_EXIT_DEPTHS}, got {self.exit_depth}"
+            )
+        if self.causal_mode not in VALID_CAUSAL_MODES:
+            raise ValueError(
+                f"causal_mode must be one of {VALID_CAUSAL_MODES}, got {self.causal_mode}"
+            )
+        if self.max_history_blocks <= 0:
+            raise ValueError("max_history_blocks must be positive")
+        if self.action_horizon <= 0:
+            raise ValueError("action_horizon must be positive")
+        if self.replan_steps <= 0 or self.replan_steps > self.action_horizon:
+            raise ValueError("replan_steps must be in [1, action_horizon]")
+
+
+@dataclass
+class KVSegment:
+    """K/V produced by one real observation or one executed action slice."""
+
+    modality: Modality
+    block_index: int
+    positions: torch.Tensor
+    keys: list[torch.Tensor]
+    values: list[torch.Tensor]
+
+    def __post_init__(self) -> None:
+        if self.modality not in ("video", "action"):
+            raise ValueError(f"unsupported modality: {self.modality}")
+        if len(self.keys) != len(self.values):
+            raise ValueError("keys and values must contain the same number of layers")
+        if not self.keys:
+            raise ValueError("a KV segment must contain at least one layer")
+        seq_len = int(self.keys[0].shape[1])
+        if self.positions.numel() != seq_len:
+            raise ValueError(
+                f"position count {self.positions.numel()} does not match KV length {seq_len}"
+            )
+        for layer, (key, value) in enumerate(zip(self.keys, self.values)):
+            if key.shape != value.shape:
+                raise ValueError(f"layer {layer}: key/value shape mismatch")
+            if key.ndim != 3:
+                raise ValueError(f"layer {layer}: KV tensors must be [B,S,D]")
+            if key.shape[1] != seq_len:
+                raise ValueError(f"layer {layer}: inconsistent sequence length")
+
+    @property
+    def num_layers(self) -> int:
+        return len(self.keys)
+
+    @property
+    def num_tokens(self) -> int:
+        return int(self.positions.numel())
+
+    @property
+    def nbytes(self) -> int:
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (*self.keys, *self.values)
+        )
+
+    def detached(self) -> "KVSegment":
+        return KVSegment(
+            modality=self.modality,
+            block_index=self.block_index,
+            positions=self.positions.detach(),
+            keys=[tensor.detach() for tensor in self.keys],
+            values=[tensor.detach() for tensor in self.values],
+        )
+
+
+@dataclass
+class MemorySnapshot:
+    segment_count: int
+    phase: MemoryPhase
+    completed_blocks: int
+    next_action_position: int
+    prompt_fingerprint: str | None
+    pending_context: torch.Tensor | None
+    pending_context_mask: torch.Tensor | None
+
+
+@dataclass
+class LeapMemoryState:
+    """Mutable episode state with transactional observation commits."""
+
+    config: LeapMemoryConfig
+    segments: list[KVSegment] = field(default_factory=list)
+    phase: MemoryPhase = MemoryPhase.EXPECT_OBSERVATION
+    completed_blocks: int = 0
+    next_action_position: int = 0
+    prompt_fingerprint: str | None = None
+    pending_context: torch.Tensor | None = field(default=None, repr=False)
+    pending_context_mask: torch.Tensor | None = field(default=None, repr=False)
+
+    def snapshot(self) -> MemorySnapshot:
+        return MemorySnapshot(
+            segment_count=len(self.segments),
+            phase=self.phase,
+            completed_blocks=self.completed_blocks,
+            next_action_position=self.next_action_position,
+            prompt_fingerprint=self.prompt_fingerprint,
+            pending_context=self.pending_context,
+            pending_context_mask=self.pending_context_mask,
+        )
+
+    def rollback(self, snapshot: MemorySnapshot) -> None:
+        del self.segments[snapshot.segment_count :]
+        self.phase = snapshot.phase
+        self.completed_blocks = snapshot.completed_blocks
+        self.next_action_position = snapshot.next_action_position
+        self.prompt_fingerprint = snapshot.prompt_fingerprint
+        self.pending_context = snapshot.pending_context
+        self.pending_context_mask = snapshot.pending_context_mask
+
+    def bind_prompt(self, fingerprint: str) -> None:
+        if self.prompt_fingerprint is None:
+            self.prompt_fingerprint = fingerprint
+        elif self.prompt_fingerprint != fingerprint:
+            raise ValueError("prompt/context changed inside an active episode; reset memory first")
+
+    def begin_observation(self) -> int:
+        if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
+            raise RuntimeError("executed actions must be committed before the next observation")
+        if self.completed_blocks >= self.config.max_history_blocks:
+            raise RuntimeError(
+                "episode KV capacity exceeded: "
+                f"{self.completed_blocks}/{self.config.max_history_blocks} blocks"
+            )
+        return self.completed_blocks
+
+    def append_observation(
+        self,
+        segment: KVSegment,
+        *,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+    ) -> None:
+        if segment.modality != "video":
+            raise ValueError("append_observation requires a video segment")
+        expected_block = self.begin_observation()
+        if segment.block_index != expected_block:
+            raise ValueError(
+                f"observation block index must be {expected_block}, got {segment.block_index}"
+            )
+        self._validate_depth(segment)
+        self.segments.append(segment.detached())
+        self.pending_context = context.detach()
+        self.pending_context_mask = context_mask.detach()
+        self.phase = MemoryPhase.EXPECT_ACTION_COMMIT
+
+    def append_actions(self, segment: KVSegment) -> None:
+        if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
+            raise RuntimeError("an observation must be appended before executed actions")
+        if segment.modality != "action":
+            raise ValueError("append_actions requires an action segment")
+        if segment.block_index != self.completed_blocks:
+            raise ValueError(
+                f"action block index must be {self.completed_blocks}, got {segment.block_index}"
+            )
+        if segment.num_tokens <= 0 or segment.num_tokens > self.config.replan_steps:
+            raise ValueError(
+                f"executed action count must be in [1,{self.config.replan_steps}], "
+                f"got {segment.num_tokens}"
+            )
+        self._validate_depth(segment)
+        expected_positions = torch.arange(
+            self.next_action_position,
+            self.next_action_position + segment.num_tokens,
+            device=segment.positions.device,
+            dtype=segment.positions.dtype,
+        )
+        if not torch.equal(segment.positions, expected_positions):
+            raise ValueError("executed action positions are not contiguous")
+        self.segments.append(segment.detached())
+        self.next_action_position += segment.num_tokens
+        self.completed_blocks += 1
+        self.pending_context = None
+        self.pending_context_mask = None
+        self.phase = MemoryPhase.EXPECT_OBSERVATION
+
+    def _validate_depth(self, segment: KVSegment) -> None:
+        if segment.num_layers != self.config.exit_depth:
+            raise ValueError(
+                f"segment has {segment.num_layers} layers, expected {self.config.exit_depth}"
+            )
+
+    def selected_segments_for_video(self) -> Sequence[KVSegment]:
+        if self.config.causal_mode == "interleaved":
+            return self.segments
+        if self.config.causal_mode == "vision_causal":
+            return [segment for segment in self.segments if segment.modality == "video"]
+        return []
+
+    def selected_segments_for_action(self) -> Sequence[KVSegment]:
+        return self.segments
+
+    def materialize(
+        self,
+        segments: Iterable[KVSegment],
+    ) -> list[dict[str, torch.Tensor]] | None:
+        selected = list(segments)
+        if not selected:
+            return None
+        result: list[dict[str, torch.Tensor]] = []
+        for layer in range(self.config.exit_depth):
+            result.append(
+                {
+                    "k": torch.cat([segment.keys[layer] for segment in selected], dim=1),
+                    "v": torch.cat([segment.values[layer] for segment in selected], dim=1),
+                }
+            )
+        return result
+
+    @property
+    def cache_nbytes(self) -> int:
+        return sum(segment.nbytes for segment in self.segments)
+
+    @property
+    def token_counts(self) -> dict[str, int]:
+        return {
+            modality: sum(
+                segment.num_tokens for segment in self.segments if segment.modality == modality
+            )
+            for modality in ("video", "action")
+        }
+
+    def reset(self) -> None:
+        self.segments.clear()
+        self.phase = MemoryPhase.EXPECT_OBSERVATION
+        self.completed_blocks = 0
+        self.next_action_position = 0
+        self.prompt_fingerprint = None
+        self.pending_context = None
+        self.pending_context_mask = None
+
+
+def build_block_causal_mask(
+    query_modalities: Sequence[Modality],
+    query_blocks: Sequence[int],
+    key_modalities: Sequence[Modality],
+    key_blocks: Sequence[int],
+    mode: CausalMode,
+) -> torch.Tensor:
+    """Reference mask builder used by training and unit tests.
+
+    Runtime incremental attention filters immutable history before the call, so
+    it can use an all-true rectangular mask.  Training needs the full rule to
+    prevent future leakage in a packed sequence.
+    """
+
+    if mode not in VALID_CAUSAL_MODES:
+        raise ValueError(f"unsupported causal mode: {mode}")
+    if len(query_modalities) != len(query_blocks):
+        raise ValueError("query modalities/blocks length mismatch")
+    if len(key_modalities) != len(key_blocks):
+        raise ValueError("key modalities/blocks length mismatch")
+
+    mask = torch.zeros((len(query_blocks), len(key_blocks)), dtype=torch.bool)
+    for q_idx, (q_modality, q_block) in enumerate(zip(query_modalities, query_blocks)):
+        for k_idx, (k_modality, k_block) in enumerate(zip(key_modalities, key_blocks)):
+            if k_block > q_block:
+                continue
+            if q_modality == "action":
+                mask[q_idx, k_idx] = True
+            elif k_block == q_block:
+                # The real observation is encoded before this block's action
+                # is predicted/executed, so it can only see same-block vision.
+                mask[q_idx, k_idx] = k_modality == "video"
+            elif mode == "interleaved":
+                mask[q_idx, k_idx] = True
+            elif mode == "vision_causal":
+                mask[q_idx, k_idx] = k_modality == "video"
+            # action_aggregator has no cross-block visual attention.
+    return mask

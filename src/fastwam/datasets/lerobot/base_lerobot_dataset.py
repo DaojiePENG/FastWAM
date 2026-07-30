@@ -35,15 +35,21 @@ class BaseLerobotDataset(torch.utils.data.Dataset):
         global_sample_stride: int = 1,
     ):
         assert len(dataset_dirs) > 0, "At least one dataset directory is required"
-        assert past_action_size == 0
-        assert past_obs_size == 0
         assert action_size == obs_size - 1, "In this dataset, action_size should be obs_size - 1"
+        assert 0 <= past_obs_size < obs_size
+        assert 0 <= past_action_size <= action_size
+        if past_action_size != past_obs_size:
+            raise ValueError(
+                "past action/observation offsets must match for aligned causal history, "
+                f"got {past_action_size} and {past_obs_size}"
+            )
         
         self.dataset_dirs = dataset_dirs
         self.shape_meta = shape_meta
         self.action_size = action_size
         self.past_action_size = past_action_size
         self.obs_size = obs_size
+        self.past_obs_size = past_obs_size
         self.processor = None  # Will be set externally
         metas = []
         for ds_dir in dataset_dirs:

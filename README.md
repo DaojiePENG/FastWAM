@@ -1,5 +1,9 @@
 # FastWAM
 
+> This branch is the LeapBot-VA implementation derived from FastWAM. See
+> [LEAPBOT.md](./LEAPBOT.md) for the real-history causal-KV architecture,
+> training phases, action-only evaluation, and H800 verification commands.
+
 Official codebase for **Fast-WAM: Do World Action Models Need Test-time Future Imagination?**
 
 [![English](https://img.shields.io/badge/README-English-111111.svg)](./README.md)

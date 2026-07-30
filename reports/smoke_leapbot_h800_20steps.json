@@ -1,0 +1,24 @@
+{
+  "device": "NVIDIA H800",
+  "blocks": 1,
+  "exit_depth": 30,
+  "causal_mode": "interleaved",
+  "cache_bytes": 39813120,
+  "peak_gpu_bytes": 13642782720,
+  "replans": [
+    {
+      "timing": {
+        "observation_prefill_s": 0.39516336284577847,
+        "action_denoise_s": 0.9361564987339079
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 1,
+        "cache_bytes": 39813120,
+        "commit_s": 0.06539214495569468
+      }
+    }
+  ],
+  "forbidden_video_paths_called": false,
+  "capacity_guard_verified": true
+}

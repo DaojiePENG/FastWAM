@@ -274,7 +274,7 @@ class FastWAM(torch.nn.Module):
             frames.append(Image.fromarray(frame))
         return frames
 
-    def build_inputs(self, sample, tiled: bool = False):
+    def build_inputs(self, sample, tiled: bool = False, append_proprio: bool = True):
         video = sample["video"]
         if "context" not in sample or "context_mask" not in sample:
             raise ValueError(
@@ -349,7 +349,7 @@ class FastWAM(torch.nn.Module):
             )
         context = context.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
         context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
-        if self.proprio_encoder is not None:
+        if self.proprio_encoder is not None and append_proprio:
             if proprio is None:
                 raise ValueError("`sample['proprio']` is required when `proprio_dim` is enabled.")
             if proprio.ndim != 3:

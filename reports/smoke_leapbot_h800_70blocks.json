@@ -1,0 +1,852 @@
+{
+  "device": "NVIDIA H800",
+  "blocks": 70,
+  "exit_depth": 30,
+  "causal_mode": "interleaved",
+  "cache_bytes": 2786918400,
+  "peak_gpu_bytes": 19225188352,
+  "replans": [
+    {
+      "timing": {
+        "observation_prefill_s": 0.3579579619690776,
+        "action_denoise_s": 0.06656833970919251
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 1,
+        "cache_bytes": 39813120,
+        "commit_s": 0.05896379705518484
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05558445304632187,
+        "action_denoise_s": 0.040082099847495556
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 2,
+        "cache_bytes": 79626240,
+        "commit_s": 0.0403790520504117
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.04796480527147651,
+        "action_denoise_s": 0.03975536907091737
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 3,
+        "cache_bytes": 119439360,
+        "commit_s": 0.04051478672772646
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.057412849739193916,
+        "action_denoise_s": 0.03997646691277623
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 4,
+        "cache_bytes": 159252480,
+        "commit_s": 0.0422088922932744
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05706636514514685,
+        "action_denoise_s": 0.04071037890389562
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 5,
+        "cache_bytes": 199065600,
+        "commit_s": 0.042153253220021725
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05577740492299199,
+        "action_denoise_s": 0.03968079388141632
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 6,
+        "cache_bytes": 238878720,
+        "commit_s": 0.04039646591991186
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06732715386897326,
+        "action_denoise_s": 0.03971909871324897
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 7,
+        "cache_bytes": 278691840,
+        "commit_s": 0.04130145628005266
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05869770888239145,
+        "action_denoise_s": 0.04168000118806958
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 8,
+        "cache_bytes": 318504960,
+        "commit_s": 0.042380406986922026
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05658629210665822,
+        "action_denoise_s": 0.04118526168167591
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 9,
+        "cache_bytes": 358318080,
+        "commit_s": 0.04157897364348173
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05889333272352815,
+        "action_denoise_s": 0.04022538475692272
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 10,
+        "cache_bytes": 398131200,
+        "commit_s": 0.04236224107444286
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05564744817093015,
+        "action_denoise_s": 0.040971203707158566
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 11,
+        "cache_bytes": 437944320,
+        "commit_s": 0.04359762370586395
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.056379157584160566,
+        "action_denoise_s": 0.04371353518217802
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 12,
+        "cache_bytes": 477757440,
+        "commit_s": 0.041445097886025906
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05626228265464306,
+        "action_denoise_s": 0.04051767708733678
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 13,
+        "cache_bytes": 517570560,
+        "commit_s": 0.04197202902287245
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.059736356139183044,
+        "action_denoise_s": 0.040385821368545294
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 14,
+        "cache_bytes": 557383680,
+        "commit_s": 0.042610940989106894
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.056176708079874516,
+        "action_denoise_s": 0.04018417187035084
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 15,
+        "cache_bytes": 597196800,
+        "commit_s": 0.04481500806286931
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.056664503179490566,
+        "action_denoise_s": 0.041079065296798944
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 16,
+        "cache_bytes": 637009920,
+        "commit_s": 0.04153043916448951
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05860996386036277,
+        "action_denoise_s": 0.04133943188935518
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 17,
+        "cache_bytes": 676823040,
+        "commit_s": 0.045347444247454405
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05674106301739812,
+        "action_denoise_s": 0.04192167893052101
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 18,
+        "cache_bytes": 716636160,
+        "commit_s": 0.04257507994771004
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.056783066131174564,
+        "action_denoise_s": 0.040341810788959265
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 19,
+        "cache_bytes": 756449280,
+        "commit_s": 0.04307761415839195
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06132171582430601,
+        "action_denoise_s": 0.04033453809097409
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 20,
+        "cache_bytes": 796262400,
+        "commit_s": 0.04577072383835912
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.057196327950805426,
+        "action_denoise_s": 0.03977684397250414
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 21,
+        "cache_bytes": 836075520,
+        "commit_s": 0.04479036387056112
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.0571481860242784,
+        "action_denoise_s": 0.04041339363902807
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 22,
+        "cache_bytes": 875888640,
+        "commit_s": 0.04237131914123893
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.057324723806232214,
+        "action_denoise_s": 0.04170415410771966
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 23,
+        "cache_bytes": 915701760,
+        "commit_s": 0.042787639889866114
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05710345692932606,
+        "action_denoise_s": 0.040161407086998224
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 24,
+        "cache_bytes": 955514880,
+        "commit_s": 0.04237154684960842
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.058307232800871134,
+        "action_denoise_s": 0.04050849378108978
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 25,
+        "cache_bytes": 995328000,
+        "commit_s": 0.04342029383406043
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05738124018535018,
+        "action_denoise_s": 0.0417607594281435
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 26,
+        "cache_bytes": 1035141120,
+        "commit_s": 0.04280168702825904
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05770940100774169,
+        "action_denoise_s": 0.04111675499007106
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 27,
+        "cache_bytes": 1074954240,
+        "commit_s": 0.04409752879291773
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05873766215518117,
+        "action_denoise_s": 0.04078717762604356
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 28,
+        "cache_bytes": 1114767360,
+        "commit_s": 0.04298602696508169
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06177793676033616,
+        "action_denoise_s": 0.04222595784813166
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 29,
+        "cache_bytes": 1154580480,
+        "commit_s": 0.04458217462524772
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.058688954915851355,
+        "action_denoise_s": 0.04043560707941651
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 30,
+        "cache_bytes": 1194393600,
+        "commit_s": 0.04308925103396177
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05998719809576869,
+        "action_denoise_s": 0.040964027401059866
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 31,
+        "cache_bytes": 1234206720,
+        "commit_s": 0.044126504100859165
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.0580570544116199,
+        "action_denoise_s": 0.042104088235646486
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 32,
+        "cache_bytes": 1274019840,
+        "commit_s": 0.04352365713566542
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05843255529180169,
+        "action_denoise_s": 0.04091535182669759
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 33,
+        "cache_bytes": 1313832960,
+        "commit_s": 0.0443889913149178
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05939858919009566,
+        "action_denoise_s": 0.04247500281780958
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 34,
+        "cache_bytes": 1353646080,
+        "commit_s": 0.044396757148206234
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.0584715218283236,
+        "action_denoise_s": 0.042257596272975206
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 35,
+        "cache_bytes": 1393459200,
+        "commit_s": 0.044926335103809834
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06158276181668043,
+        "action_denoise_s": 0.041205266024917364
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 36,
+        "cache_bytes": 1433272320,
+        "commit_s": 0.044448745902627707
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.08030294394120574,
+        "action_denoise_s": 0.04179484024643898
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 37,
+        "cache_bytes": 1473085440,
+        "commit_s": 0.04783377144485712
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06491991505026817,
+        "action_denoise_s": 0.04280248237773776
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 38,
+        "cache_bytes": 1512898560,
+        "commit_s": 0.044514117296785116
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.12136339023709297,
+        "action_denoise_s": 0.04162648972123861
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 39,
+        "cache_bytes": 1552711680,
+        "commit_s": 0.045939045026898384
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.1342290211468935,
+        "action_denoise_s": 0.041700484696775675
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 40,
+        "cache_bytes": 1592524800,
+        "commit_s": 0.04543825378641486
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.10575413284823298,
+        "action_denoise_s": 0.04221984604373574
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 41,
+        "cache_bytes": 1632337920,
+        "commit_s": 0.04618030088022351
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.1035437872633338,
+        "action_denoise_s": 0.06562802381813526
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 42,
+        "cache_bytes": 1672151040,
+        "commit_s": 0.04752615513280034
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.058780370745807886,
+        "action_denoise_s": 0.04130820231512189
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 43,
+        "cache_bytes": 1711964160,
+        "commit_s": 0.04628824768587947
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05884292209520936,
+        "action_denoise_s": 0.041935116052627563
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 44,
+        "cache_bytes": 1751777280,
+        "commit_s": 0.04902409901842475
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05904720909893513,
+        "action_denoise_s": 0.04209664184600115
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 45,
+        "cache_bytes": 1791590400,
+        "commit_s": 0.045808334834873676
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05869096517562866,
+        "action_denoise_s": 0.0423219739459455
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 46,
+        "cache_bytes": 1831403520,
+        "commit_s": 0.04505206923931837
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05866692494601011,
+        "action_denoise_s": 0.0412037200294435
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 47,
+        "cache_bytes": 1871216640,
+        "commit_s": 0.04562954790890217
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05927755497395992,
+        "action_denoise_s": 0.04238060163334012
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 48,
+        "cache_bytes": 1911029760,
+        "commit_s": 0.04536450793966651
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05910303210839629,
+        "action_denoise_s": 0.04136471915990114
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 49,
+        "cache_bytes": 1950842880,
+        "commit_s": 0.046361817978322506
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.05988823901861906,
+        "action_denoise_s": 0.04131297208368778
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 50,
+        "cache_bytes": 1990656000,
+        "commit_s": 0.04579086787998676
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.060039831791073084,
+        "action_denoise_s": 0.041777733247727156
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 51,
+        "cache_bytes": 2030469120,
+        "commit_s": 0.04672674275934696
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06289991270750761,
+        "action_denoise_s": 0.04614918399602175
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 52,
+        "cache_bytes": 2070282240,
+        "commit_s": 0.050160231068730354
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06158319395035505,
+        "action_denoise_s": 0.042213956359773874
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 53,
+        "cache_bytes": 2110095360,
+        "commit_s": 0.04769829008728266
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06237187422811985,
+        "action_denoise_s": 0.04339712578803301
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 54,
+        "cache_bytes": 2149908480,
+        "commit_s": 0.0468194973655045
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.0636937702074647,
+        "action_denoise_s": 0.042317483108490705
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 55,
+        "cache_bytes": 2189721600,
+        "commit_s": 0.05031738709658384
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06399298692122102,
+        "action_denoise_s": 0.04208812257274985
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 56,
+        "cache_bytes": 2229534720,
+        "commit_s": 0.04781835014000535
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06226619519293308,
+        "action_denoise_s": 0.04233055002987385
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 57,
+        "cache_bytes": 2269347840,
+        "commit_s": 0.0487203118391335
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06164627382531762,
+        "action_denoise_s": 0.04149535298347473
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 58,
+        "cache_bytes": 2309160960,
+        "commit_s": 0.04771304875612259
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06150140706449747,
+        "action_denoise_s": 0.04156600311398506
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 59,
+        "cache_bytes": 2348974080,
+        "commit_s": 0.047896592412143946
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06105869496241212,
+        "action_denoise_s": 0.045310397166758776
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 60,
+        "cache_bytes": 2388787200,
+        "commit_s": 0.04722807928919792
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06075738836079836,
+        "action_denoise_s": 0.04222281789407134
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 61,
+        "cache_bytes": 2428600320,
+        "commit_s": 0.048234039917588234
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06153219332918525,
+        "action_denoise_s": 0.044065993279218674
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 62,
+        "cache_bytes": 2468413440,
+        "commit_s": 0.04773789085447788
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.061487444676458836,
+        "action_denoise_s": 0.04098671022802591
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 63,
+        "cache_bytes": 2508226560,
+        "commit_s": 0.05375154409557581
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.0640201666392386,
+        "action_denoise_s": 0.04283533478155732
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 64,
+        "cache_bytes": 2548039680,
+        "commit_s": 0.0483340248465538
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.062223879154771566,
+        "action_denoise_s": 0.04633178701624274
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 65,
+        "cache_bytes": 2587852800,
+        "commit_s": 0.05056579178199172
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06205348018556833,
+        "action_denoise_s": 0.04216616274788976
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 66,
+        "cache_bytes": 2627665920,
+        "commit_s": 0.049333793111145496
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.10147205414250493,
+        "action_denoise_s": 0.044126839842647314
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 67,
+        "cache_bytes": 2667479040,
+        "commit_s": 0.04925507679581642
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06792950816452503,
+        "action_denoise_s": 0.04393259575590491
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 68,
+        "cache_bytes": 2707292160,
+        "commit_s": 0.0479267667979002
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.06251465296372771,
+        "action_denoise_s": 0.04305491503328085
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 69,
+        "cache_bytes": 2747105280,
+        "commit_s": 0.04930903483182192
+      }
+    },
+    {
+      "timing": {
+        "observation_prefill_s": 0.062319768127053976,
+        "action_denoise_s": 0.04228858184069395
+      },
+      "commit": {
+        "executed_actions": 10,
+        "completed_blocks": 70,
+        "cache_bytes": 2786918400,
+        "commit_s": 0.04909151513129473
+      }
+    }
+  ],
+  "forbidden_video_paths_called": false,
+  "capacity_guard_verified": true
+}
