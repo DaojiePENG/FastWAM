@@ -34,3 +34,27 @@ The underlying JSON outputs are committed beside this report. These are smoke
 results, not LIBERO success-rate results; final success/latency/memory Pareto
 curves require post-trained LeapBot checkpoints and the planned 500 episodes
 per configuration.
+
+## Complete-prefix training acceptance (`e58db5e`)
+
+The corrected production path was additionally tested with BF16, per-GPU batch
+2, D30, full BPTT, ActionDiT full training, VideoDiT rank-16 LoRA, and the real
+FastWAM release checkpoint:
+
+| Prefix/mode | Forward | Backward | Peak allocated | Parameters with finite gradient |
+|---|---:|---:|---:|---:|
+| real H50, `action_aggregator` | 1.531 s | 1.447 s | 54.536 GiB | 1,033,374,727 |
+| real H50, `interleaved` | 1.922 s | 1.448 s | 54.536 GiB | 1,033,374,727 |
+| real H50, `vision_causal` | 1.762 s | 1.445 s | 54.536 GiB | 1,033,374,727 |
+| synthetic capacity H70, `action_aggregator` | 3.329 s | 2.328 s | 70.361 GiB | 1,033,374,727 |
+
+H50 is the longest real prefix in the released training split. The H70 row
+repeats H50's final real block only to exercise shapes, masks, gradients, and
+OOM margin; its loss is not an effect metric. At H70/B2 the 80 GiB H800 retained
+about 9.6 GiB of allocated-memory headroom.
+
+At the release initialization, H50 video loss was 0.0568 for
+`action_aggregator`, whose video path intentionally remains block-independent,
+and about 1.07--1.08 for the two modes whose video expert consumes an unadapted
+long prefix. This is an expected initialization effect and is why each causal
+mode receives its own controlled post-training run.
