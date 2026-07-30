@@ -72,9 +72,10 @@ The downloader uses the official FastWAM Hugging Face repositories
 
 ## Training phases
 
-The production training path is raw causal attention with
-`packed_full_bptt`: every real observation/action block before the current
-replan remains in the graph. There is no history gate and no detached prefix.
+The production training path is runtime-isomorphic causal attention with
+`incremental_full_bptt`: every real observation/action block before the current
+replan is executed chronologically and remains in the graph. There is no
+history gate and no detached prefix.
 Native block-local RoPE is preserved, while a learned episode clock is expressed
 relative to those local coordinates; block zero is therefore an exact position
 no-op even after the clock parameters train. This does not freeze the shared
@@ -85,10 +86,9 @@ count, global batch, scheduler, and seed. The launcher refuses a dirty worktree
 and binds every resumable state to a hash of the exact commit, release weights,
 data statistics, topology, optimizer, and temporal/history configuration.
 
-Real Wan/H800 testing selected history-VAE batch chunk 2: its fixed-noise
-complete action-loss delta from strict per-observation encoding was `2.32e-4`.
-Chunk 4 exceeded the `1e-3` acceptance threshold and is blocked from formal
-training; see [the acceptance report](./reports/HISTORY_VAE_BATCHING.md).
+Formal training fixes the history-VAE chunk to 1. Every real observation uses
+the same batch-one, T=1 VAE call as rollout; the earlier chunk-2 approximation
+and all packed-attention runs are invalidated and are not used as results.
 
 ```bash
 # Phase 1: after the paired LR audit selects a learning rate, train all three
@@ -100,7 +100,7 @@ SELECTED_LR=1.0e-4 INITIAL_BLOCK_OVERSAMPLE=<selected-factor> \
 # Phase 2: initialize from the winning D30 history checkpoint and train exits.
 accelerate launch scripts/train.py task=libero_leapbot_2cam224 \
   resume=<winner.pt> model.causal_mode=<winner> \
-  model.history_training_mode=packed_full_bptt \
+  model.history_training_mode=incremental_full_bptt \
   data.train.full_episode_history=true \
   model.training_exit_depths='[8,16,24,30]'
 ```

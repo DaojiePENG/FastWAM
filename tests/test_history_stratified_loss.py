@@ -450,19 +450,19 @@ def test_stable_draw_seed_is_keyed_not_iteration_order():
 def test_checkpoint_decomposition_separates_prefix_penalty_and_parameter_drift():
     base = _metric_row(0, 4, 0.0, population=3)
     release_native = {**base, "loss": 2.0, "loss_video": 2.0, "loss_action": 2.0}
-    release_packed = {**base, "loss": 3.0, "loss_video": 3.0, "loss_action": 3.0}
+    release_incremental = {**base, "loss": 3.0, "loss_video": 3.0, "loss_action": 3.0}
     candidate_native = {**base, "loss": 4.0, "loss_video": 4.0, "loss_action": 4.0}
-    candidate_packed = {**base, "loss": 5.0, "loss_video": 5.0, "loss_action": 5.0}
+    candidate_incremental = {**base, "loss": 5.0, "loss_video": 5.0, "loss_action": 5.0}
     decomposition = checkpoint_decompositions(
         [
             {
                 "label": "release",
-                "records": [release_packed],
+                "records": [release_incremental],
                 "native_records": [release_native],
             },
             {
                 "label": "candidate",
-                "records": [candidate_packed],
+                "records": [candidate_incremental],
                 "native_records": [candidate_native],
             },
         ],
@@ -473,8 +473,12 @@ def test_checkpoint_decomposition_separates_prefix_penalty_and_parameter_drift()
     def action_mean(section):
         return section["summary"]["sample_weighted"]["loss_action"]["mean"]
 
-    assert action_mean(decomposition["packed_minus_candidate_native"]) == pytest.approx(1.0)
+    assert action_mean(
+        decomposition["incremental_minus_candidate_native"]
+    ) == pytest.approx(1.0)
     assert action_mean(
         decomposition["candidate_native_minus_release_native"]
     ) == pytest.approx(2.0)
-    assert action_mean(decomposition["packed_minus_release_native"]) == pytest.approx(3.0)
+    assert action_mean(
+        decomposition["incremental_minus_release_native"]
+    ) == pytest.approx(3.0)

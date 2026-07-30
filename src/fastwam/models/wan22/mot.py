@@ -80,6 +80,7 @@ class MoT(nn.Module):
         k_cat: torch.Tensor,
         v_cat: torch.Tensor,
         attention_mask: torch.Tensor,
+        checkpoint_attention: Optional[bool] = None,
     ) -> torch.Tensor:
         attn_mask = attention_mask.to(device=q_cat.device)
         if attn_mask.dim() == 3:
@@ -88,7 +89,12 @@ class MoT(nn.Module):
         def _forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
             return flash_attention(q=q, k=k, v=v, num_heads=self.num_heads, ctx_mask=attn_mask)
 
-        if self.mot_checkpoint_mixed_attn and self.training:
+        should_checkpoint = (
+            self.mot_checkpoint_mixed_attn
+            if checkpoint_attention is None
+            else bool(checkpoint_attention)
+        )
+        if should_checkpoint and self.training:
             return torch.utils.checkpoint.checkpoint(
                 _forward,
                 q_cat,
@@ -353,7 +359,12 @@ class MoT(nn.Module):
         history_kv: Optional[list[dict[str, torch.Tensor]]] = None,
         max_layers: Optional[int] = None,
         segment_attention_mask: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, list[dict[str, torch.Tensor]]]:
+        exit_depths: Optional[Sequence[int]] = None,
+        checkpoint_internal: bool = True,
+    ) -> tuple[
+        torch.Tensor | dict[int, torch.Tensor],
+        list[dict[str, torch.Tensor]],
+    ]:
         """Incrementally encode one clean segment and return its layer-wise KV.
 
         ``history_kv`` is already filtered according to the selected LeapBot
@@ -376,6 +387,18 @@ class MoT(nn.Module):
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
             )
+        requested_exits: set[int] | None = None
+        if exit_depths is not None:
+            requested_exits = {int(depth) for depth in exit_depths}
+            if (
+                not requested_exits
+                or min(requested_exits) <= 0
+                or max(requested_exits) > max_layers
+            ):
+                raise ValueError(
+                    f"invalid exit_depths for max_layers={max_layers}: "
+                    f"{sorted(requested_exits)}"
+                )
         if segment_attention_mask is not None:
             expected = (int(tokens.shape[1]), int(tokens.shape[1]))
             if segment_attention_mask.ndim != 2 or tuple(segment_attention_mask.shape) != expected:
@@ -390,6 +413,7 @@ class MoT(nn.Module):
         expert = self.mixtures[expert_name]
         x = tokens
         segment_kv: list[dict[str, torch.Tensor]] = []
+        exit_outputs: dict[int, torch.Tensor] = {}
         for layer_idx in range(max_layers):
             block = expert.blocks[layer_idx]
             (
@@ -437,6 +461,9 @@ class MoT(nn.Module):
                 k_cat=k_all,
                 v_cat=v_all,
                 attention_mask=attention_mask,
+                checkpoint_attention=(
+                    None if checkpoint_internal else False
+                ),
             )
             x = self._apply_post_with_optional_checkpoint(
                 block=block,
@@ -445,11 +472,18 @@ class MoT(nn.Module):
                 shift_mlp=shift_mlp,
                 scale_mlp=scale_mlp,
                 gate_mlp=gate_mlp,
-                use_gradient_checkpointing=use_gradient_checkpointing,
+                use_gradient_checkpointing=(
+                    use_gradient_checkpointing and checkpoint_internal
+                ),
                 mixed_slice=mixed,
                 context_payload=context_payload,
             )
             segment_kv.append({"k": k, "v": v})
+            depth = layer_idx + 1
+            if requested_exits is not None and depth in requested_exits:
+                exit_outputs[depth] = x
+        if requested_exits is not None:
+            return exit_outputs, segment_kv
         return x, segment_kv
 
     def forward_action_with_history(
@@ -461,7 +495,9 @@ class MoT(nn.Module):
         action_context_payload: Optional[dict],
         history_kv: list[dict[str, torch.Tensor]],
         max_layers: Optional[int] = None,
-    ) -> torch.Tensor:
+        exit_depths: Optional[Sequence[int]] = None,
+        checkpoint_internal: bool = True,
+    ) -> torch.Tensor | dict[int, torch.Tensor]:
         """Denoise a transient action block against persistent mixed history."""
 
         if max_layers is None:
@@ -475,9 +511,22 @@ class MoT(nn.Module):
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
             )
+        requested_exits: set[int] | None = None
+        if exit_depths is not None:
+            requested_exits = {int(depth) for depth in exit_depths}
+            if (
+                not requested_exits
+                or min(requested_exits) <= 0
+                or max(requested_exits) > max_layers
+            ):
+                raise ValueError(
+                    f"invalid exit_depths for max_layers={max_layers}: "
+                    f"{sorted(requested_exits)}"
+                )
 
         expert = self.mixtures["action"]
         x = action_tokens
+        exit_outputs: dict[int, torch.Tensor] = {}
         for layer_idx in range(max_layers):
             block = expert.blocks[layer_idx]
             (
@@ -510,6 +559,9 @@ class MoT(nn.Module):
                 k_cat=k_all,
                 v_cat=v_all,
                 attention_mask=attention_mask,
+                checkpoint_attention=(
+                    None if checkpoint_internal else False
+                ),
             )
             x = self._apply_post_with_optional_checkpoint(
                 block=block,
@@ -518,10 +570,17 @@ class MoT(nn.Module):
                 shift_mlp=shift_mlp,
                 scale_mlp=scale_mlp,
                 gate_mlp=gate_mlp,
-                use_gradient_checkpointing=use_gradient_checkpointing,
+                use_gradient_checkpointing=(
+                    use_gradient_checkpointing and checkpoint_internal
+                ),
                 mixed_slice=mixed,
                 context_payload=action_context_payload,
             )
+            depth = layer_idx + 1
+            if requested_exits is not None and depth in requested_exits:
+                exit_outputs[depth] = x
+        if requested_exits is not None:
+            return exit_outputs
         return x
 
     def forward_action_with_video_cache(

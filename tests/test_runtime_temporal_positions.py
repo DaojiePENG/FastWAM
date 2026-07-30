@@ -18,6 +18,10 @@ class _TinyVideoVAE(nn.Module):
 
     def encode(self, video, device=None, tiled=False, **kwargs):
         del tiled, kwargs
+        if isinstance(video, list):
+            if len(video) != 1:
+                raise ValueError("tiny VAE supports one runtime observation")
+            video = video[0].unsqueeze(0)
         pooled = video.to(device=device).mean(dim=(-2, -1), keepdim=True)
         return torch.cat((pooled, pooled[:, :1]), dim=1)
 
@@ -130,11 +134,12 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
     torch.manual_seed(999)
     causal_total, causal_metrics = model.training_loss(causal_sample)
 
-    # The packed path supplies per-token time/position tensors while FastWAM's
-    # H0 path broadcasts the same values. CPU FP32 reductions may consequently
-    # differ by one ULP even though the masks and values are equivalent.
+    # The incremental path decomposes the same H0 graph into rectangular
+    # attention calls. CPU FP32 reductions may differ by one ULP.
     torch.testing.assert_close(causal_total, fastwam_total, atol=5e-7, rtol=0)
-    assert causal_metrics["loss_video_d8"] == fastwam_metrics["loss_video"]
+    assert causal_metrics["loss_video_d8"] == pytest.approx(
+        fastwam_metrics["loss_video"], abs=5e-7, rel=0
+    )
     assert causal_metrics["loss_action_d8"] == pytest.approx(
         fastwam_metrics["loss_action"], abs=5e-7, rel=0
     )

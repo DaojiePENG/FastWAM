@@ -34,8 +34,8 @@ def create_leapbot(
     exit_depths=(8, 16, 24, 30),
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
-    history_training_mode: str = "packed_full_bptt",
-    history_vae_batch_chunk_size: int = 2,
+    history_training_mode: str = "incremental_full_bptt",
+    history_vae_batch_chunk_size: int = 1,
     replan_steps: int = 10,
     action_horizon: int = 32,
     training_strategy: str = "full_dit",
@@ -107,7 +107,9 @@ def create_leapbot(
         action_horizon=int(action_horizon),
     )
     resolved_history_vae_chunk = int(history_vae_batch_chunk_size)
-    if resolved_history_vae_chunk <= 0:
-        raise ValueError("history_vae_batch_chunk_size must be positive")
+    if resolved_history_vae_chunk != 1:
+        raise ValueError(
+            "runtime-isomorphic training requires history_vae_batch_chunk_size=1"
+        )
     model.history_vae_batch_chunk_size = resolved_history_vae_chunk
     return model

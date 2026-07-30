@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import pytest
 from torch import nn
@@ -50,6 +52,133 @@ def _model(*, proprio_dim=None):
     )
 
 
+_ATOMIC_CHECKPOINT_ATTRIBUTES = (
+    "causal_mode",
+    "training_exit_depths",
+    "trained_exit_depths",
+    "training_strategy",
+    "history_training_mode",
+    "training_replan_steps",
+    "training_action_horizon",
+    "history_vae_batch_chunk_size",
+    "video_lora_config",
+    "video_lora_merged",
+)
+
+
+def _snapshot_model_state(model):
+    tensor_bytes = {
+        name: value.detach().cpu().contiguous().view(torch.uint8).clone()
+        for name, value in model.state_dict().items()
+    }
+    return {
+        "tensor_bytes": tensor_bytes,
+        "attributes": {
+            name: copy.deepcopy(getattr(model, name))
+            for name in _ATOMIC_CHECKPOINT_ATTRIBUTES
+        },
+        "module_training": {
+            name: module.training for name, module in model.named_modules()
+        },
+        "requires_grad": {
+            name: parameter.requires_grad
+            for name, parameter in model.named_parameters()
+        },
+    }
+
+
+def _assert_model_state_unchanged(model, snapshot):
+    current = model.state_dict()
+    assert set(current) == set(snapshot["tensor_bytes"])
+    for name, value in current.items():
+        actual_bytes = value.detach().cpu().contiguous().view(torch.uint8)
+        assert torch.equal(actual_bytes, snapshot["tensor_bytes"][name]), name
+    assert {
+        name: getattr(model, name) for name in _ATOMIC_CHECKPOINT_ATTRIBUTES
+    } == snapshot["attributes"]
+    assert {
+        name: module.training for name, module in model.named_modules()
+    } == snapshot["module_training"]
+    assert {
+        name: parameter.requires_grad
+        for name, parameter in model.named_parameters()
+    } == snapshot["requires_grad"]
+
+
+def _truncate_first_state_tensor(state_dict):
+    key = next(
+        name
+        for name, value in state_dict.items()
+        if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] > 1
+    )
+    state_dict[key] = state_dict[key][0:1].clone()
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_error"),
+    [
+        ("causal_mode", "causal mode mismatch"),
+        ("position_scheme", "temporal-position scheme mismatch"),
+        ("mot_missing_key", "MoT key mismatch"),
+        ("mot_shape", "MoT shape mismatch"),
+        ("temporal_shape", "temporal positions shape mismatch"),
+        ("action_exit_shape", "action exit heads shape mismatch"),
+        ("late_vae_contract", "history VAE batch chunk mismatch"),
+        ("trained_exits", "trained exits are incompatible"),
+        ("exit_metadata_disagreement", "training/trained exit metadata mismatch"),
+    ],
+)
+def test_rejected_native_checkpoint_is_bitwise_atomic(
+    tmp_path, corruption, expected_error
+):
+    torch.manual_seed(101)
+    source = _model(proprio_dim=2)
+    source.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+        replan_steps=1,
+        action_horizon=2,
+    )
+    checkpoint = tmp_path / f"atomic_{corruption}.pt"
+    source.save_checkpoint(checkpoint)
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+
+    if corruption == "causal_mode":
+        payload["causal_mode"] = "vision_causal"
+    elif corruption == "position_scheme":
+        payload["temporal_position_scheme"] = "obsolete_position_scheme"
+    elif corruption == "mot_missing_key":
+        del payload["mot"][next(iter(payload["mot"]))]
+    elif corruption == "mot_shape":
+        _truncate_first_state_tensor(payload["mot"])
+    elif corruption == "temporal_shape":
+        _truncate_first_state_tensor(payload["temporal_positions"])
+    elif corruption == "action_exit_shape":
+        _truncate_first_state_tensor(payload["action_exit_heads"])
+    elif corruption == "late_vae_contract":
+        # The checkpoint clock is valid and adoptable, but no attribute may be
+        # assigned until this later contract check has also succeeded.
+        payload["history_vae_batch_chunk_size"] = 2
+    elif corruption == "trained_exits":
+        payload["trained_exit_depths"] = (7, 30)
+    elif corruption == "exit_metadata_disagreement":
+        payload["trained_exit_depths"] = (8, 30)
+    else:  # pragma: no cover - keeps additions to the table explicit
+        raise AssertionError(corruption)
+    torch.save(payload, checkpoint)
+
+    torch.manual_seed(202)
+    target = _model(proprio_dim=2)
+    target.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(30,),
+    )
+    before = _snapshot_model_state(target)
+    with pytest.raises(ValueError, match=expected_error):
+        target.load_checkpoint(checkpoint)
+    _assert_model_state_unchanged(target, before)
+
+
 def test_release_or_full_depth_checkpoint_reinitializes_shallow_heads(tmp_path):
     source = _model()
     nn.init.constant_(source.action_expert.head.weight, 2.0)
@@ -85,10 +214,19 @@ def test_trained_multi_exit_checkpoint_preserves_exit_heads(tmp_path):
 
 def test_detached_history_training_is_rejected():
     model = _model()
-    with pytest.raises(ValueError, match="drops historical gradients"):
+    with pytest.raises(ValueError, match="do not match runtime BF16 execution"):
         model.configure_causal_training(
             training_exit_depths=(30,),
             history_training_mode="incremental_detached_prefix",
+        )
+
+
+def test_packed_history_training_is_rejected():
+    model = _model()
+    with pytest.raises(ValueError, match="do not match runtime BF16 execution"):
+        model.configure_causal_training(
+            training_exit_depths=(30,),
+            history_training_mode="packed_full_bptt",
         )
 
 

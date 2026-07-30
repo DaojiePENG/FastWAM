@@ -1,11 +1,12 @@
-"""Packed causal-history attention and multi-exit training for LeapBot-VA."""
+"""Runtime-isomorphic causal-history training for LeapBot-VA."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterable
 
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from leapbot_va.memory import VALID_CAUSAL_MODES
 
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from leapbot_va.models.leapbot import LeapBotVA
 
 
-DEFAULT_HISTORY_VAE_BATCH_CHUNK_SIZE = 2
+DEFAULT_HISTORY_VAE_BATCH_CHUNK_SIZE = 1
 
 
 def _encode_single_frame_video_batch(
@@ -422,8 +423,491 @@ def resolve_full_episode_history_batch(
     return bool(flags[0].item())
 
 
-def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
-    """Original video/action flow matching over a clean real-history prefix."""
+def _materialize_attached_segments(
+    segments: Iterable[dict[str, Any]],
+    *,
+    modalities: set[str] | None = None,
+) -> list[dict[str, torch.Tensor]] | None:
+    """Concatenate chronological K/V without severing the autograd graph."""
+
+    selected = [
+        segment
+        for segment in segments
+        if modalities is None or str(segment["modality"]) in modalities
+    ]
+    if not selected:
+        return None
+    num_layers = len(selected[0]["kv"])
+    if any(len(segment["kv"]) != num_layers for segment in selected):
+        raise ValueError("incremental history segments have inconsistent depth")
+    return [
+        {
+            "k": torch.cat(
+                [segment["kv"][layer]["k"] for segment in selected], dim=1
+            ),
+            "v": torch.cat(
+                [segment["kv"][layer]["v"] for segment in selected], dim=1
+            ),
+        }
+        for layer in range(num_layers)
+    ]
+
+
+def _select_attached_segments(
+    segments: Iterable[dict[str, Any]],
+    *,
+    modalities: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return chronological segment references without materializing their K/V."""
+
+    return [
+        segment
+        for segment in segments
+        if modalities is None or str(segment["modality"]) in modalities
+    ]
+
+
+def _flatten_segment_kv_inputs(
+    segments: list[dict[str, Any]],
+    *,
+    num_layers: int,
+) -> tuple[torch.Tensor, ...]:
+    """Flatten raw segment K/V into direct activation-checkpoint inputs."""
+
+    tensors: list[torch.Tensor] = []
+    for segment in segments:
+        segment_kv = segment["kv"]
+        if len(segment_kv) < num_layers:
+            raise ValueError(
+                "incremental history segment has insufficient depth: "
+                f"got={len(segment_kv)} expected={num_layers}"
+            )
+        for layer in range(num_layers):
+            tensors.extend((segment_kv[layer]["k"], segment_kv[layer]["v"]))
+    return tuple(tensors)
+
+
+def _materialize_flat_segment_kv(
+    flat_kv: tuple[torch.Tensor, ...],
+    *,
+    num_segments: int,
+    num_layers: int,
+) -> list[dict[str, torch.Tensor]] | None:
+    """Temporarily concatenate direct checkpoint inputs inside its closure."""
+
+    if num_segments == 0:
+        if flat_kv:
+            raise ValueError("zero history segments cannot provide K/V tensors")
+        return None
+    expected = num_segments * num_layers * 2
+    if len(flat_kv) != expected:
+        raise ValueError(
+            f"flattened history has {len(flat_kv)} tensors, expected {expected}"
+        )
+
+    def tensor_at(segment: int, layer: int, value_offset: int) -> torch.Tensor:
+        return flat_kv[(segment * num_layers + layer) * 2 + value_offset]
+
+    return [
+        {
+            "k": torch.cat(
+                [tensor_at(segment, layer, 0) for segment in range(num_segments)],
+                dim=1,
+            ),
+            "v": torch.cat(
+                [tensor_at(segment, layer, 1) for segment in range(num_segments)],
+                dim=1,
+            ),
+        }
+        for layer in range(num_layers)
+    ]
+
+
+def _use_segment_activation_checkpointing(model: "LeapBotVA") -> bool:
+    """Resolve the training-only checkpoint switch without changing inference."""
+
+    configured = getattr(
+        model,
+        "history_segment_activation_checkpointing",
+        bool(getattr(model.mot, "mot_checkpoint_mixed_attn", False)),
+    )
+    # FastWAM deliberately keeps the root model in eval mode while putting only
+    # MoT and trainable auxiliaries in train mode.  The executable DiT state,
+    # rather than ``model.training``, therefore determines whether this is a
+    # training graph.
+    return bool(configured) and model.mot.training and torch.is_grad_enabled()
+
+
+def _prefill_with_segment_history(
+    model: "LeapBotVA",
+    *,
+    expert_name: str,
+    tokens: torch.Tensor,
+    freqs: torch.Tensor,
+    t_mod: torch.Tensor,
+    context_payload: dict[str, torch.Tensor],
+    history_segments: list[dict[str, Any]],
+    max_layers: int,
+    exit_depths: tuple[int, ...] | None = None,
+    return_segment_kv: bool,
+) -> tuple[
+    torch.Tensor | dict[int, torch.Tensor] | None,
+    list[dict[str, torch.Tensor]] | None,
+]:
+    """Run an unchanged MoT prefill with optional segment-level recomputation.
+
+    Raw chronological segment K/V tensors are direct checkpoint inputs.  The
+    only full-prefix concatenations are built inside ``run`` and can therefore
+    be discarded after the forward pass and recreated during backward.  No
+    segment is detached, summarized, compressed, or reordered.
+    """
+
+    context = context_payload["context"]
+    context_mask = context_payload["mask"]
+    if not isinstance(context, torch.Tensor) or not isinstance(
+        context_mask, torch.Tensor
+    ):
+        raise ValueError("incremental training requires tensor context and mask")
+    requested_exits = None if exit_depths is None else tuple(exit_depths)
+
+    if not _use_segment_activation_checkpointing(model):
+        return model.mot.prefill_expert_segment(
+            expert_name=expert_name,
+            tokens=tokens,
+            freqs=freqs,
+            t_mod=t_mod,
+            context_payload={"context": context, "mask": context_mask},
+            history_kv=_materialize_attached_segments(history_segments),
+            max_layers=max_layers,
+            exit_depths=requested_exits,
+        )
+
+    raw_kv = _flatten_segment_kv_inputs(
+        history_segments,
+        num_layers=max_layers,
+    )
+    num_segments = len(history_segments)
+    num_exit_outputs = 0 if requested_exits is None else len(requested_exits)
+
+    def run(
+        inner_tokens: torch.Tensor,
+        inner_freqs: torch.Tensor,
+        inner_t_mod: torch.Tensor,
+        inner_context: torch.Tensor,
+        inner_context_mask: torch.Tensor,
+        *inner_raw_kv: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
+        history_kv = _materialize_flat_segment_kv(
+            tuple(inner_raw_kv),
+            num_segments=num_segments,
+            num_layers=max_layers,
+        )
+        hidden, segment_kv = model.mot.prefill_expert_segment(
+            expert_name=expert_name,
+            tokens=inner_tokens,
+            freqs=inner_freqs,
+            t_mod=inner_t_mod,
+            context_payload={
+                "context": inner_context,
+                "mask": inner_context_mask,
+            },
+            history_kv=history_kv,
+            max_layers=max_layers,
+            exit_depths=requested_exits,
+            checkpoint_internal=False,
+        )
+        outputs: list[torch.Tensor] = []
+        if requested_exits is not None:
+            if not isinstance(hidden, dict):
+                raise RuntimeError("multi-exit prefill did not return depth outputs")
+            outputs.extend(hidden[depth] for depth in requested_exits)
+        if return_segment_kv:
+            for layer_kv in segment_kv:
+                outputs.extend((layer_kv["k"], layer_kv["v"]))
+        if not outputs:
+            raise ValueError("checkpointed prefill must return hidden states or K/V")
+        return tuple(outputs)
+
+    checkpoint_outputs = checkpoint(
+        run,
+        tokens,
+        freqs,
+        t_mod,
+        context,
+        context_mask,
+        *raw_kv,
+        use_reentrant=False,
+        preserve_rng_state=True,
+    )
+    if isinstance(checkpoint_outputs, torch.Tensor):
+        flat_outputs = (checkpoint_outputs,)
+    else:
+        flat_outputs = tuple(checkpoint_outputs)
+
+    hidden_outputs: torch.Tensor | dict[int, torch.Tensor] | None = None
+    if requested_exits is not None:
+        hidden_outputs = {
+            depth: flat_outputs[index]
+            for index, depth in enumerate(requested_exits)
+        }
+    segment_outputs: list[dict[str, torch.Tensor]] | None = None
+    if return_segment_kv:
+        kv_outputs = flat_outputs[num_exit_outputs:]
+        if len(kv_outputs) != max_layers * 2:
+            raise RuntimeError(
+                "checkpointed prefill returned an invalid K/V tensor count"
+            )
+        segment_outputs = [
+            {"k": kv_outputs[layer * 2], "v": kv_outputs[layer * 2 + 1]}
+            for layer in range(max_layers)
+        ]
+    return hidden_outputs, segment_outputs
+
+
+def _forward_action_with_segment_history(
+    model: "LeapBotVA",
+    *,
+    action_tokens: torch.Tensor,
+    action_freqs: torch.Tensor,
+    action_t_mod: torch.Tensor,
+    action_context_payload: dict[str, torch.Tensor],
+    history_segments: list[dict[str, Any]],
+    max_layers: int,
+    exit_depths: tuple[int, ...],
+) -> dict[int, torch.Tensor]:
+    """Run transient ActionDiT while rematerializing only its K/V prefix."""
+
+    if not history_segments:
+        raise RuntimeError("current action has no real observation prefix")
+    context = action_context_payload["context"]
+    context_mask = action_context_payload["mask"]
+    requested_exits = tuple(exit_depths)
+    if not _use_segment_activation_checkpointing(model):
+        hidden = model.mot.forward_action_with_history(
+            action_tokens=action_tokens,
+            action_freqs=action_freqs,
+            action_t_mod=action_t_mod,
+            action_context_payload={"context": context, "mask": context_mask},
+            history_kv=_materialize_attached_segments(history_segments),
+            max_layers=max_layers,
+            exit_depths=requested_exits,
+        )
+        if not isinstance(hidden, dict):
+            raise RuntimeError("multi-exit ActionDiT did not return depth outputs")
+        return hidden
+
+    raw_kv = _flatten_segment_kv_inputs(
+        history_segments,
+        num_layers=max_layers,
+    )
+    num_segments = len(history_segments)
+
+    def run(
+        inner_tokens: torch.Tensor,
+        inner_freqs: torch.Tensor,
+        inner_t_mod: torch.Tensor,
+        inner_context: torch.Tensor,
+        inner_context_mask: torch.Tensor,
+        *inner_raw_kv: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]:
+        history_kv = _materialize_flat_segment_kv(
+            tuple(inner_raw_kv),
+            num_segments=num_segments,
+            num_layers=max_layers,
+        )
+        hidden = model.mot.forward_action_with_history(
+            action_tokens=inner_tokens,
+            action_freqs=inner_freqs,
+            action_t_mod=inner_t_mod,
+            action_context_payload={
+                "context": inner_context,
+                "mask": inner_context_mask,
+            },
+            history_kv=history_kv,
+            max_layers=max_layers,
+            exit_depths=requested_exits,
+            checkpoint_internal=False,
+        )
+        if not isinstance(hidden, dict):
+            raise RuntimeError("multi-exit ActionDiT did not return depth outputs")
+        return tuple(hidden[depth] for depth in requested_exits)
+
+    checkpoint_outputs = checkpoint(
+        run,
+        action_tokens,
+        action_freqs,
+        action_t_mod,
+        context,
+        context_mask,
+        *raw_kv,
+        use_reentrant=False,
+        preserve_rng_state=True,
+    )
+    if isinstance(checkpoint_outputs, torch.Tensor):
+        flat_outputs = (checkpoint_outputs,)
+    else:
+        flat_outputs = tuple(checkpoint_outputs)
+    return {
+        depth: flat_outputs[index]
+        for index, depth in enumerate(requested_exits)
+    }
+
+
+def _video_history_for_mode(
+    segments: list[dict[str, Any]], causal_mode: str
+) -> list[dict[str, torch.Tensor]] | None:
+    if causal_mode == "interleaved":
+        return _materialize_attached_segments(segments)
+    if causal_mode == "vision_causal":
+        return _materialize_attached_segments(segments, modalities={"video"})
+    if causal_mode == "action_aggregator":
+        return None
+    raise ValueError(f"unsupported causal mode: {causal_mode}")
+
+
+def _video_history_segments_for_mode(
+    segments: list[dict[str, Any]], causal_mode: str
+) -> list[dict[str, Any]]:
+    """Select the runtime video prefix while preserving raw segment tensors."""
+
+    if causal_mode == "interleaved":
+        return _select_attached_segments(segments)
+    if causal_mode == "vision_causal":
+        return _select_attached_segments(segments, modalities={"video"})
+    if causal_mode == "action_aggregator":
+        return []
+    raise ValueError(f"unsupported causal mode: {causal_mode}")
+
+
+def _future_video_history_for_mode(
+    completed_segments: list[dict[str, Any]],
+    current_real_segment: dict[str, Any],
+    causal_mode: str,
+) -> list[dict[str, torch.Tensor]]:
+    """Select causal past plus the current real frame for future-video queries."""
+
+    if causal_mode == "interleaved":
+        selected = [*completed_segments, current_real_segment]
+    elif causal_mode == "vision_causal":
+        selected = [
+            segment
+            for segment in completed_segments
+            if segment["modality"] == "video"
+        ]
+        selected.append(current_real_segment)
+    elif causal_mode == "action_aggregator":
+        selected = [current_real_segment]
+    else:
+        raise ValueError(f"unsupported causal mode: {causal_mode}")
+    materialized = _materialize_attached_segments(selected)
+    if materialized is None:
+        raise RuntimeError("current real observation was not added to video history")
+    return materialized
+
+
+def _future_video_history_segments_for_mode(
+    completed_segments: list[dict[str, Any]],
+    current_real_segment: dict[str, Any],
+    causal_mode: str,
+) -> list[dict[str, Any]]:
+    """Select future-video prefix segments without concatenating their K/V."""
+
+    if causal_mode == "interleaved":
+        return [*completed_segments, current_real_segment]
+    if causal_mode == "vision_causal":
+        return [
+            *_select_attached_segments(
+                completed_segments,
+                modalities={"video"},
+            ),
+            current_real_segment,
+        ]
+    if causal_mode == "action_aggregator":
+        return [current_real_segment]
+    raise ValueError(f"unsupported causal mode: {causal_mode}")
+
+
+def _context_for_proprio(
+    model: "LeapBotVA",
+    context: torch.Tensor,
+    context_mask: torch.Tensor,
+    proprio: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return model._append_proprio_to_context(
+        context=context,
+        context_mask=context_mask,
+        proprio=proprio.to(device=model.device, dtype=model.torch_dtype),
+    )
+
+
+def current_video_segment_attention_mask(
+    *, tokens_per_frame: int, num_frames: int, device: torch.device
+) -> torch.Tensor:
+    """FastWAM first-frame-causal mask for one current video block."""
+
+    if tokens_per_frame <= 0 or num_frames <= 0:
+        raise ValueError("tokens_per_frame and num_frames must be positive")
+    total = tokens_per_frame * num_frames
+    mask = torch.ones((total, total), dtype=torch.bool, device=device)
+    mask[:tokens_per_frame, tokens_per_frame:] = False
+    return mask
+
+
+def _runtime_single_observation_latents(
+    model: "LeapBotVA", image: torch.Tensor, *, tiled: bool
+) -> torch.Tensor:
+    """Run the exact batch-one, T=1 VAE program used by memory inference."""
+
+    if image.ndim != 4 or tuple(image.shape[:2]) != (1, 3):
+        raise ValueError(
+            "runtime observation image must have shape [1,3,H,W], "
+            f"got {tuple(image.shape)}"
+        )
+    latents = model._encode_input_image_latents_tensor(
+        image.to(device=model.device, dtype=model.torch_dtype),
+        tiled=tiled,
+    )
+    if not isinstance(latents, torch.Tensor) or latents.ndim != 5:
+        raise ValueError("runtime observation VAE must return [1,C,T,H,W]")
+    if int(latents.shape[0]) != 1 or int(latents.shape[2]) != 1:
+        raise ValueError(
+            "one real observation must encode to exactly one latent frame, "
+            f"got {tuple(latents.shape)}"
+        )
+    return latents
+
+
+def _video_prediction_at_depth(
+    model: "LeapBotVA",
+    *,
+    depth: int,
+    hidden: torch.Tensor,
+    pre_state: dict[str, Any],
+) -> torch.Tensor:
+    if depth == model.mot.num_layers:
+        return model.video_expert.post_dit(hidden, pre_state)
+    pred_tokens = model.video_exit_heads[str(depth)](hidden, pre_state["t"])
+    return model.video_expert.unpatchify(
+        pred_tokens, pre_state["meta"]["grid_size"]
+    )
+
+
+def _action_prediction_at_depth(
+    model: "LeapBotVA",
+    *,
+    depth: int,
+    hidden: torch.Tensor,
+    pre_state: dict[str, Any],
+) -> torch.Tensor:
+    if depth == model.mot.num_layers:
+        return model.action_expert.post_dit(hidden, pre_state)
+    return model.action_exit_heads[str(depth)](hidden)
+
+
+def _packed_causal_history_reference_loss(
+    model: "LeapBotVA", sample, tiled: bool = False
+):
+    """Retained one-shot reference used only by numerical audit tests."""
 
     inputs = model.build_inputs(sample, tiled=tiled, append_proprio=False)
     current_latents = inputs["input_latents"]
@@ -717,5 +1201,417 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(video_loss.detach())
         metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(action_loss.detach())
     metrics["history_blocks_mean"] = float(history_counts.float().mean().detach())
+    metrics["history_blocks_max"] = float(history_counts.max().detach())
+    return total, metrics
+
+
+def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
+    """Full-gradient history training with the exact rollout attention decomposition.
+
+    Completed blocks are encoded chronologically as clean ``V -> A`` segments.
+    The current real observation is then encoded exactly once with the runtime
+    batch-one/T=1 VAE and prefill path.  Current noisy actions read only those
+    persistent real-data K/V tensors.  Noisy future-video tokens execute later
+    in a separate transient branch and can therefore never affect ActionDiT.
+    """
+
+    if int(model.video_expert.patch_size[0]) != 1:
+        raise ValueError(
+            "incremental full-BPTT requires a temporal video patch size of 1"
+        )
+    if bool(getattr(model.video_expert, "action_conditioned", False)):
+        raise ValueError(
+            "future-only video decomposition requires action_conditioned=false"
+        )
+
+    inputs = model.build_inputs(sample, tiled=tiled, append_proprio=False)
+    current_latents = inputs["input_latents"]
+    action = inputs["action"]
+    batch = int(current_latents.shape[0])
+    action_horizon = int(action.shape[1])
+    replan_steps = int(sample["history_action"].shape[2])
+    model.validate_temporal_contract(
+        replan_steps=replan_steps,
+        action_horizon=action_horizon,
+    )
+    full_episode_history = resolve_full_episode_history_batch(
+        sample.get("full_episode_history"),
+        batch_size=batch,
+        device=model.device,
+    )
+    history_valid = sample["history_valid_blocks"].to(
+        model.device, dtype=torch.bool
+    )
+    history_positions = sample["history_block_positions"].to(
+        model.device, dtype=torch.long
+    )
+    current_block_positions = sample["current_block_position"].to(
+        model.device, dtype=torch.long
+    )
+    episode_steps = sample["episode_step"].to(model.device, dtype=torch.long)
+    history_counts = validate_packed_history_metadata(
+        history_valid,
+        history_positions,
+        current_block_positions,
+        episode_steps,
+        replan_steps=replan_steps,
+        full_episode_history=full_episode_history,
+    )
+    if model.proprio_encoder is None:
+        raise ValueError("causal history training requires proprio_encoder")
+
+    history_action = sample["history_action"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    history_proprio = sample["history_proprio"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    current_proprio = sample["proprio"][:, 0].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+
+    noise_video = torch.randn_like(current_latents)
+    timestep_video = model.train_video_scheduler.sample_training_t(
+        batch, model.device, current_latents.dtype
+    )
+    noisy_video = model.train_video_scheduler.add_noise(
+        current_latents, noise_video, timestep_video
+    )
+    target_video = model.train_video_scheduler.training_target(
+        current_latents, noise_video, timestep_video
+    )
+
+    noise_action = torch.randn_like(action)
+    timestep_action = model.train_action_scheduler.sample_training_t(
+        batch, model.device, action.dtype
+    )
+    noisy_action = model.train_action_scheduler.add_noise(
+        action, noise_action, timestep_action
+    )
+    target_action = model.train_action_scheduler.training_target(
+        action, noise_action, timestep_action
+    )
+
+    training_depths = tuple(int(depth) for depth in model.training_exit_depths)
+    final_depth = int(model.mot.num_layers)
+    if not training_depths or training_depths[-1] != final_depth:
+        raise ValueError("training exits must include the final MoT depth")
+    video_losses: dict[int, list[torch.Tensor]] = {
+        depth: [] for depth in training_depths
+    }
+    action_losses: dict[int, list[torch.Tensor]] = {
+        depth: [] for depth in training_depths
+    }
+
+    for sample_index in range(batch):
+        base_context = inputs["context"][sample_index : sample_index + 1]
+        base_context_mask = inputs["context_mask"][sample_index : sample_index + 1]
+        completed_segments: list[dict[str, Any]] = []
+        history_count = int(history_counts[sample_index].item())
+
+        for history_index in range(history_count):
+            block_position = history_positions[
+                sample_index, history_index
+            ].reshape(1)
+            block_context, block_context_mask = _context_for_proprio(
+                model,
+                base_context,
+                base_context_mask,
+                history_proprio[
+                    sample_index : sample_index + 1, history_index
+                ],
+            )
+
+            block_image = sample["history_video"][
+                sample_index : sample_index + 1,
+                :,
+                history_index,
+            ]
+            block_latents = _runtime_single_observation_latents(
+                model, block_image, tiled=tiled
+            )
+            video_pre = model._prepare_real_observation_pre_dit(
+                latents=block_latents,
+                context=block_context,
+                context_mask=block_context_mask,
+                block_index=int(block_position.item()),
+            )
+            _, video_kv = _prefill_with_segment_history(
+                model,
+                expert_name="video",
+                tokens=video_pre["tokens"],
+                freqs=video_pre["freqs"],
+                t_mod=video_pre["t_mod"],
+                context_payload={
+                    "context": video_pre["context"],
+                    "mask": video_pre["context_mask"],
+                },
+                history_segments=_video_history_segments_for_mode(
+                    completed_segments, model.causal_mode
+                ),
+                max_layers=final_depth,
+                return_segment_kv=True,
+            )
+            if video_kv is None:
+                raise RuntimeError("history video prefill did not return K/V")
+            completed_segments.append(
+                {
+                    "modality": "video",
+                    "block_index": int(block_position.item()),
+                    "kv": video_kv,
+                }
+            )
+
+            executed_actions = history_action[
+                sample_index : sample_index + 1, history_index
+            ]
+            clean_action_timestep = torch.zeros(
+                (1,), device=model.device, dtype=executed_actions.dtype
+            )
+            action_pre = model._prepare_action_segment_pre_dit(
+                actions=executed_actions,
+                timestep=clean_action_timestep,
+                context=block_context,
+                context_mask=block_context_mask,
+                absolute_start=int(block_position.item()) * replan_steps,
+                block_index=int(block_position.item()),
+            )
+            if not completed_segments:
+                raise RuntimeError("history action has no same-block real observation")
+            _, action_kv = _prefill_with_segment_history(
+                model,
+                expert_name="action",
+                tokens=action_pre["tokens"],
+                freqs=action_pre["freqs"],
+                t_mod=action_pre["t_mod"],
+                context_payload={
+                    "context": action_pre["context"],
+                    "mask": action_pre["context_mask"],
+                },
+                history_segments=completed_segments,
+                max_layers=final_depth,
+                return_segment_kv=True,
+            )
+            if action_kv is None:
+                raise RuntimeError("history action prefill did not return K/V")
+            completed_segments.append(
+                {
+                    "modality": "action",
+                    "block_index": int(block_position.item()),
+                    "kv": action_kv,
+                }
+            )
+
+        current_block = current_block_positions[sample_index].reshape(1)
+        current_context, current_context_mask = _context_for_proprio(
+            model,
+            base_context,
+            base_context_mask,
+            current_proprio[sample_index : sample_index + 1],
+        )
+        current_image = sample["video"][
+            sample_index : sample_index + 1, :, 0
+        ]
+        current_real_latents = _runtime_single_observation_latents(
+            model, current_image, tiled=tiled
+        )
+        current_real_pre = model._prepare_real_observation_pre_dit(
+            latents=current_real_latents,
+            context=current_context,
+            context_mask=current_context_mask,
+            block_index=int(current_block.item()),
+        )
+        _, current_real_kv = _prefill_with_segment_history(
+            model,
+            expert_name="video",
+            tokens=current_real_pre["tokens"],
+            freqs=current_real_pre["freqs"],
+            t_mod=current_real_pre["t_mod"],
+            context_payload={
+                "context": current_real_pre["context"],
+                "mask": current_real_pre["context_mask"],
+            },
+            history_segments=_video_history_segments_for_mode(
+                completed_segments, model.causal_mode
+            ),
+            max_layers=final_depth,
+            return_segment_kv=True,
+        )
+        if current_real_kv is None:
+            raise RuntimeError("current real observation prefill did not return K/V")
+        current_real_segment = {
+            "modality": "video",
+            "block_index": int(current_block.item()),
+            "kv": current_real_kv,
+        }
+
+        # This prefix is finalized before any future-video token is built.
+        action_prefix_segments = [*completed_segments, current_real_segment]
+        current_action_pre = model._prepare_action_segment_pre_dit(
+            actions=noisy_action[sample_index : sample_index + 1],
+            timestep=timestep_action[sample_index : sample_index + 1],
+            context=current_context,
+            context_mask=current_context_mask,
+            absolute_start=int(episode_steps[sample_index].item()),
+            block_index=int(current_block.item()),
+        )
+        action_hidden_by_depth = _forward_action_with_segment_history(
+            model,
+            action_tokens=current_action_pre["tokens"],
+            action_freqs=current_action_pre["freqs"],
+            action_t_mod=current_action_pre["t_mod"],
+            action_context_payload={
+                "context": current_action_pre["context"],
+                "mask": current_action_pre["context_mask"],
+            },
+            history_segments=action_prefix_segments,
+            max_layers=final_depth,
+            exit_depths=training_depths,
+        )
+
+        # The video loss is intentionally later and transient.  It sees the
+        # current real frame through attached K/V but can never enter action_prefix.
+        future_latents = noisy_video[
+            sample_index : sample_index + 1, :, 1:
+        ]
+        num_future_frames = int(future_latents.shape[2])
+        if num_future_frames <= 0:
+            raise ValueError("causal video training requires future latent frames")
+        future_video_timestep = timestep_video[
+            sample_index : sample_index + 1
+        ]
+        future_frame_timesteps = future_video_timestep[:, None].expand(
+            -1, num_future_frames
+        )
+        future_video_pre = model.video_expert.pre_dit(
+            x=future_latents,
+            timestep=future_video_timestep,
+            context=current_context,
+            context_mask=current_context_mask,
+            action=None,
+            fuse_vae_embedding_in_latents=inputs[
+                "fuse_vae_embedding_in_latents"
+            ],
+            frame_position_ids=torch.arange(
+                1,
+                num_future_frames + 1,
+                device=model.device,
+                dtype=torch.long,
+            ),
+            frame_timesteps=future_frame_timesteps,
+        )
+        future_video_pre = model.temporal_positions.apply_video_pre_dit(
+            future_video_pre,
+            current_block[:, None].expand(-1, num_future_frames),
+        )
+        video_hidden_by_depth, _ = _prefill_with_segment_history(
+            model,
+            expert_name="video",
+            tokens=future_video_pre["tokens"],
+            freqs=future_video_pre["freqs"],
+            t_mod=future_video_pre["t_mod"],
+            context_payload={
+                "context": future_video_pre["context"],
+                "mask": future_video_pre["context_mask"],
+            },
+            history_segments=_future_video_history_segments_for_mode(
+                completed_segments,
+                current_real_segment,
+                model.causal_mode,
+            ),
+            max_layers=final_depth,
+            exit_depths=training_depths,
+            return_segment_kv=False,
+        )
+        if not isinstance(video_hidden_by_depth, dict):
+            raise RuntimeError("multi-exit video DiT did not return depth outputs")
+
+        for depth in training_depths:
+            pred_action = _action_prediction_at_depth(
+                model,
+                depth=depth,
+                hidden=action_hidden_by_depth[depth],
+                pre_state=current_action_pre,
+            )
+            action_token_loss = F.mse_loss(
+                pred_action.float(),
+                target_action[sample_index : sample_index + 1].float(),
+                reduction="none",
+            ).mean(dim=2)
+            if inputs["action_is_pad"] is not None:
+                valid_action = (
+                    ~inputs["action_is_pad"][sample_index : sample_index + 1]
+                ).to(action_token_loss.dtype)
+                action_per_sample = (
+                    (action_token_loss * valid_action).sum(1)
+                    / valid_action.sum(1).clamp_min(1)
+                )
+            else:
+                action_per_sample = action_token_loss.mean(1)
+            action_per_sample = action_per_sample * (
+                model.train_action_scheduler.training_weight(
+                    timestep_action[sample_index : sample_index + 1]
+                ).to(
+                    action_per_sample.device,
+                    dtype=action_per_sample.dtype,
+                )
+            )
+            action_losses[depth].append(action_per_sample.squeeze(0))
+
+            pred_future_video = _video_prediction_at_depth(
+                model,
+                depth=depth,
+                hidden=video_hidden_by_depth[depth],
+                pre_state=future_video_pre,
+            )
+            video_per_sample = model._compute_video_loss_per_sample(
+                pred_future_video,
+                target_video[sample_index : sample_index + 1, :, 1:],
+                None
+                if inputs["image_is_pad"] is None
+                else inputs["image_is_pad"][sample_index : sample_index + 1],
+                include_initial_video_step=False,
+            )
+            video_per_sample = video_per_sample * (
+                model.train_video_scheduler.training_weight(
+                    future_video_timestep
+                ).to(
+                    video_per_sample.device,
+                    dtype=video_per_sample.dtype,
+                )
+            )
+            video_losses[depth].append(video_per_sample.squeeze(0))
+
+    losses: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    for depth in training_depths:
+        loss_video = torch.stack(video_losses[depth]).mean()
+        loss_action = torch.stack(action_losses[depth]).mean()
+        losses[depth] = (
+            model.loss_lambda_video * loss_video
+            + model.loss_lambda_action * loss_action,
+            loss_video,
+            loss_action,
+        )
+
+    if training_depths == (final_depth,):
+        total = losses[final_depth][0]
+    else:
+        shallow = [
+            losses[depth][0]
+            for depth in training_depths
+            if depth != final_depth
+        ]
+        total = losses[final_depth][0] + torch.stack(shallow).mean()
+    metrics: dict[str, float] = {}
+    for depth, (_, video_loss, action_loss) in losses.items():
+        metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(
+            video_loss.detach()
+        )
+        metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(
+            action_loss.detach()
+        )
+    metrics["history_blocks_mean"] = float(
+        history_counts.float().mean().detach()
+    )
     metrics["history_blocks_max"] = float(history_counts.max().detach())
     return total, metrics

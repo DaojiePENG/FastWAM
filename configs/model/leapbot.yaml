@@ -13,12 +13,11 @@ skip_dit_load_from_pretrain: false
 causal_mode: interleaved
 exit_depths: [8, 16, 24, 30]
 training_exit_depths: [30]
-# Correct causal-history training keeps every real prefix block visible and
-# backpropagates the current losses through the complete packed sequence.
-history_training_mode: packed_full_bptt
-# Every real history observation remains a separate T=1 video. This setting
-# batches only that independent VAE batch axis and never truncates history.
-history_vae_batch_chunk_size: 2
+# Runtime-isomorphic training executes every real V/A block chronologically and
+# keeps every K/V tensor attached for full BPTT.
+history_training_mode: incremental_full_bptt
+# Strict BF16 parity requires the same batch-one T=1 VAE call used at rollout.
+history_vae_batch_chunk_size: 1
 # These values define the learned local/absolute action clock and are persisted
 # in every LeapBot checkpoint. Evaluation is rejected if either value changes.
 replan_steps: 10

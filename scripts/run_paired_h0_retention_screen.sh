@@ -7,13 +7,13 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 MAX_STEPS="${MAX_STEPS:-100}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
-GRAD_ACCUM="${GRAD_ACCUM:-10}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-20}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"
-HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-2}"
+HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
-SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/h0_retention_relative_v2_s${MAX_STEPS}_bs80_lr1e-4_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
+SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/h0_retention_incremental_v3_s${MAX_STEPS}_bs80_lr1e-4_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
 OVERSAMPLE_FACTORS=(1 4)
 GPU_GROUPS=(0,1,2,3 4,5,6,7)
 PORTS=(29976 29977)
@@ -22,8 +22,8 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if [[ "$BATCH_SIZE" -ne 2 ]] || [[ "$GRAD_ACCUM" -ne 10 ]]; then
-    log "paired H0 screen requires 4 GPUs x batch 2 x grad accumulation 10"
+if [[ "$BATCH_SIZE" -ne 1 ]] || [[ "$GRAD_ACCUM" -ne 20 ]]; then
+    log "paired H0 screen requires 4 GPUs x batch 1 x grad accumulation 20"
     exit 1
 fi
 if [[ "$LEARNING_RATE" != "1.0e-4" ]]; then
@@ -54,7 +54,7 @@ for index in "${!OVERSAMPLE_FACTORS[@]}"; do
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
     RELEASE_CHECKPOINT_SHA256="$RELEASE_CHECKPOINT_SHA256" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="h0-retention-relative-v2-action-aggregator-x${factor}-s${MAX_STEPS}-bs80-lr1e-4-seed42" \
+    RUN_NAME="h0-retention-incremental-v3-action-aggregator-x${factor}-s${MAX_STEPS}-bs80-lr1e-4-seed42" \
     WANDB_ENABLED=false \
     WANDB_MODE=disabled \
     MAIN_PROCESS_PORT="$port" \

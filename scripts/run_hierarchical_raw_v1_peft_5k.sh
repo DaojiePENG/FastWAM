@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-# Correct-architecture phase-A v2 recipe:
+# Correct-architecture phase-A v3 recipe:
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
-#   * complete packed episode prefix with full BPTT
+#   * runtime-isomorphic chronological prefix with full BPTT
 #   * ActionDiT full fine-tuning + conservative VideoDiT LoRA
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
@@ -15,13 +15,13 @@ DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_unc
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
-GRAD_ACCUM="${GRAD_ACCUM:-8}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-10}"
 MAX_STEPS="${MAX_STEPS:-5000}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
-HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-2}"
+HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-1}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29971}"
@@ -38,9 +38,9 @@ ALLOW_EXISTING_UNCONTRACTED="${ALLOW_EXISTING_UNCONTRACTED:-false}"
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_hierarchical_raw_v2_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
-WANDB_GROUP="${WANDB_GROUP:-final-hierarchical-raw-v2-seed42}"
-RUN_NAME="${RUN_NAME:-final-hierarchical-raw-v2-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v3_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
+WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v3-seed42}"
+RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v3-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -104,13 +104,10 @@ if [[ ! -s "$DATASET_STATS" ]]; then
     log "missing release normalization statistics: $DATASET_STATS"
     exit 1
 fi
-case "$HISTORY_VAE_BATCH_CHUNK_SIZE" in
-    1|2) ;;
-    *)
-        log "formal history VAE chunk must be 1 or accepted chunk 2; got $HISTORY_VAE_BATCH_CHUNK_SIZE"
-        exit 1
-        ;;
-esac
+if [[ "$HISTORY_VAE_BATCH_CHUNK_SIZE" != "1" ]]; then
+    log "runtime-isomorphic training requires history VAE chunk 1; got $HISTORY_VAE_BATCH_CHUNK_SIZE"
+    exit 1
+fi
 if ! [[ "$INITIAL_BLOCK_OVERSAMPLE" =~ ^[1-9][0-9]*$ ]]; then
     log "initial block oversampling must be a positive integer; got $INITIAL_BLOCK_OVERSAMPLE"
     exit 1
@@ -141,7 +138,7 @@ CONTRACT_PAYLOAD="$(printf '%s\n' \
     "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     "save_every=$SAVE_EVERY" \
     "seed=$SEED" \
-    "history_training_mode=packed_full_bptt" \
+    "history_training_mode=incremental_full_bptt" \
     "full_episode_history=true" \
     "max_history_blocks=70" \
     "replan_steps=10" \
@@ -192,7 +189,7 @@ else
 fi
 
 preflight_gpus
-log "start hierarchical raw-v2 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
+log "start incremental full-BPTT v3 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \
@@ -216,7 +213,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     task=libero_leapbot_2cam224 \
     "output_dir=$OUTPUT_DIR" \
     "model.causal_mode=$MODE" \
-    model.history_training_mode=packed_full_bptt \
+    model.history_training_mode=incremental_full_bptt \
     "model.history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
     model.training_strategy=video_lora_action_full \
     model.video_lora.enabled=true \
@@ -263,4 +260,4 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     --output "$OUTPUT_DIR/checkpoint_validation.json" \
     >>"$LOG_FILE" 2>&1
 
-log "hierarchical raw-v2 PEFT complete: $FINAL_CHECKPOINT"
+log "incremental full-history PEFT complete: $FINAL_CHECKPOINT"

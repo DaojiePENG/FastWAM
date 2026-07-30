@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import time
+from collections.abc import Mapping
 from typing import Any, Optional, Sequence, Union
 
 import torch
@@ -80,12 +81,18 @@ class LeapBotVA(FastWAM):
         # received training. This is replaced from checkpoint metadata on load.
         self.trained_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
-        self.history_training_mode = "packed_full_bptt"
+        self.history_training_mode = "incremental_full_bptt"
         self.video_lora_config = VideoLoRAConfig()
         self.video_lora_merged = False
         self.training_replan_steps: int | None = None
         self.training_action_horizon: int | None = None
-        self.history_vae_batch_chunk_size = 2
+        self.history_vae_batch_chunk_size = 1
+        # The outer segment checkpoint rematerializes full-prefix concatenations
+        # during backward.  Keep its default aligned with the existing MoT
+        # checkpoint switch so production training enables both consistently.
+        self.history_segment_activation_checkpointing = bool(
+            self.mot.mot_checkpoint_mixed_attn
+        )
 
     def configure_finetuning(
         self,
@@ -173,7 +180,7 @@ class LeapBotVA(FastWAM):
         *,
         causal_mode: str = "interleaved",
         training_exit_depths: Sequence[int] = (30,),
-        history_training_mode: str = "packed_full_bptt",
+        history_training_mode: str = "incremental_full_bptt",
         replan_steps: int | None = None,
         action_horizon: int | None = None,
     ) -> None:
@@ -188,10 +195,10 @@ class LeapBotVA(FastWAM):
             )
         self.causal_mode = causal_mode
         self.training_exit_depths = depths
-        if history_training_mode != "packed_full_bptt":
+        if history_training_mode != "incremental_full_bptt":
             raise ValueError(
-                "LeapBot causal training requires packed_full_bptt; detached-prefix "
-                f"training is retired because it drops historical gradients, got "
+                "LeapBot causal training requires incremental_full_bptt; packed and "
+                "detached-prefix programs do not match runtime BF16 execution, got "
                 f"{history_training_mode}"
             )
         self.history_training_mode = history_training_mode
@@ -409,6 +416,96 @@ class LeapBotVA(FastWAM):
             return self.action_expert.head
         return self.action_exit_heads[str(depth)]
 
+    def _prepare_real_observation_pre_dit(
+        self,
+        *,
+        latents: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        block_index: int,
+    ) -> dict[str, Any]:
+        """Build the shared runtime/training pre-DiT state for one real frame."""
+
+        if latents.ndim != 5 or tuple(latents.shape[:1]) != (1,):
+            raise ValueError("real observation latents must be [1,C,1,H,W]")
+        num_latent_frames = int(latents.shape[2])
+        if num_latent_frames != 1:
+            raise ValueError(
+                "one real observation must encode to exactly one latent frame"
+            )
+        if int(block_index) < 0:
+            raise ValueError("observation block_index must be non-negative")
+        timestep = torch.zeros(
+            (1,), device=self.device, dtype=latents.dtype
+        )
+        pre_state = self.video_expert.pre_dit(
+            x=latents,
+            timestep=timestep,
+            context=context,
+            context_mask=context_mask,
+            action=None,
+            fuse_vae_embedding_in_latents=bool(
+                getattr(self.video_expert, "fuse_vae_embedding_in_latents", False)
+            ),
+            frame_position_ids=self.temporal_positions.local_video_rope_ids(
+                num_latent_frames, device=self.device
+            ),
+        )
+        return self.temporal_positions.apply_video_pre_dit(
+            pre_state,
+            torch.full(
+                (num_latent_frames,),
+                int(block_index),
+                dtype=torch.long,
+                device=self.device,
+            ),
+        )
+
+    def _prepare_action_segment_pre_dit(
+        self,
+        *,
+        actions: torch.Tensor,
+        timestep: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        absolute_start: int,
+        block_index: int,
+    ) -> dict[str, Any]:
+        """Build one clean or noisy action block with rollout-identical clocks."""
+
+        if actions.ndim != 3 or int(actions.shape[0]) != 1:
+            raise ValueError("action segment must be [1,T,D]")
+        if timestep.shape != (1,):
+            raise ValueError("action segment timestep must have shape [1]")
+        action_length = int(actions.shape[1])
+        if action_length <= 0:
+            raise ValueError("action segment must be non-empty")
+        if int(absolute_start) < 0 or int(block_index) < 0:
+            raise ValueError("absolute action clocks must be non-negative")
+        pre_state = self.action_expert.pre_dit(
+            action_tokens=actions,
+            timestep=timestep,
+            context=context,
+            context_mask=context_mask,
+            position_ids=self.temporal_positions.local_action_rope_ids(
+                action_length, device=self.device
+            ),
+        )
+        return self.temporal_positions.apply_action_pre_dit(
+            pre_state,
+            torch.arange(
+                int(absolute_start),
+                int(absolute_start) + action_length,
+                device=self.device,
+            ),
+            torch.full(
+                (action_length,),
+                int(block_index),
+                dtype=torch.long,
+                device=self.device,
+            ),
+        )
+
     @torch.no_grad()
     def infer_action(
         self,
@@ -480,34 +577,11 @@ class LeapBotVA(FastWAM):
                 input_image=input_image,
                 tiled=tiled,
             )
-            timestep_video = torch.zeros(
-                (1,), device=self.device, dtype=first_frame_latents.dtype
-            )
-            num_latent_frames = int(first_frame_latents.shape[2])
-            local_video_positions = self.temporal_positions.local_video_rope_ids(
-                num_latent_frames,
-                device=self.device,
-            )
-            absolute_video_blocks = torch.full(
-                (num_latent_frames,),
-                block_index,
-                dtype=torch.long,
-                device=self.device,
-            )
-            video_pre = self.video_expert.pre_dit(
-                x=first_frame_latents,
-                timestep=timestep_video,
+            video_pre = self._prepare_real_observation_pre_dit(
+                latents=first_frame_latents,
                 context=context,
                 context_mask=context_mask,
-                action=None,
-                fuse_vae_embedding_in_latents=bool(
-                    getattr(self.video_expert, "fuse_vae_embedding_in_latents", False)
-                ),
-                frame_position_ids=local_video_positions,
-            )
-            video_pre = self.temporal_positions.apply_video_pre_dit(
-                video_pre,
-                absolute_video_blocks,
+                block_index=block_index,
             )
             video_history = memory.materialize(memory.selected_segments_for_video())
             _, video_kv = self.mot.prefill_expert_segment(
@@ -549,21 +623,6 @@ class LeapBotVA(FastWAM):
                 device=rand_device,
                 dtype=torch.float32,
             ).to(device=self.device, dtype=self.torch_dtype)
-            absolute_action_positions = torch.arange(
-                memory.next_action_position,
-                memory.next_action_position + action_horizon,
-                device=self.device,
-            )
-            local_action_positions = self.temporal_positions.local_action_rope_ids(
-                action_horizon,
-                device=self.device,
-            )
-            absolute_action_blocks = torch.full(
-                (action_horizon,),
-                block_index,
-                dtype=torch.long,
-                device=self.device,
-            )
             history_kv = memory.materialize(memory.selected_segments_for_action())
             if history_kv is None:
                 raise RuntimeError("current real observation was not committed to memory")
@@ -579,17 +638,13 @@ class LeapBotVA(FastWAM):
                 timestep_action = step_t.unsqueeze(0).to(
                     dtype=latents_action.dtype, device=self.device
                 )
-                action_pre = self.action_expert.pre_dit(
-                    action_tokens=latents_action,
+                action_pre = self._prepare_action_segment_pre_dit(
+                    actions=latents_action,
                     timestep=timestep_action,
                     context=context,
                     context_mask=context_mask,
-                    position_ids=local_action_positions,
-                )
-                action_pre = self.temporal_positions.apply_action_pre_dit(
-                    action_pre,
-                    absolute_action_positions,
-                    absolute_action_blocks,
+                    absolute_start=memory.next_action_position,
+                    block_index=block_index,
                 )
                 action_hidden = self.mot.forward_action_with_history(
                     action_tokens=action_pre["tokens"],
@@ -665,33 +720,16 @@ class LeapBotVA(FastWAM):
         t0 = time.perf_counter()
         try:
             actions = actions_model_space.to(device=self.device, dtype=self.torch_dtype)
-            absolute_positions = torch.arange(
-                memory.next_action_position,
-                memory.next_action_position + executed,
-                device=self.device,
-            )
-            local_positions = self.temporal_positions.local_action_rope_ids(
-                executed,
-                device=self.device,
-            )
-            absolute_blocks = torch.full(
-                (executed,),
-                memory.completed_blocks,
-                dtype=torch.long,
-                device=self.device,
-            )
             timestep = torch.zeros((1,), device=self.device, dtype=actions.dtype)
-            action_pre = self.action_expert.pre_dit(
-                action_tokens=actions,
+            absolute_start = memory.next_action_position
+            block_index = memory.completed_blocks
+            action_pre = self._prepare_action_segment_pre_dit(
+                actions=actions,
                 timestep=timestep,
                 context=memory.pending_context,
                 context_mask=memory.pending_context_mask,
-                position_ids=local_positions,
-            )
-            action_pre = self.temporal_positions.apply_action_pre_dit(
-                action_pre,
-                absolute_positions,
-                absolute_blocks,
+                absolute_start=absolute_start,
+                block_index=block_index,
             )
             history_kv = memory.materialize(memory.selected_segments_for_action())
             if history_kv is None:
@@ -711,8 +749,12 @@ class LeapBotVA(FastWAM):
             memory.append_actions(
                 KVSegment(
                     modality="action",
-                    block_index=memory.completed_blocks,
-                    positions=absolute_positions,
+                    block_index=block_index,
+                    positions=torch.arange(
+                        absolute_start,
+                        absolute_start + executed,
+                        device=self.device,
+                    ),
                     keys=[item["k"] for item in action_kv],
                     values=[item["v"] for item in action_kv],
                 )
@@ -757,8 +799,86 @@ class LeapBotVA(FastWAM):
             payload["optimizer"] = optimizer.state_dict()
         torch.save(payload, path)
 
+    @staticmethod
+    def _validate_checkpoint_state_dict(
+        module: nn.Module,
+        state_dict: Any,
+        *,
+        label: str,
+        strict: bool,
+    ) -> None:
+        """Validate a module state dict without writing into ``module``."""
+
+        if not isinstance(state_dict, Mapping):
+            raise ValueError(f"{label} must be a state_dict mapping")
+        expected = module.state_dict()
+        expected_keys = set(expected)
+        checkpoint_keys = set(state_dict)
+        missing_keys = sorted(expected_keys - checkpoint_keys)
+        unexpected_keys = sorted(checkpoint_keys - expected_keys)
+        if strict and (missing_keys or unexpected_keys):
+            raise ValueError(
+                f"{label} key mismatch: missing={missing_keys[:8]} "
+                f"unexpected={unexpected_keys[:8]}"
+            )
+
+        for key in sorted(expected_keys & checkpoint_keys):
+            expected_value = expected[key]
+            checkpoint_value = state_dict[key]
+            if isinstance(expected_value, torch.Tensor):
+                if not isinstance(checkpoint_value, torch.Tensor):
+                    raise ValueError(
+                        f"{label} value type mismatch for {key!r}: "
+                        f"checkpoint={type(checkpoint_value).__name__} model=Tensor"
+                    )
+                if checkpoint_value.shape != expected_value.shape:
+                    raise ValueError(
+                        f"{label} shape mismatch for {key!r}: "
+                        f"checkpoint={tuple(checkpoint_value.shape)} "
+                        f"model={tuple(expected_value.shape)}"
+                    )
+            elif type(checkpoint_value) is not type(expected_value):
+                raise ValueError(
+                    f"{label} value type mismatch for {key!r}: "
+                    f"checkpoint={type(checkpoint_value).__name__} "
+                    f"model={type(expected_value).__name__}"
+                )
+
+    @staticmethod
+    def _validate_optimizer_checkpoint(optimizer, optimizer_state: Any) -> None:
+        """Mirror Optimizer's structural checks before any model mutation."""
+
+        if not isinstance(optimizer_state, Mapping):
+            raise ValueError("checkpoint optimizer state must be a mapping")
+        if "state" not in optimizer_state or "param_groups" not in optimizer_state:
+            raise ValueError(
+                "checkpoint optimizer state must contain state and param_groups"
+            )
+        saved_groups = optimizer_state["param_groups"]
+        if not isinstance(saved_groups, (list, tuple)):
+            raise ValueError("checkpoint optimizer param_groups must be a sequence")
+        if len(saved_groups) != len(optimizer.param_groups):
+            raise ValueError(
+                "loaded optimizer state has a different number of parameter groups"
+            )
+        for index, (saved_group, current_group) in enumerate(
+            zip(saved_groups, optimizer.param_groups)
+        ):
+            if not isinstance(saved_group, Mapping) or "params" not in saved_group:
+                raise ValueError(
+                    f"checkpoint optimizer param group {index} is missing params"
+                )
+            if len(saved_group["params"]) != len(current_group["params"]):
+                raise ValueError(
+                    "loaded optimizer state contains a parameter group that "
+                    "doesn't match the size of optimizer's group"
+                )
+
     def load_checkpoint(self, path, optimizer=None):
-        payload = super().load_checkpoint(path, optimizer=optimizer)
+        # Loading is deliberately split into a read-only preflight and a commit.
+        # A native checkpoint mismatch must never leave a partially loaded MoT,
+        # auxiliary head, temporal clock, or optimizer-visible model behind.
+        payload = torch.load(path, map_location="cpu")
         checkpoint_causal_mode = payload.get("causal_mode")
         native_marker_fields = {
             "action_exit_heads",
@@ -823,6 +943,44 @@ class LeapBotVA(FastWAM):
                     f"checkpoint={checkpoint_position_scheme!r} "
                     f"model={TEMPORAL_POSITION_SCHEME!r}"
                 )
+            checkpoint_training_depths = tuple(
+                sorted({int(depth) for depth in payload["training_exit_depths"]})
+            )
+            checkpoint_trained_depths = tuple(
+                sorted({int(depth) for depth in payload["trained_exit_depths"]})
+            )
+            if (
+                not checkpoint_training_depths
+                or self.mot.num_layers not in checkpoint_training_depths
+                or any(
+                    depth not in checkpoint_exit_depths
+                    for depth in checkpoint_training_depths
+                )
+            ):
+                raise ValueError(
+                    "checkpoint training exits are incompatible with its architecture: "
+                    f"training={checkpoint_training_depths} "
+                    f"architecture={checkpoint_exit_depths}"
+                )
+            if (
+                not checkpoint_trained_depths
+                or self.mot.num_layers not in checkpoint_trained_depths
+                or any(
+                    depth not in checkpoint_exit_depths
+                    for depth in checkpoint_trained_depths
+                )
+            ):
+                raise ValueError(
+                    "checkpoint trained exits are incompatible with this model: "
+                    f"checkpoint={checkpoint_trained_depths} "
+                    f"model={checkpoint_exit_depths}"
+                )
+            if checkpoint_trained_depths != checkpoint_training_depths:
+                raise ValueError(
+                    "checkpoint training/trained exit metadata mismatch: "
+                    f"training={checkpoint_training_depths} "
+                    f"trained={checkpoint_trained_depths}"
+                )
         checkpoint_training_strategy = payload.get("training_strategy")
         if (
             checkpoint_training_strategy is not None
@@ -856,14 +1014,38 @@ class LeapBotVA(FastWAM):
             raise ValueError(
                 "checkpoint temporal contract must contain both replan_steps and action_horizon"
             )
+        resolved_checkpoint_replan_steps = None
+        resolved_checkpoint_action_horizon = None
         if checkpoint_replan_steps is not None:
-            if self.training_replan_steps is None:
-                self.training_replan_steps = int(checkpoint_replan_steps)
-                self.training_action_horizon = int(checkpoint_action_horizon)
-            self.validate_temporal_contract(
-                replan_steps=int(checkpoint_replan_steps),
-                action_horizon=int(checkpoint_action_horizon),
-            )
+            resolved_checkpoint_replan_steps = int(checkpoint_replan_steps)
+            resolved_checkpoint_action_horizon = int(checkpoint_action_horizon)
+            if resolved_checkpoint_replan_steps <= 0:
+                raise ValueError("checkpoint replan_steps must be positive")
+            if resolved_checkpoint_action_horizon < resolved_checkpoint_replan_steps:
+                raise ValueError(
+                    "checkpoint action_horizon must be greater than or equal to "
+                    "replan_steps"
+                )
+            if (
+                self.training_replan_steps is not None
+                and resolved_checkpoint_replan_steps
+                != int(self.training_replan_steps)
+            ):
+                raise ValueError(
+                    "replan_steps differs from the model temporal contract: "
+                    f"expected={self.training_replan_steps} "
+                    f"got={resolved_checkpoint_replan_steps}"
+                )
+            if (
+                self.training_action_horizon is not None
+                and resolved_checkpoint_action_horizon
+                != int(self.training_action_horizon)
+            ):
+                raise ValueError(
+                    "action_horizon differs from the model temporal contract: "
+                    f"expected={self.training_action_horizon} "
+                    f"got={resolved_checkpoint_action_horizon}"
+                )
         checkpoint_vae_chunk = payload.get("history_vae_batch_chunk_size")
         if (
             checkpoint_vae_chunk is not None
@@ -900,30 +1082,61 @@ class LeapBotVA(FastWAM):
             checkpoint_mot = payload.get("mot")
             if not isinstance(checkpoint_mot, dict):
                 raise ValueError("native LeapBot checkpoint is missing a mot state_dict")
-            expected_mot_keys = set(self.mot.state_dict().keys())
-            checkpoint_mot_keys = set(checkpoint_mot.keys())
-            missing_mot_keys = sorted(expected_mot_keys - checkpoint_mot_keys)
-            unexpected_mot_keys = sorted(checkpoint_mot_keys - expected_mot_keys)
-            if missing_mot_keys or unexpected_mot_keys:
-                raise ValueError(
-                    "native LeapBot checkpoint MoT key mismatch: "
-                    f"missing={missing_mot_keys[:8]} "
-                    f"unexpected={unexpected_mot_keys[:8]}"
-                )
-        if "temporal_positions" in payload:
-            self.temporal_positions.load_state_dict(
-                payload["temporal_positions"],
+            self._validate_checkpoint_state_dict(
+                self.mot,
+                checkpoint_mot,
+                label="native LeapBot checkpoint MoT",
                 strict=True,
             )
-        else:
-            if is_native_leapbot:
-                raise ValueError(
-                    "native LeapBot checkpoint is missing temporal_positions"
+            self._validate_checkpoint_state_dict(
+                self.action_exit_heads,
+                payload["action_exit_heads"],
+                label="native LeapBot checkpoint action exit heads",
+                strict=True,
+            )
+            self._validate_checkpoint_state_dict(
+                self.video_exit_heads,
+                payload["video_exit_heads"],
+                label="native LeapBot checkpoint video exit heads",
+                strict=True,
+            )
+            self._validate_checkpoint_state_dict(
+                self.temporal_positions,
+                payload["temporal_positions"],
+                label="native LeapBot checkpoint temporal positions",
+                strict=True,
+            )
+            if self.proprio_encoder is not None:
+                self._validate_checkpoint_state_dict(
+                    self.proprio_encoder,
+                    payload["proprio_encoder"],
+                    label="native LeapBot checkpoint proprio encoder",
+                    strict=True,
                 )
-            # Loading an original FastWAM checkpoint must always restore the
-            # identity extension, even if this model instance was previously
-            # used with trained temporal-position weights.
-            self.temporal_positions.reset_parameters()
+        else:
+            if "mot" in payload:
+                self._validate_checkpoint_state_dict(
+                    self.mot,
+                    payload["mot"],
+                    label="FastWAM checkpoint MoT",
+                    strict=False,
+                )
+            elif "dit" in payload:
+                self._validate_checkpoint_state_dict(
+                    self.video_expert,
+                    payload["dit"],
+                    label="legacy FastWAM checkpoint video DiT",
+                    strict=False,
+                )
+            else:
+                raise ValueError(f"Checkpoint missing both `mot` and `dit` keys: {path}")
+            if self.proprio_encoder is not None and "proprio_encoder" in payload:
+                self._validate_checkpoint_state_dict(
+                    self.proprio_encoder,
+                    payload["proprio_encoder"],
+                    label="FastWAM checkpoint proprio encoder",
+                    strict=True,
+                )
         trained_exits = tuple(
             sorted(
                 {
@@ -944,9 +1157,31 @@ class LeapBotVA(FastWAM):
                 "checkpoint trained exits are incompatible with this model: "
                 f"checkpoint={trained_exits} model={self.exit_depths}"
             )
-        self.trained_exit_depths = trained_exits
         has_trained_shallow_exits = any(depth != self.mot.num_layers for depth in trained_exits)
-        if "action_exit_heads" in payload and has_trained_shallow_exits:
+
+        if optimizer is not None and "optimizer" in payload:
+            self._validate_optimizer_checkpoint(optimizer, payload["optimizer"])
+
+        # Commit only after every metadata and tensor key/shape check above has
+        # succeeded. Module loading below cannot discover a checkpoint mismatch.
+        if optimizer is not None and "optimizer" in payload:
+            optimizer.load_state_dict(payload["optimizer"])
+        if "mot" in payload:
+            self.mot.load_state_dict(payload["mot"], strict=is_native_leapbot)
+        else:
+            self.video_expert.load_state_dict(payload["dit"], strict=False)
+        if self.proprio_encoder is not None and "proprio_encoder" in payload:
+            self.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
+        if is_native_leapbot:
+            self.temporal_positions.load_state_dict(
+                payload["temporal_positions"], strict=True
+            )
+        else:
+            # Loading an original FastWAM checkpoint must always restore the
+            # identity extension, even if this model instance was previously
+            # used with trained temporal-position weights.
+            self.temporal_positions.reset_parameters()
+        if is_native_leapbot and has_trained_shallow_exits:
             self.action_exit_heads.load_state_dict(payload["action_exit_heads"], strict=True)
             self.video_exit_heads.load_state_dict(payload["video_exit_heads"], strict=True)
         else:
@@ -957,4 +1192,11 @@ class LeapBotVA(FastWAM):
                 head.load_state_dict(self.action_expert.head.state_dict(), strict=True)
             for head in self.video_exit_heads.values():
                 head.load_state_dict(self.video_expert.head.state_dict(), strict=True)
+        self.trained_exit_depths = trained_exits
+        if (
+            resolved_checkpoint_replan_steps is not None
+            and self.training_replan_steps is None
+        ):
+            self.training_replan_steps = resolved_checkpoint_replan_steps
+            self.training_action_horizon = resolved_checkpoint_action_horizon
         return payload

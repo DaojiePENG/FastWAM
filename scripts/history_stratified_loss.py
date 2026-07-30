@@ -11,7 +11,7 @@ The legacy CLI remains a one-draw ``correct``-history audit.  Supplying
 ``stratified.history_variants=[correct,masked,shuffled]`` adds causal history
 controls, and ``stratified.noise_repeats`` repeats Gaussian draws at every fixed
 timestep.  Enhanced mode evaluates the native path for every checkpoint so the
-packed-prefix penalty and parameter drift can be reported separately.
+incremental-prefix effect and parameter drift can be reported separately.
 """
 
 from __future__ import annotations
@@ -962,9 +962,10 @@ def _evaluate_checkpoint(
             "correct": (sample, {})
         }
         if "masked" in history_variants:
-            if model.history_training_mode != "packed_full_bptt":
+            if model.history_training_mode != "incremental_full_bptt":
                 raise ValueError(
-                    "masked-history diagnostics require history_training_mode=packed_full_bptt"
+                    "masked-history diagnostics require "
+                    "history_training_mode=incremental_full_bptt"
                 )
             samples_by_variant["masked"] = (masked_history_sample(sample), {})
         if "shuffled" in history_variants:
@@ -1408,12 +1409,12 @@ def _checkpoint_decompositions(
             {
                 "release": release["label"],
                 "candidate": candidate["label"],
-                "packed_minus_candidate_native": _paired_diagnostic_summary(
+                "incremental_minus_candidate_native": _paired_diagnostic_summary(
                     candidate["records"],
                     candidate["native_records"],
                     bootstrap_iterations=bootstrap_iterations,
                     bootstrap_seed=_stable_seed(
-                        bootstrap_seed, candidate["label"], "packed-minus-native"
+                        bootstrap_seed, candidate["label"], "incremental-minus-native"
                     ),
                 ),
                 "candidate_native_minus_release_native": _paired_diagnostic_summary(
@@ -1424,7 +1425,7 @@ def _checkpoint_decompositions(
                         bootstrap_seed, candidate["label"], "native-drift"
                     ),
                 ),
-                "packed_minus_release_native": _paired_diagnostic_summary(
+                "incremental_minus_release_native": _paired_diagnostic_summary(
                     candidate["records"],
                     release["native_records"],
                     bootstrap_iterations=bootstrap_iterations,

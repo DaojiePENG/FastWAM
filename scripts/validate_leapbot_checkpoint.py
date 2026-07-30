@@ -39,7 +39,7 @@ def validate_checkpoint(
     expected_step: int,
     expected_mode: str,
     state_dir: Path | None = None,
-    expected_history_training_mode: str = "packed_full_bptt",
+    expected_history_training_mode: str = "incremental_full_bptt",
     expected_training_strategy: str = "video_lora_action_full",
     expected_video_lora_multiplier: float = 1.0,
     expected_replan_steps: int = 10,
@@ -167,7 +167,7 @@ def main() -> None:
     parser.add_argument("--expected-step", type=int, required=True)
     parser.add_argument("--expected-mode", required=True)
     parser.add_argument(
-        "--expected-history-training-mode", default="packed_full_bptt"
+        "--expected-history-training-mode", default="incremental_full_bptt"
     )
     parser.add_argument("--expected-training-strategy", default="video_lora_action_full")
     parser.add_argument("--expected-video-lora-multiplier", type=float, default=1.0)

@@ -12,16 +12,16 @@ ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 SELECTED_LR="${SELECTED_LR:?SELECTED_LR must come from the paired LR audit}"
 MAX_STEPS="${MAX_STEPS:-1115}"
 SAVE_EVERY="${SAVE_EVERY:-223}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
-GRAD_ACCUM="${GRAD_ACCUM:-8}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-16}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
-HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-2}"
+HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:?INITIAL_BLOCK_OVERSAMPLE must come from the H0-retention audit}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_full_bptt_d30_e5_bs128_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v3_d30_e5_bs128_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
 
@@ -29,8 +29,8 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 2 ]] || [[ "$GRAD_ACCUM" -ne 8 ]]; then
-    log "formal comparison requires 8 GPUs x batch 2 x grad accumulation 8 (global batch 128)"
+if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 1 ]] || [[ "$GRAD_ACCUM" -ne 16 ]]; then
+    log "formal comparison requires 8 GPUs x batch 1 x grad accumulation 16 (global batch 128)"
     exit 1
 fi
 if (( ${#MODES[@]} == 0 )); then
@@ -74,7 +74,7 @@ for mode in "${MODES[@]}"; do
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
     RELEASE_CHECKPOINT_SHA256="$RELEASE_CHECKPOINT_SHA256" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-full-bptt-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed42" \
+    RUN_NAME="causal-incremental-full-bptt-v3-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed42" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \

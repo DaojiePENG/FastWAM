@@ -473,7 +473,7 @@ class Wan22Trainer:
             # The generic FastWAM `infer()` path below generates video without
             # LeapBot's observation->executed-action memory state machine.  Its
             # action/video metrics would therefore be mislabeled H=0 results.
-            # Keep the correctly history-conditioned packed loss here; policy
+            # Keep the correctly history-conditioned incremental loss here; policy
             # metrics belong to the external LIBERO memory rollout evaluator.
             gathered_val_loss = self.accelerator.gather_for_metrics(
                 torch.tensor(

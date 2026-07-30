@@ -82,28 +82,32 @@ block 0 到 69，共覆盖 700 个控制步；第 71 次观测被拒绝。
 官方 LIBERO 数据中最长轨迹只提供到约 H=50；70 是运行时容量和 OOM
 保护目标，不代表训练见过 H=51...69。
 
-## 5. Packed full-BPTT
+## 5. Incremental full-BPTT
 
-主训练模式固定为 `packed_full_bptt`。每次 forward 将一个 batch 内所有
-有效历史观测、全部历史动作、当前视频监督和当前 noisy action 放入同一
-MoT 前向：
+主训练模式固定为 `incremental_full_bptt`。每个样本使用与 rollout 相同的
+矩形 attention 调用，按 `V0,A0,V1,A1,...,Vcurrent,Acurrent` 重建完整真实
+prefix。segment K/V 只保存在本次 forward 的普通张量列表中，且始终连接
+autograd：
 
-- 所有真实历史块都保留在计算图中；
-- 不 detach 历史、不淘汰历史、不读取离线 cache；
-- causal mask 实现第 3 节的三种信息流；
-- 当前 action 对当前未来视频 token 的 mask 恒为 false；
-- 只对当前未来视频和当前 32 步动作计算 flow-matching loss；
-- 当前 loss 可以经 attention 反传到全部有效历史 K/V 表征。
+- 历史和当前真实观测均使用 batch-one、T=1 VAE；
+- 历史动作是对应块真正执行的 10 步动作，timestep 为 0；
+- 当前 noisy action 只读取真实历史和当前真实观测；
+- 不 detach、不淘汰、不读取离线 cache，也不使用 `LeapMemoryState`；
+- 当前 action/video loss 可沿允许的 K/V 路径反传到全部历史表征。
 
-固定容量张量仅用于 collation。前向会裁掉 batch 中对所有样本均无效的
-右侧 padding，但不会裁掉任何样本的真实 prefix。分布式 sampler 按精确
-历史长度分桶以减少各 rank 的 padding/同步等待；它只改变 permutation，
-不改变样本内容。
+未来视频是动作前向之后建立的独立 transient segment。它使用 latent frame
+位置 `1...F_latent-1`（当前 9 帧监督经 VAE 后为 `1,2`）和非零 flow
+timestep，读取按 causal mode 选择的历史及当前真实观测，内部双向
+attention；其 K/V 从不进入动作 prefix 或持久 cache。
+因此这里不是依赖 mask 的“逻辑隔离”，而是 action 计算图中根本不存在
+未来视频 token。
+
+固定容量张量只用于 collation。训练逐样本执行真实长度，padding block
+不会进入任何 attention。分布式 sampler 的排列不改变样本内容。
 
 ## 6. Proprio 与语言隔离
 
-packed context 为语言 token 加上每块一个 proprio token。逐 query 的
-cross-attention mask 强制：
+每个增量 segment 单独使用语言 token 和该块自己的 proprio token：
 
 - block `i` 的视频和动作只读取语言与 `p_i`；
 - padding block 不成为有效 key；
@@ -118,7 +122,8 @@ episode prompt fingerprint，因为它应随重规划变化。
 为保持 FastWAM release 的零历史能力，原生 RoPE 坐标在每个块内重置：
 
 - 每张历史真实观测的局部视频位置为 0；
-- 当前 33 帧监督经 VAE 后的局部 latent-frame 位置为 `0...8`；
+- 32 个控制步每 4 步采样一帧，共 9 个视频帧；VAE 后的 3 个 latent frame
+  中，当前真实帧位置为 `0`，独立未来视频监督位置为 `1,2`；
 - 每个历史 10 步动作的局部位置为 `0...9`；
 - 当前预测动作的局部位置为 `0...31`。
 
@@ -128,7 +133,7 @@ episode 进度由单独的解析正弦特征和零初始化投影注入：
 - 动作同时使用绝对 block id 和真实控制步 id；
 - 当前预测动作位置从 `b*10` 开始；只有实际执行的前缀会成为下一轮历史。
 
-零初始化时，D30/H0 packed 路径与 FastWAM 原路径在 BF16 容差内一致。
+零初始化时，D30/H0 增量路径与 FastWAM 原路径在 BF16 容差内一致。
 
 ## 8. 训练目标与出口
 
@@ -159,9 +164,8 @@ VideoDiT self-attention 使用 rank-16 LoRA，proprio encoder 与层级位置投
 - 5% linear warmup + cosine scheduler；
 - D30、32 步 horizon、10 步 replan 和 BF16。
 
-历史图像的 VAE 输入始终是独立 `T=1`。正式 BF16 配置只允许 chunk 1
-或经真实 Wan/H800 固定噪声 loss 验证通过的 chunk 2；chunk 4 的 action
-loss 差超过 `1e-3`，因此不会进入正式比较。
+历史图像的 VAE 输入始终是独立的 batch-one、`T=1` 调用。正式 BF16
+配置只允许 chunk 1，以保持和线上观测编码完全相同的数值路径。
 
 FastWAM 官方 release 实际完成 21,700 updates、global batch 128、LR 1e-4。
 LeapBot 是从该权重做历史适配，不能把很短的 LR screen 当作最终收敛或
@@ -172,8 +176,9 @@ LeapBot 是从该权重做历史适配，不能把很短的 LR screen 当作最�
 代码级验收包括：
 
 - 三种 mask 的允许关系和 future-video 零梯度；
-- H0 packed 与原 FastWAM 数值一致；
-- 三模式 H=8 的 packed 一次前向与逐块 runtime KV 前向等价（FP32/BF16）；
+- H0 增量路径与原 FastWAM 目标在约定 BF16 容差内一致；
+- 三模式真实 6B/BF16/H=8 的增量训练前缀与 public runtime 路径逐层
+  K/V、action hidden 和 flow head bitwise 一致；
 - 预测但未 commit 的动作不增加 action cache；
 - 70 块/700 动作边界与第 71 次拒绝；
 - prompt、clock、reset、rollback、checkpoint 和 resume 契约；
@@ -190,7 +195,7 @@ LeapBot 是从该权重做历史适配，不能把很短的 LR screen 当作最�
 | 契约 | 文件 |
 |---|---|
 | memory/state machine | `src/leapbot_va/memory.py` |
-| packed mask、full-BPTT loss | `src/leapbot_va/training.py` |
+| causal mask 审计、incremental full-BPTT loss | `src/leapbot_va/training.py` |
 | full-prefix LeRobot 数据 | `src/leapbot_va/data.py` |
 | 在线 infer/commit/checkpoint | `src/leapbot_va/models/leapbot.py` |
 | 层级时间位置 | `src/leapbot_va/positions.py` |
