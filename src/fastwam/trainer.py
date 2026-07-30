@@ -754,6 +754,26 @@ class Wan22Trainer:
                         )
                     grad_norm_tensor = torch.tensor(grad_norm, device=loss.device, dtype=torch.float32)
                     global_grad_norm = float(self.accelerator.gather(grad_norm_tensor).mean().item())
+                    if self.accelerator.device.type == "cuda":
+                        peak_allocated = torch.tensor(
+                            torch.cuda.max_memory_allocated(self.accelerator.device),
+                            device=loss.device,
+                            dtype=torch.float64,
+                        )
+                        peak_reserved = torch.tensor(
+                            torch.cuda.max_memory_reserved(self.accelerator.device),
+                            device=loss.device,
+                            dtype=torch.float64,
+                        )
+                        global_peak_allocated_gib = float(
+                            self.accelerator.gather(peak_allocated).max().item() / 2**30
+                        )
+                        global_peak_reserved_gib = float(
+                            self.accelerator.gather(peak_reserved).max().item() / 2**30
+                        )
+                    else:
+                        global_peak_allocated_gib = 0.0
+                        global_peak_reserved_gib = 0.0
 
                     current_lr = float(self.optimizer.param_groups[0]["lr"])
 
@@ -788,6 +808,8 @@ class Wan22Trainer:
                             "train/lr": current_lr,
                             "performance/steps_per_sec": steps_per_sec,
                             "performance/samples_per_sec": samples_per_second,
+                            "performance/peak_gpu_allocated_gib": global_peak_allocated_gib,
+                            "performance/peak_gpu_reserved_gib": global_peak_reserved_gib,
                         }
                         for index, group in enumerate(self.optimizer.param_groups):
                             group_name = str(group.get("group_name", f"group_{index}"))
