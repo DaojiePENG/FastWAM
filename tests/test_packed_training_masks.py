@@ -3,9 +3,9 @@ import torch
 from leapbot_va.training import (
     build_packed_history_attention_mask,
     build_query_context_masks,
-    current_video_frame_positions,
     current_video_segment_attention_mask,
     history_window_indices,
+    validate_packed_history_metadata,
 )
 from leapbot_va.data import full_episode_sparse_offsets
 
@@ -109,21 +109,42 @@ def test_incremental_current_real_frame_cannot_read_future_supervision():
     assert mask[2:, :].all()
 
 
-def test_current_video_positions_anchor_real_frame_and_keep_relative_time():
-    positions = current_video_frame_positions(
-        torch.tensor([0, 17, 69]), num_frames=4
+def test_full_episode_metadata_requires_complete_left_aligned_prefix():
+    valid = torch.tensor([[True, True, False], [False, False, False]])
+    positions = torch.tensor([[0, 1, -1], [-1, -1, -1]])
+    counts = validate_packed_history_metadata(
+        valid,
+        positions,
+        torch.tensor([2, 0]),
+        torch.tensor([20, 0]),
+        replan_steps=10,
+        full_episode_history=True,
     )
-    assert positions.tolist() == [
-        [0, 1, 2, 3],
-        [17, 18, 19, 20],
-        [69, 70, 71, 72],
-    ]
-    # The persistent real frame stays at the absolute replanning position;
-    # transient future supervision preserves native FastWAM unit spacing.
-    assert torch.equal(positions[:, 0], torch.tensor([0, 17, 69]))
-    assert torch.equal(
-        positions[:, 1:] - positions[:, :-1], torch.ones(3, 3, dtype=torch.long)
-    )
+    assert counts.tolist() == [2, 0]
+
+    bad_gap = valid.clone()
+    bad_gap[0] = torch.tensor([True, False, True])
+    import pytest
+
+    with pytest.raises(ValueError, match="left-aligned"):
+        validate_packed_history_metadata(
+            bad_gap,
+            positions,
+            torch.tensor([2, 0]),
+            torch.tensor([20, 0]),
+            replan_steps=10,
+            full_episode_history=True,
+        )
+
+    with pytest.raises(ValueError, match="every preceding"):
+        validate_packed_history_metadata(
+            valid,
+            positions,
+            torch.tensor([3, 0]),
+            torch.tensor([30, 0]),
+            replan_steps=10,
+            full_episode_history=True,
+        )
 
 
 def test_full_episode_offsets_decode_only_replan_observations():

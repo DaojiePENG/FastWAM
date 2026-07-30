@@ -186,32 +186,69 @@ def build_query_context_masks(
     return make(video_block), make(action_block)
 
 
-def current_video_frame_positions(
+def validate_packed_history_metadata(
+    history_valid_blocks: torch.Tensor,
+    history_block_positions: torch.Tensor,
     current_block_positions: torch.Tensor,
+    episode_steps: torch.Tensor,
     *,
-    num_frames: int,
+    replan_steps: int,
+    full_episode_history: bool,
 ) -> torch.Tensor:
-    """Preserve FastWAM's relative video time while anchoring the real frame.
+    """Validate that packed history describes one causal episode prefix.
 
-    The first frame is the only persistent observation and therefore uses the
-    episode's absolute replanning index.  Future frames are transient training
-    supervision, but still need distinct consecutive temporal RoPE positions
-    so the release video head sees the same relative geometry as native
-    FastWAM.  None of these future-frame K/V tensors is committed to memory.
+    Returns the number of valid blocks per sample.  Full-episode samples must
+    contain the exact prefix ``0..current_block-1``; short-window ablations may
+    start later, but must still be left-aligned and strictly precede current.
     """
 
-    if current_block_positions.ndim != 1:
-        raise ValueError("current_block_positions must be [B]")
-    if num_frames <= 0:
-        raise ValueError("num_frames must be positive")
-    if bool((current_block_positions < 0).any().item()):
-        raise ValueError("current block positions must be non-negative")
-    offsets = torch.arange(
-        num_frames,
-        device=current_block_positions.device,
-        dtype=current_block_positions.dtype,
-    )
-    return current_block_positions[:, None] + offsets[None, :]
+    if history_valid_blocks.ndim != 2 or history_valid_blocks.dtype != torch.bool:
+        raise ValueError("history_valid_blocks must be bool [B,H]")
+    if history_block_positions.shape != history_valid_blocks.shape:
+        raise ValueError("history_block_positions must match history_valid_blocks")
+    batch = int(history_valid_blocks.shape[0])
+    if current_block_positions.shape != (batch,) or episode_steps.shape != (batch,):
+        raise ValueError("current_block_positions and episode_steps must be [B]")
+    if replan_steps <= 0:
+        raise ValueError("replan_steps must be positive")
+
+    history_counts = history_valid_blocks.sum(dim=1)
+    slots = torch.arange(
+        history_valid_blocks.shape[1], device=history_valid_blocks.device
+    )[None, :]
+    expected_valid = slots < history_counts[:, None]
+    if not torch.equal(history_valid_blocks, expected_valid):
+        raise ValueError("history_valid_blocks must be left-aligned without internal gaps")
+
+    valid_positions = history_block_positions[history_valid_blocks]
+    if valid_positions.numel() and bool((valid_positions < 0).any().item()):
+        raise ValueError("valid history block positions must be non-negative")
+    if bool((episode_steps != current_block_positions * replan_steps).any().item()):
+        raise ValueError("sample must lie on its declared replanning boundary")
+    if history_valid_blocks.shape[1] > 0:
+        current_grid = current_block_positions[:, None].expand_as(history_block_positions)
+        if bool(
+            (
+                history_valid_blocks
+                & (history_block_positions >= current_grid)
+            ).any().item()
+        ):
+            raise ValueError("history positions must strictly precede the current block")
+
+    if full_episode_history:
+        if not torch.equal(current_block_positions, history_counts):
+            raise ValueError(
+                "full-episode training must expose every preceding observation/action block"
+            )
+        absolute_slots = slots.expand_as(history_valid_blocks)
+        if not torch.equal(
+            history_block_positions[history_valid_blocks],
+            absolute_slots[history_valid_blocks],
+        ):
+            raise ValueError(
+                "full-episode history positions must be the complete prefix 0..current_block-1"
+            )
+    return history_counts
 
 
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
@@ -224,13 +261,24 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     configured_history_valid = sample["history_valid_blocks"].to(
         model.device, dtype=torch.bool
     )
-    history_counts = configured_history_valid.sum(dim=1)
+    full_history_flag = sample.get("full_episode_history")
+    full_episode_history = full_history_flag is not None and bool(
+        torch.as_tensor(full_history_flag, device=model.device).all().item()
+    )
+    replan_steps = int(sample["history_action"].shape[2])
+    history_counts = validate_packed_history_metadata(
+        configured_history_valid,
+        sample["history_block_positions"].to(model.device),
+        sample["current_block_position"].to(model.device),
+        sample["episode_step"].to(model.device),
+        replan_steps=replan_steps,
+        full_episode_history=full_episode_history,
+    )
     max_history = int(history_counts.max().item())
     # Capacity is a runtime upper bound, not a reason to execute padded tokens.
     # Cropping only a suffix that is invalid for every sample preserves every
     # real episode-prefix block while making full BPTT practical on H800s.
     history_valid = configured_history_valid[:, :max_history]
-    replan_steps = int(sample["history_action"].shape[2])
     action_horizon = int(action.shape[1])
 
     history_video = sample["history_video"][:, :, :max_history].to(
@@ -299,12 +347,26 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     )
     current_block = sample["current_block_position"].to(model.device).view(batch, 1)
     current_video_frames = int(current_latents.shape[2])
+    # Keep FastWAM's pretrained RoPE coordinates local to each block.  The
+    # episode-global block index is carried by the separate temporal embedding
+    # below, so adding history does not phase-shift the native current block.
     frame_positions = torch.cat(
         [
+            torch.zeros_like(history_positions),
+            torch.arange(
+                current_video_frames,
+                device=model.device,
+                dtype=history_positions.dtype,
+            )
+            .view(1, -1)
+            .expand(batch, -1),
+        ],
+        dim=1,
+    )
+    absolute_video_blocks = torch.cat(
+        [
             history_positions,
-            current_video_frame_positions(
-                current_block[:, 0], num_frames=current_video_frames
-            ),
+            current_block.expand(-1, current_video_frames),
         ],
         dim=1,
     )
@@ -326,6 +388,10 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         frame_position_ids=frame_positions,
         frame_timesteps=frame_timesteps,
     )
+    video_pre = model.temporal_positions.apply_video_pre_dit(
+        video_pre,
+        absolute_video_blocks,
+    )
 
     history_action_positions = (
         sample["history_block_positions"][:, :max_history]
@@ -336,7 +402,32 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     ).clamp_min(0).reshape(batch, max_history * replan_steps)
     episode_step = sample["episode_step"].to(model.device).view(batch, 1)
     current_action_positions = episode_step + torch.arange(action_horizon, device=model.device)
-    action_positions = torch.cat([history_action_positions, current_action_positions], dim=1)
+    local_history_action_positions = (
+        torch.arange(replan_steps, device=model.device)
+        .view(1, 1, -1)
+        .expand(batch, max_history, -1)
+        .reshape(batch, max_history * replan_steps)
+    )
+    local_current_action_positions = (
+        torch.arange(action_horizon, device=model.device)
+        .view(1, -1)
+        .expand(batch, -1)
+    )
+    action_positions = torch.cat(
+        [local_history_action_positions, local_current_action_positions], dim=1
+    )
+    absolute_action_positions = torch.cat(
+        [history_action_positions, current_action_positions], dim=1
+    )
+    history_action_blocks = (
+        history_positions.unsqueeze(-1)
+        .expand(-1, -1, replan_steps)
+        .reshape(batch, max_history * replan_steps)
+    )
+    current_action_blocks = current_block.expand(-1, action_horizon)
+    absolute_action_blocks = torch.cat(
+        [history_action_blocks, current_action_blocks], dim=1
+    )
     action_token_timesteps = torch.cat(
         [
             torch.zeros_like(history_action_positions, dtype=timestep_action.dtype),
@@ -351,6 +442,11 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         context_mask=packed_context_mask,
         position_ids=action_positions,
         token_timesteps=action_token_timesteps,
+    )
+    action_pre = model.temporal_positions.apply_action_pre_dit(
+        action_pre,
+        absolute_action_positions,
+        absolute_action_blocks,
     )
 
     tokens_per_frame = int(video_pre["meta"]["tokens_per_frame"])
@@ -678,7 +774,15 @@ def incremental_detached_prefix_training_loss(
                 context_mask=block_context_mask,
                 action=None,
                 fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
-                frame_position_ids=block_positions[:, None],
+                frame_position_ids=torch.zeros(
+                    (active.numel(), 1),
+                    dtype=torch.long,
+                    device=model.device,
+                ),
+            )
+            video_pre = model.temporal_positions.apply_video_pre_dit(
+                video_pre,
+                block_positions[:, None],
             )
             _, video_kv = model.mot.prefill_expert_segment(
                 expert_name="video",
@@ -711,9 +815,14 @@ def incremental_detached_prefix_training_loss(
             executed_actions = history_action.index_select(0, active)[
                 :, history_index
             ]
-            executed_positions = (
+            absolute_executed_positions = (
                 block_positions[:, None] * replan_steps
                 + torch.arange(replan_steps, device=model.device)[None, :]
+            )
+            local_executed_positions = (
+                torch.arange(replan_steps, device=model.device)
+                .view(1, -1)
+                .expand(active.numel(), -1)
             )
             action_pre = model.action_expert.pre_dit(
                 action_tokens=executed_actions,
@@ -724,7 +833,12 @@ def incremental_detached_prefix_training_loss(
                 ),
                 context=block_context,
                 context_mask=block_context_mask,
-                position_ids=executed_positions,
+                position_ids=local_executed_positions,
+            )
+            action_pre = model.temporal_positions.apply_action_pre_dit(
+                action_pre,
+                absolute_executed_positions,
+                block_positions[:, None].expand(-1, replan_steps),
             )
             _, action_kv = model.mot.prefill_expert_segment(
                 expert_name="action",
@@ -782,10 +896,16 @@ def incremental_detached_prefix_training_loss(
             context_mask=current_context_mask,
             action=None,
             fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
-            frame_position_ids=current_video_frame_positions(
-                group_blocks, num_frames=current_video_frames
+            frame_position_ids=(
+                torch.arange(current_video_frames, device=model.device)
+                .view(1, -1)
+                .expand(group.numel(), -1)
             ),
             frame_timesteps=frame_timesteps,
+        )
+        video_pre = model.temporal_positions.apply_video_pre_dit(
+            video_pre,
+            group_blocks[:, None].expand(-1, current_video_frames),
         )
         tokens_per_frame = int(video_pre["meta"]["tokens_per_frame"])
         video_hidden, current_video_kv = model.mot.prefill_expert_segment(
@@ -851,12 +971,22 @@ def incremental_detached_prefix_training_loss(
         current_action_positions = group_episode_steps[:, None] + torch.arange(
             action_horizon, device=model.device
         )[None, :]
+        local_current_action_positions = (
+            torch.arange(action_horizon, device=model.device)
+            .view(1, -1)
+            .expand(group.numel(), -1)
+        )
         action_pre = model.action_expert.pre_dit(
             action_tokens=noisy_action.index_select(0, group),
             timestep=timestep_action.index_select(0, group),
             context=current_context,
             context_mask=current_context_mask,
-            position_ids=current_action_positions,
+            position_ids=local_current_action_positions,
+        )
+        action_pre = model.temporal_positions.apply_action_pre_dit(
+            action_pre,
+            current_action_positions,
+            group_blocks[:, None].expand(-1, action_horizon),
         )
         action_hidden = model.mot.forward_action_with_history(
             action_tokens=action_pre["tokens"],

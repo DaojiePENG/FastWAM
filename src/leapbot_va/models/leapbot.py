@@ -24,6 +24,7 @@ from leapbot_va.memory import (
     LeapMemoryState,
     VALID_CAUSAL_MODES,
 )
+from leapbot_va.positions import HierarchicalTemporalPositionEmbedding
 
 
 class LeapBotVA(FastWAM):
@@ -61,6 +62,15 @@ class LeapBotVA(FastWAM):
         )
         self.action_exit_heads.to(device=self.device, dtype=self.torch_dtype)
         self.video_exit_heads.to(device=self.device, dtype=self.torch_dtype)
+        # Preserve FastWAM's pretrained, block-local RoPE coordinates.  The
+        # episode-global block/control progress is injected separately through
+        # exact-zero projections, so a release checkpoint remains an identity
+        # at initialization.
+        self.temporal_positions = HierarchicalTemporalPositionEmbedding(
+            video_dim=int(self.video_expert.hidden_dim),
+            action_dim=int(self.action_expert.hidden_dim),
+            device=self.device,
+        )
         self.causal_mode = "interleaved"
         self.training_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
@@ -101,6 +111,8 @@ class LeapBotVA(FastWAM):
     def configure_trainable_parameters(self) -> None:
         """Select full-DiT or video-LoRA/action-full trainable parameters."""
         self.mot.train()
+        self.temporal_positions.train()
+        self.temporal_positions.requires_grad_(True)
         if self.training_strategy == "full_dit":
             self.mot.requires_grad_(True)
             return
@@ -194,7 +206,7 @@ class LeapBotVA(FastWAM):
         self,
         *,
         exit_depth: int = 30,
-        causal_mode: str = "interleaved",
+        causal_mode: str | None = None,
         max_history_blocks: int = 70,
         action_horizon: int = 32,
         replan_steps: int = 10,
@@ -203,10 +215,16 @@ class LeapBotVA(FastWAM):
             raise ValueError(
                 f"model supports exit depths {self.exit_depths}, got {exit_depth}"
             )
+        resolved_causal_mode = self.causal_mode if causal_mode is None else causal_mode
+        if resolved_causal_mode != self.causal_mode:
+            raise ValueError(
+                "memory/model causal mode mismatch: "
+                f"memory={resolved_causal_mode} model={self.causal_mode}"
+            )
         return LeapMemoryState(
             config=LeapMemoryConfig(
                 exit_depth=exit_depth,
-                causal_mode=causal_mode,
+                causal_mode=resolved_causal_mode,
                 max_history_blocks=max_history_blocks,
                 action_horizon=action_horizon,
                 replan_steps=replan_steps,
@@ -216,6 +234,14 @@ class LeapBotVA(FastWAM):
     @staticmethod
     def reset_memory(memory: LeapMemoryState) -> None:
         memory.reset()
+
+    def _validate_memory_compatibility(self, memory: LeapMemoryState) -> None:
+        if memory.config.causal_mode != self.causal_mode:
+            raise ValueError(
+                "memory/model causal mode mismatch: "
+                f"memory={memory.config.causal_mode} model={self.causal_mode}; "
+                "reset and create memory from this model"
+            )
 
     @staticmethod
     def _prompt_fingerprint(
@@ -320,6 +346,7 @@ class LeapBotVA(FastWAM):
             )
         del negative_prompt, text_cfg_scale  # FastWAM release inference uses scale 1.
         self.eval()
+        self._validate_memory_compatibility(memory)
         if action_horizon != memory.config.action_horizon:
             raise ValueError(
                 f"action_horizon must remain {memory.config.action_horizon} for this episode"
@@ -352,6 +379,17 @@ class LeapBotVA(FastWAM):
             timestep_video = torch.zeros(
                 (1,), device=self.device, dtype=first_frame_latents.dtype
             )
+            num_latent_frames = int(first_frame_latents.shape[2])
+            local_video_positions = self.temporal_positions.local_video_rope_ids(
+                num_latent_frames,
+                device=self.device,
+            )
+            absolute_video_blocks = torch.full(
+                (num_latent_frames,),
+                block_index,
+                dtype=torch.long,
+                device=self.device,
+            )
             video_pre = self.video_expert.pre_dit(
                 x=first_frame_latents,
                 timestep=timestep_video,
@@ -361,7 +399,11 @@ class LeapBotVA(FastWAM):
                 fuse_vae_embedding_in_latents=bool(
                     getattr(self.video_expert, "fuse_vae_embedding_in_latents", False)
                 ),
-                frame_position_ids=torch.tensor([block_index], device=self.device),
+                frame_position_ids=local_video_positions,
+            )
+            video_pre = self.temporal_positions.apply_video_pre_dit(
+                video_pre,
+                absolute_video_blocks,
             )
             video_history = memory.materialize(memory.selected_segments_for_video())
             _, video_kv = self.mot.prefill_expert_segment(
@@ -403,9 +445,19 @@ class LeapBotVA(FastWAM):
                 device=rand_device,
                 dtype=torch.float32,
             ).to(device=self.device, dtype=self.torch_dtype)
-            action_positions = torch.arange(
+            absolute_action_positions = torch.arange(
                 memory.next_action_position,
                 memory.next_action_position + action_horizon,
+                device=self.device,
+            )
+            local_action_positions = self.temporal_positions.local_action_rope_ids(
+                action_horizon,
+                device=self.device,
+            )
+            absolute_action_blocks = torch.full(
+                (action_horizon,),
+                block_index,
+                dtype=torch.long,
                 device=self.device,
             )
             history_kv = memory.materialize(memory.selected_segments_for_action())
@@ -428,7 +480,12 @@ class LeapBotVA(FastWAM):
                     timestep=timestep_action,
                     context=context,
                     context_mask=context_mask,
-                    position_ids=action_positions,
+                    position_ids=local_action_positions,
+                )
+                action_pre = self.temporal_positions.apply_action_pre_dit(
+                    action_pre,
+                    absolute_action_positions,
+                    absolute_action_blocks,
                 )
                 action_hidden = self.mot.forward_action_with_history(
                     action_tokens=action_pre["tokens"],
@@ -478,6 +535,7 @@ class LeapBotVA(FastWAM):
         """
 
         self.eval()
+        self._validate_memory_compatibility(memory)
         if actions_model_space.ndim == 2:
             actions_model_space = actions_model_space.unsqueeze(0)
         if actions_model_space.ndim != 3 or actions_model_space.shape[0] != 1:
@@ -498,9 +556,19 @@ class LeapBotVA(FastWAM):
         t0 = time.perf_counter()
         try:
             actions = actions_model_space.to(device=self.device, dtype=self.torch_dtype)
-            positions = torch.arange(
+            absolute_positions = torch.arange(
                 memory.next_action_position,
                 memory.next_action_position + executed,
+                device=self.device,
+            )
+            local_positions = self.temporal_positions.local_action_rope_ids(
+                executed,
+                device=self.device,
+            )
+            absolute_blocks = torch.full(
+                (executed,),
+                memory.completed_blocks,
+                dtype=torch.long,
                 device=self.device,
             )
             timestep = torch.zeros((1,), device=self.device, dtype=actions.dtype)
@@ -509,7 +577,12 @@ class LeapBotVA(FastWAM):
                 timestep=timestep,
                 context=memory.pending_context,
                 context_mask=memory.pending_context_mask,
-                position_ids=positions,
+                position_ids=local_positions,
+            )
+            action_pre = self.temporal_positions.apply_action_pre_dit(
+                action_pre,
+                absolute_positions,
+                absolute_blocks,
             )
             history_kv = memory.materialize(memory.selected_segments_for_action())
             if history_kv is None:
@@ -530,7 +603,7 @@ class LeapBotVA(FastWAM):
                 KVSegment(
                     modality="action",
                     block_index=memory.completed_blocks,
-                    positions=positions,
+                    positions=absolute_positions,
                     keys=[item["k"] for item in action_kv],
                     values=[item["v"] for item in action_kv],
                 )
@@ -553,6 +626,7 @@ class LeapBotVA(FastWAM):
             "mot": self.mot.state_dict(),
             "action_exit_heads": self.action_exit_heads.state_dict(),
             "video_exit_heads": self.video_exit_heads.state_dict(),
+            "temporal_positions": self.temporal_positions.state_dict(),
             "exit_depths": self.exit_depths,
             "training_exit_depths": self.training_exit_depths,
             "causal_mode": self.causal_mode,
@@ -597,6 +671,16 @@ class LeapBotVA(FastWAM):
                     f"checkpoint enabled={checkpoint_lora_enabled}, "
                     f"model enabled={self.video_lora_config.enabled}"
                 )
+        if "temporal_positions" in payload:
+            self.temporal_positions.load_state_dict(
+                payload["temporal_positions"],
+                strict=True,
+            )
+        else:
+            # Loading an original FastWAM checkpoint must always restore the
+            # identity extension, even if this model instance was previously
+            # used with trained temporal-position weights.
+            self.temporal_positions.reset_parameters()
         trained_exits = tuple(int(depth) for depth in payload.get("training_exit_depths", ()))
         has_trained_shallow_exits = any(depth != self.mot.num_layers for depth in trained_exits)
         if "action_exit_heads" in payload and has_trained_shallow_exits:

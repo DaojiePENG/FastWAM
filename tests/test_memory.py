@@ -59,6 +59,21 @@ def test_next_observation_is_rejected_until_action_commit():
         state.begin_observation()
 
 
+def test_partial_action_commit_requires_episode_reset_before_next_observation():
+    state = _state()
+    context = torch.zeros(1, 2, 3)
+    mask = torch.ones(1, 2, dtype=torch.bool)
+    state.append_observation(
+        _segment("video", 0, [0]), context=context, context_mask=mask
+    )
+    state.append_actions(_segment("action", 0, range(4)))
+    assert state.next_action_position == 4
+    with pytest.raises(RuntimeError, match="partial action commit is terminal"):
+        state.begin_observation()
+    state.reset()
+    assert state.begin_observation() == 0
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_modalities"),
     [
@@ -84,7 +99,7 @@ def test_capacity_is_measured_in_completed_replan_blocks():
     state.append_observation(
         _segment("video", 0, [0]), context=context, context_mask=mask
     )
-    state.append_actions(_segment("action", 0, [0]))
+    state.append_actions(_segment("action", 0, range(10)))
     with pytest.raises(RuntimeError, match="capacity exceeded"):
         state.begin_observation()
 

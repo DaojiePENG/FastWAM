@@ -166,6 +166,20 @@ class LeapMemoryState:
     def begin_observation(self) -> int:
         if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
             raise RuntimeError("executed actions must be committed before the next observation")
+        if (
+            self.segments
+            and self.segments[-1].modality == "action"
+            and self.segments[-1].num_tokens != self.config.replan_steps
+        ):
+            raise RuntimeError(
+                "a partial action commit is terminal for the current training contract; "
+                "reset memory before starting another observation"
+            )
+        if self.next_action_position != self.completed_blocks * self.config.replan_steps:
+            raise RuntimeError(
+                "episode action positions diverged from fixed replanning boundaries; "
+                "reset memory before continuing"
+            )
         if self.completed_blocks >= self.config.max_history_blocks:
             raise RuntimeError(
                 "episode KV capacity exceeded: "

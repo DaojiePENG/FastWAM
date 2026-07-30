@@ -154,6 +154,30 @@ def summarize_paired_variant_delta(
     }
 
 
+def local_rope_history_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    """Keep the complete history while restoring FastWAM-local RoPE origins.
+
+    The causal order and every historical observation/action tensor remain
+    unchanged. Only the episode-absolute position fields are reset, so the
+    current real frame/action chunk has the same RoPE coordinates as native
+    FastWAM. Comparing this variant with native measures prefix-content and
+    shared-softmax effects without cross-modal absolute-position drift.
+    """
+
+    required = (
+        "history_block_positions",
+        "current_block_position",
+        "episode_step",
+    )
+    missing = [key for key in required if key not in sample]
+    if missing:
+        raise KeyError(f"missing temporal position fields: {missing}")
+    result = dict(sample)
+    for key in required:
+        result[key] = torch.zeros_like(sample[key])
+    return result
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -181,6 +205,7 @@ def _evaluate_checkpoint(
     device: str,
     noise_seed: int,
     include_native: bool,
+    include_legacy_position_variants: bool,
 ) -> dict[str, Any]:
     logger.info("Loading checkpoint %s from %s", label, checkpoint)
     model = instantiate(cfg.model, model_dtype=dtype, device=device)
@@ -191,6 +216,7 @@ def _evaluate_checkpoint(
     model.requires_grad_(False)
 
     records: list[dict[str, Any]] = []
+    local_rope_history_records: list[dict[str, Any]] = []
     absolute_no_history_records: list[dict[str, Any]] = []
     native_records: list[dict[str, Any]] = []
     torch.cuda.empty_cache()
@@ -234,33 +260,59 @@ def _evaluate_checkpoint(
         }
         records.append(record)
 
-        # Retain the current observation/action absolute positions while
-        # removing every historical K/V segment.  Comparing this with native
-        # FastWAM isolates temporal-RoPE extrapolation; comparing full history
-        # with this variant isolates the effect of adding historical content.
-        absolute_no_history_sample = dict(sample)
-        absolute_no_history_sample["history_valid_blocks"] = torch.zeros_like(
-            sample["history_valid_blocks"]
-        )
-        absolute_loss, absolute_metrics, absolute_elapsed_s = evaluate(
-            lambda active_model, _active_sample: active_model.training_loss(
-                absolute_no_history_sample
+        if include_legacy_position_variants:
+            if model.history_training_mode != "incremental_detached_prefix":
+                raise ValueError(
+                    "legacy position variants require incremental_detached_prefix; "
+                    "they deliberately mutate episode metadata and are only for "
+                    "auditing the retired global-RoPE implementation"
+                )
+            # Retired implementation diagnostic: keep every historical tensor
+            # but reset the old absolute RoPE fields.
+            local_rope_sample = local_rope_history_sample(sample)
+            local_rope_loss, local_rope_metrics, local_rope_elapsed_s = evaluate(
+                lambda active_model, _active_sample: active_model.training_loss(
+                    local_rope_sample
+                )
             )
-        )
-        absolute_no_history_records.append(
-            {
-                **selection,
-                "noise_seed": sample_seed,
-                "loss": absolute_loss,
-                "loss_video": float(
-                    absolute_metrics[f"loss_video_d{model.mot.num_layers}"]
-                ),
-                "loss_action": float(
-                    absolute_metrics[f"loss_action_d{model.mot.num_layers}"]
-                ),
-                "elapsed_s": float(absolute_elapsed_s),
-            }
-        )
+            local_rope_history_records.append(
+                {
+                    **selection,
+                    "noise_seed": sample_seed,
+                    "loss": local_rope_loss,
+                    "loss_video": float(
+                        local_rope_metrics[f"loss_video_d{model.mot.num_layers}"]
+                    ),
+                    "loss_action": float(
+                        local_rope_metrics[f"loss_action_d{model.mot.num_layers}"]
+                    ),
+                    "elapsed_s": float(local_rope_elapsed_s),
+                }
+            )
+
+            absolute_no_history_sample = dict(sample)
+            absolute_no_history_sample["history_valid_blocks"] = torch.zeros_like(
+                sample["history_valid_blocks"]
+            )
+            absolute_loss, absolute_metrics, absolute_elapsed_s = evaluate(
+                lambda active_model, _active_sample: active_model.training_loss(
+                    absolute_no_history_sample
+                )
+            )
+            absolute_no_history_records.append(
+                {
+                    **selection,
+                    "noise_seed": sample_seed,
+                    "loss": absolute_loss,
+                    "loss_video": float(
+                        absolute_metrics[f"loss_video_d{model.mot.num_layers}"]
+                    ),
+                    "loss_action": float(
+                        absolute_metrics[f"loss_action_d{model.mot.num_layers}"]
+                    ),
+                    "elapsed_s": float(absolute_elapsed_s),
+                }
+            )
 
         if include_native:
             native_loss, native_metrics, native_elapsed_s = evaluate(FastWAM.training_loss)
@@ -296,20 +348,36 @@ def _evaluate_checkpoint(
         ),
         "records": records,
         "summary": summarize_records(records),
-        "absolute_no_history_records": absolute_no_history_records,
-        "absolute_no_history_summary": summarize_records(
-            absolute_no_history_records
-        ),
-        "full_minus_absolute_no_history": summarize_paired_variant_delta(
-            records, absolute_no_history_records
-        ),
     }
+    if include_legacy_position_variants:
+        result.update(
+            {
+                "local_rope_history_records": local_rope_history_records,
+                "local_rope_history_summary": summarize_records(
+                    local_rope_history_records
+                ),
+                "absolute_no_history_records": absolute_no_history_records,
+                "absolute_no_history_summary": summarize_records(
+                    absolute_no_history_records
+                ),
+                "full_minus_absolute_no_history": summarize_paired_variant_delta(
+                    records, absolute_no_history_records
+                ),
+                "full_minus_local_rope_history": summarize_paired_variant_delta(
+                    records, local_rope_history_records
+                ),
+            }
+        )
     if native_records:
         result["native_records"] = native_records
         result["native_summary"] = summarize_records(native_records)
-        result["absolute_no_history_minus_native"] = summarize_paired_variant_delta(
-            absolute_no_history_records, native_records
-        )
+        if include_legacy_position_variants:
+            result["absolute_no_history_minus_native"] = summarize_paired_variant_delta(
+                absolute_no_history_records, native_records
+            )
+            result["local_rope_history_minus_native"] = summarize_paired_variant_delta(
+                local_rope_history_records, native_records
+            )
 
     del model
     gc.collect()
@@ -417,6 +485,9 @@ def run_audit(cfg: DictConfig) -> dict[str, Any]:
                 device=device,
                 noise_seed=int(audit.get("noise_seed", int(cfg.seed) + 2_000_000)),
                 include_native=bool(audit.get("include_native", index == 0)),
+                include_legacy_position_variants=bool(
+                    audit.get("include_legacy_position_variants", False)
+                ),
             )
         )
 
