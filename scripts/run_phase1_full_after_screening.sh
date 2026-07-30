@@ -8,7 +8,8 @@ TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/phase1_h8_d30_e1_bs32}"
 EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/phase1_h8_d30_e1_bs32_dev10}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 FINAL_STEP="${FINAL_STEP:-892}"
-GRAD_ACCUM="${GRAD_ACCUM:-16}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 SAVE_EVERY="${SAVE_EVERY:-223}"
 WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and-techn}"
 WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
@@ -66,7 +67,7 @@ run_mode() {
         resume_path="$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt"
     fi
 
-    log "start full training mode=$mode gpus=$gpu_pair effective_batch=$((2 * GRAD_ACCUM)) resume=$resume_path"
+    log "start full training mode=$mode gpus=$gpu_pair micro_batch=$BATCH_SIZE effective_batch=$((2 * BATCH_SIZE * GRAD_ACCUM)) resume=$resume_path"
     CUDA_VISIBLE_DEVICES="$gpu_pair" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
@@ -96,7 +97,7 @@ run_mode() {
         max_steps=null \
         num_epochs=1 \
         "gradient_accumulation_steps=$GRAD_ACCUM" \
-        batch_size=1 \
+        "batch_size=$BATCH_SIZE" \
         num_workers=4 \
         log_every=10 \
         "save_every=$SAVE_EVERY" \
