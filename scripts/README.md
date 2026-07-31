@@ -8,7 +8,9 @@
 按正式流水线顺序：
 
 1. `screen_learning_rate.sh`：两个学习率的全历史配对筛选。
-2. `audit_learning_rate.sh`：固定样本/噪声审计并生成 LR 选择 manifest。
+2. LR 选择二选一：
+   - `audit_learning_rate.sh`：固定样本/噪声审计并生成统计选择 manifest；
+   - `select_learning_rate.sh`：记录用户明确指定的 LR，不运行也不冒充统计审计。
 3. `screen_h0_retention.sh`：比较真实 episode-start 样本的 x1/x4 采样。
 4. `audit_h0_retention.sh`：生成 H0 选择 manifest。
 5. `train_causal_modes.sh`：从相同 FastWAM 权重训练三种 D30 causal mode；
@@ -22,6 +24,9 @@
 按需入口：
 
 - `train_leapbot.sh`：单个模式的 canonical ZeRO-2 训练器；其他正式训练入口最终调用它。
+- `select_learning_rate.sh`：只校验被选候选的完整 step100 checkpoint、DeepSpeed
+  state 和自描述 run identity。候选只能是 `1.0e-5/1.0e-4`；必须显式填写选择理由和
+  用户说明。未被选择且已终止的候选不是输入。
 - `evaluate_checkpoint.sh`：评测一个 LeapBot checkpoint。
 - `evaluate_fastwam_baseline.sh`：评测 FastWAM release baseline。
 - `precompute_text_embeds.py`：正式训练前生成 T5 prompt cache。
@@ -49,7 +54,8 @@ run-contract 和 checkpoint 验收保护。
   `verify_text_cache_provenance.py`：固定并验证数据、权重、VAE 与 T5 cache 身份。
 - `validate_leapbot_checkpoint.py`、`validate_run_contract_group.py`、
   `build_eval_fingerprint.py`：阻止跨配置混用 checkpoint 或评测结果。
-- `history_audit_selection.py`、`history_stratified_loss.py`：固定噪声历史审计与选择报告。
+- `history_audit_selection.py`、`history_stratified_loss.py`：固定噪声历史审计、选择
+  manifest 及显式 `user_directed` 决策的严格校验。两种 basis 在 manifest 中明确区分。
 - `full_prefix_smoke.py`、`validate_real_6b_runtime_training_equivalence.py`：
   验证完整历史训练和在线 KV 路径的数值等价性。
 - `probe_zero2_high_history_capacity.py`：上述 8 卡容量入口的 Hydra/Trainer

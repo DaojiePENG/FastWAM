@@ -11,6 +11,8 @@ SELECTED_LR="$("$ROOT_DIR/.venv/bin/python" \
     "$ROOT_DIR/scripts/history_audit_selection.py" validate \
     --manifest "$LR_SELECTION_MANIFEST" \
     --expected-kind learning_rate \
+    --allowed-basis fixed_noise_audit \
+    --allowed-basis user_directed \
     --selected-value-only)"
 FINAL_STEP="${FINAL_STEP:-100}"
 GPU_ID="${GPU_ID:-0}"

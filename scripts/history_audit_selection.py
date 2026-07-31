@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
-"""Create and validate deterministic selections from fixed-noise history audits."""
+"""Create and validate fixed-audit or explicitly user-directed selections."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MANIFEST_KIND = "history_audit_selection_manifest"
 AUDIT_KIND = "paired_history_stratified_loss_audit"
+FIXED_NOISE_AUDIT_BASIS = "fixed_noise_audit"
+USER_DIRECTED_BASIS = "user_directed"
+SELECTION_BASES = frozenset({FIXED_NOISE_AUDIT_BASIS, USER_DIRECTED_BASIS})
 REQUIRED_HISTORY_VARIANTS = frozenset({"correct", "masked", "shuffled"})
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_REVISION = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+FULL_GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+USER_DIRECTED_LR_CANDIDATES = ("1.0e-5", "1.0e-4")
+USER_DIRECTED_FINAL_STEP = 100
 ABLATION_FIELDS = {
     "learning_rate": "learning_rate",
     "initial_block_oversample": "initial_block_oversample",
@@ -37,6 +46,20 @@ NATIVE_H0_MSE_PATH = (
 
 class SelectionValidationError(ValueError):
     """Raised when an audit, contract, or manifest cannot be trusted."""
+
+
+def _checkpoint_validator():
+    """Load the canonical checkpoint validator without making scripts a package."""
+
+    path = Path(__file__).with_name("validate_leapbot_checkpoint.py")
+    spec = importlib.util.spec_from_file_location(
+        "leapbot_user_directed_checkpoint_validator", path
+    )
+    if spec is None or spec.loader is None:
+        raise SelectionValidationError(f"cannot load checkpoint validator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.validate_checkpoint
 
 
 def sha256_file(path: Path) -> str:
@@ -345,6 +368,138 @@ def _read_contract(path: Path) -> tuple[dict[str, str], str, str]:
     return values, sha256_file(path), payload_sha
 
 
+def _validated_utc_timestamp(raw: str) -> str:
+    if not isinstance(raw, str) or UTC_TIMESTAMP.fullmatch(raw) is None:
+        raise SelectionValidationError(
+            "selected_at_utc must use the canonical YYYY-MM-DDTHH:MM:SSZ format"
+        )
+    try:
+        datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as error:
+        raise SelectionValidationError(f"invalid selected_at_utc: {raw!r}") from error
+    return raw
+
+
+def _nonempty_decision_text(raw: str, *, label: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise SelectionValidationError(f"{label} must be a non-empty string")
+    if raw != raw.strip():
+        raise SelectionValidationError(f"{label} must not have outer whitespace")
+    return raw
+
+
+def _validated_user_directed_source(
+    *,
+    selected_value: str,
+    checkpoint_path: Path,
+    state_dir: Path,
+    contract_path: Path,
+) -> dict[str, Any]:
+    if selected_value not in USER_DIRECTED_LR_CANDIDATES:
+        raise SelectionValidationError(
+            "user-directed learning_rate must be exactly one of "
+            f"{USER_DIRECTED_LR_CANDIDATES}, got {selected_value!r}"
+        )
+
+    checkpoint_path = checkpoint_path.expanduser().resolve()
+    state_dir = state_dir.expanduser().resolve()
+    contract_path = contract_path.expanduser().resolve()
+    run_root = contract_path.parent
+    final_tag = f"step_{USER_DIRECTED_FINAL_STEP:06d}"
+    expected_checkpoint = run_root / "checkpoints" / "weights" / f"{final_tag}.pt"
+    expected_state_dir = run_root / "checkpoints" / "state" / final_tag
+    if contract_path != run_root / "run_contract.txt":
+        raise SelectionValidationError(
+            f"user-directed source must use <run>/run_contract.txt: {contract_path}"
+        )
+    if checkpoint_path != expected_checkpoint.resolve():
+        raise SelectionValidationError(
+            "user-directed source must use the selected run's canonical step100 "
+            f"checkpoint: expected={expected_checkpoint} actual={checkpoint_path}"
+        )
+    if state_dir != expected_state_dir.resolve():
+        raise SelectionValidationError(
+            "user-directed source must use the selected run's canonical step100 "
+            f"state: expected={expected_state_dir} actual={state_dir}"
+        )
+
+    contract, contract_file_sha, payload_sha = _read_contract(contract_path)
+    required_contract = {
+        "mode": "action_aggregator",
+        "num_processes": "4",
+        "batch_size": "10",
+        "gradient_accumulation_steps": "2",
+        "global_batch": "80",
+        "max_steps": str(USER_DIRECTED_FINAL_STEP),
+        "learning_rate": selected_value,
+        "lr_scheduler_type": "constant",
+        "video_lora_multiplier": "1.0",
+        "history_vae_batch_chunk_size": "1",
+        "initial_block_oversample": "1",
+        "save_every": str(USER_DIRECTED_FINAL_STEP),
+        "padding_attention_mask": "true",
+        "history_training_mode": "incremental_full_bptt",
+        "full_episode_history": "true",
+        "max_history_blocks": "70",
+        "replan_steps": "10",
+        "action_horizon": "32",
+        "training_exit_depths": "30",
+    }
+    mismatches = {
+        field: {"expected": expected, "actual": contract.get(field)}
+        for field, expected in required_contract.items()
+        if contract.get(field) != expected
+    }
+    if mismatches:
+        raise SelectionValidationError(
+            f"selected LR screen contract mismatch: {mismatches}"
+        )
+    code_commit = contract.get("code_commit")
+    if not isinstance(code_commit, str) or FULL_GIT_COMMIT.fullmatch(code_commit) is None:
+        raise SelectionValidationError(
+            f"selected LR screen contract has invalid code_commit: {code_commit!r}"
+        )
+
+    try:
+        validation = _checkpoint_validator()(
+            checkpoint_path,
+            expected_step=USER_DIRECTED_FINAL_STEP,
+            expected_mode="action_aggregator",
+            state_dir=state_dir,
+            expected_history_training_mode="incremental_full_bptt",
+            expected_training_strategy="video_lora_action_full",
+            expected_video_lora_multiplier=1.0,
+            expected_replan_steps=10,
+            expected_action_horizon=32,
+            expected_history_vae_batch_chunk_size=1,
+            expected_trained_exit_depths=(30,),
+            expected_run_contract_sha256=payload_sha,
+            expected_code_commit=code_commit,
+        )
+    except Exception as error:
+        raise SelectionValidationError(
+            "selected LR source is not a complete self-identifying step100 run: "
+            f"{error}"
+        ) from error
+
+    trainer_state_path = state_dir / "trainer_state.json"
+    return {
+        "step": USER_DIRECTED_FINAL_STEP,
+        "code_commit": code_commit,
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "checkpoint_bytes": int(validation["checkpoint_bytes"]),
+        "run_contract": str(contract_path),
+        "run_contract_file_sha256": contract_file_sha,
+        "run_contract_sha256": payload_sha,
+        "state_dir": str(state_dir),
+        "state_file_count": int(validation["state"]["file_count"]),
+        "state_bytes": int(validation["state"]["bytes"]),
+        "trainer_state": str(trainer_state_path),
+        "trainer_state_sha256": sha256_file(trainer_state_path),
+    }
+
+
 def _normalize_ablation_value(kind: str, raw: str) -> tuple[str, Decimal]:
     if kind == "learning_rate":
         try:
@@ -540,6 +695,8 @@ def build_manifest(audit_path: Path, *, kind: str) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "kind": MANIFEST_KIND,
         "selection_kind": kind,
+        "selection_basis": FIXED_NOISE_AUDIT_BASIS,
+        "statistical_audit_performed": True,
         "audit": str(audit_path),
         "audit_sha256": audit_sha,
         "audit_protocol": protocol,
@@ -553,6 +710,91 @@ def build_manifest(audit_path: Path, *, kind: str) -> dict[str, Any]:
     return manifest
 
 
+def build_user_directed_learning_rate_manifest(
+    *,
+    selected_value: str,
+    checkpoint_path: Path,
+    state_dir: Path,
+    contract_path: Path,
+    selection_reason: str,
+    user_selection_note: str,
+    selected_at_utc: str | None = None,
+) -> dict[str, Any]:
+    """Record an explicit user choice without fabricating a statistical audit."""
+
+    selection_reason = _nonempty_decision_text(
+        selection_reason, label="selection_reason"
+    )
+    user_selection_note = _nonempty_decision_text(
+        user_selection_note, label="user_selection_note"
+    )
+    if selected_at_utc is None:
+        selected_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    selected_at_utc = _validated_utc_timestamp(selected_at_utc)
+    source = _validated_user_directed_source(
+        selected_value=selected_value,
+        checkpoint_path=checkpoint_path,
+        state_dir=state_dir,
+        contract_path=contract_path,
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": MANIFEST_KIND,
+        "selection_kind": "learning_rate",
+        "selection_basis": USER_DIRECTED_BASIS,
+        "statistical_audit_performed": False,
+        "allowed_candidate_values": list(USER_DIRECTED_LR_CANDIDATES),
+        "selected_value": selected_value,
+        "selected_at_utc": selected_at_utc,
+        "selection_reason": selection_reason,
+        "user_selection_note": user_selection_note,
+        "selected_checkpoint": source["checkpoint"],
+        "selected_checkpoint_sha256": source["checkpoint_sha256"],
+        "selected_run_contract": source["run_contract"],
+        "selected_run_contract_file_sha256": source["run_contract_file_sha256"],
+        "selected_run_contract_sha256": source["run_contract_sha256"],
+        "source": source,
+        "rule": {
+            "type": "explicit_user_choice",
+            "fixed_noise_learning_rate_audit_skipped": True,
+        },
+        "limitations": {
+            "statistical_learning_rate_comparison_performed": False,
+            "statistical_learning_rate_comparison_claim_supported": False,
+            "statement": (
+                "This manifest records an explicit user choice only; it does not "
+                "support a fixed-noise or statistical learning-rate comparison claim."
+            ),
+        },
+    }
+    manifest["manifest_sha256"] = canonical_json_sha256(manifest)
+    return manifest
+
+
+def create_user_directed_learning_rate_manifest(
+    *,
+    selected_value: str,
+    checkpoint_path: Path,
+    state_dir: Path,
+    contract_path: Path,
+    selection_reason: str,
+    user_selection_note: str,
+    output: Path,
+    selected_at_utc: str | None = None,
+) -> dict[str, Any]:
+    manifest = build_user_directed_learning_rate_manifest(
+        selected_value=selected_value,
+        checkpoint_path=checkpoint_path,
+        state_dir=state_dir,
+        contract_path=contract_path,
+        selection_reason=selection_reason,
+        user_selection_note=user_selection_note,
+        selected_at_utc=selected_at_utc,
+    )
+    atomic_write_json(output, manifest)
+    return manifest
+
+
 def create_manifest(audit_path: Path, *, kind: str, output: Path) -> dict[str, Any]:
     manifest = build_manifest(audit_path, kind=kind)
     atomic_write_json(output, manifest)
@@ -560,7 +802,10 @@ def create_manifest(audit_path: Path, *, kind: str, output: Path) -> dict[str, A
 
 
 def validate_manifest(
-    path: Path, *, expected_kind: str | None = None
+    path: Path,
+    *,
+    expected_kind: str | None = None,
+    allowed_bases: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     path = path.expanduser().resolve()
     manifest = _load_json(path, label="selection manifest")
@@ -573,6 +818,22 @@ def validate_manifest(
             "selection manifest kind mismatch: "
             f"expected={expected_kind!r} actual={manifest.get('selection_kind')!r}"
         )
+    selection_basis = manifest.get("selection_basis")
+    if selection_basis not in SELECTION_BASES:
+        raise SelectionValidationError(
+            f"invalid or missing selection_basis: {selection_basis!r}"
+        )
+    if allowed_bases is not None:
+        invalid_allowed = set(allowed_bases).difference(SELECTION_BASES)
+        if invalid_allowed:
+            raise SelectionValidationError(
+                f"invalid allowed selection bases: {sorted(invalid_allowed)}"
+            )
+        if selection_basis not in allowed_bases:
+            raise SelectionValidationError(
+                "selection basis is not accepted by this consumer: "
+                f"actual={selection_basis!r} allowed={sorted(allowed_bases)}"
+            )
     declared_manifest_sha = manifest.get("manifest_sha256")
     if not isinstance(declared_manifest_sha, str) or HEX_SHA256.fullmatch(
         declared_manifest_sha
@@ -587,21 +848,53 @@ def validate_manifest(
             f"stored={declared_manifest_sha} current={current_manifest_sha}"
         )
 
-    audit_raw = manifest.get("audit")
     kind = manifest.get("selection_kind")
-    if not isinstance(audit_raw, str) or not isinstance(kind, str):
-        raise SelectionValidationError("selection manifest lacks audit/selection_kind")
-    audit_path = Path(audit_raw).expanduser().resolve()
-    if not audit_path.is_file():
-        raise SelectionValidationError(f"manifest audit does not exist: {audit_path}")
-    current_audit_sha = sha256_file(audit_path)
-    if current_audit_sha != manifest.get("audit_sha256"):
-        raise SelectionValidationError(
-            "selection audit SHA256 mismatch: "
-            f"stored={manifest.get('audit_sha256')} current={current_audit_sha}"
+    if not isinstance(kind, str):
+        raise SelectionValidationError("selection manifest lacks selection_kind")
+    if selection_basis == FIXED_NOISE_AUDIT_BASIS:
+        if manifest.get("statistical_audit_performed") is not True:
+            raise SelectionValidationError(
+                "fixed-noise selection must declare statistical_audit_performed=true"
+            )
+        audit_raw = manifest.get("audit")
+        if not isinstance(audit_raw, str):
+            raise SelectionValidationError("fixed-noise selection manifest lacks audit")
+        audit_path = Path(audit_raw).expanduser().resolve()
+        if not audit_path.is_file():
+            raise SelectionValidationError(f"manifest audit does not exist: {audit_path}")
+        current_audit_sha = sha256_file(audit_path)
+        if current_audit_sha != manifest.get("audit_sha256"):
+            raise SelectionValidationError(
+                "selection audit SHA256 mismatch: "
+                f"stored={manifest.get('audit_sha256')} current={current_audit_sha}"
+            )
+        rebuilt = build_manifest(audit_path, kind=kind)
+    else:
+        if kind != "learning_rate":
+            raise SelectionValidationError(
+                "user_directed basis is supported only for learning_rate"
+            )
+        if manifest.get("statistical_audit_performed") is not False:
+            raise SelectionValidationError(
+                "user-directed selection must declare statistical_audit_performed=false"
+            )
+        source = manifest.get("source")
+        if not isinstance(source, dict):
+            raise SelectionValidationError("user-directed manifest lacks source")
+        for field in ("checkpoint", "state_dir", "run_contract"):
+            if not isinstance(source.get(field), str) or not source[field]:
+                raise SelectionValidationError(
+                    f"user-directed manifest source lacks {field}"
+                )
+        rebuilt = build_user_directed_learning_rate_manifest(
+            selected_value=manifest.get("selected_value"),
+            checkpoint_path=Path(source["checkpoint"]),
+            state_dir=Path(source["state_dir"]),
+            contract_path=Path(source["run_contract"]),
+            selection_reason=manifest.get("selection_reason"),
+            user_selection_note=manifest.get("user_selection_note"),
+            selected_at_utc=manifest.get("selected_at_utc"),
         )
-
-    rebuilt = build_manifest(audit_path, kind=kind)
     if manifest != rebuilt:
         raise SelectionValidationError(
             "selection manifest no longer matches its checkpoint/contract inputs"
@@ -617,10 +910,33 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--kind", choices=sorted(ABLATION_FIELDS), required=True)
     create.add_argument("--output", type=Path, required=True)
 
+    user_directed = subparsers.add_parser(
+        "create-user-directed-learning-rate",
+        help="record an explicit LR choice without claiming a statistical audit",
+    )
+    user_directed.add_argument(
+        "--selected-learning-rate",
+        choices=USER_DIRECTED_LR_CANDIDATES,
+        required=True,
+    )
+    user_directed.add_argument("--checkpoint", type=Path, required=True)
+    user_directed.add_argument("--state-dir", type=Path, required=True)
+    user_directed.add_argument("--run-contract", type=Path, required=True)
+    user_directed.add_argument("--selection-reason", required=True)
+    user_directed.add_argument("--user-selection-note", required=True)
+    user_directed.add_argument("--output", type=Path, required=True)
+
     validate = subparsers.add_parser("validate", help="revalidate a manifest")
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--expected-kind", choices=sorted(ABLATION_FIELDS))
+    validate.add_argument(
+        "--allowed-basis",
+        action="append",
+        choices=sorted(SELECTION_BASES),
+        dest="allowed_bases",
+    )
     validate.add_argument("--selected-value-only", action="store_true")
+    validate.add_argument("--selection-basis-only", action="store_true")
     return parser
 
 
@@ -630,9 +946,31 @@ def main() -> None:
         create_manifest(args.audit, kind=args.kind, output=args.output)
         print(args.output.expanduser().resolve())
         return
-    manifest = validate_manifest(args.manifest, expected_kind=args.expected_kind)
+    if args.command == "create-user-directed-learning-rate":
+        create_user_directed_learning_rate_manifest(
+            selected_value=args.selected_learning_rate,
+            checkpoint_path=args.checkpoint,
+            state_dir=args.state_dir,
+            contract_path=args.run_contract,
+            selection_reason=args.selection_reason,
+            user_selection_note=args.user_selection_note,
+            output=args.output,
+        )
+        print(args.output.expanduser().resolve())
+        return
+    if args.selected_value_only and args.selection_basis_only:
+        raise SelectionValidationError(
+            "--selected-value-only and --selection-basis-only are mutually exclusive"
+        )
+    manifest = validate_manifest(
+        args.manifest,
+        expected_kind=args.expected_kind,
+        allowed_bases=(set(args.allowed_bases) if args.allowed_bases else None),
+    )
     if args.selected_value_only:
         print(manifest["selected_value"])
+    elif args.selection_basis_only:
+        print(manifest["selection_basis"])
     else:
         print(args.manifest.expanduser().resolve())
 

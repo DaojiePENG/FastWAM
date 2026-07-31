@@ -8,6 +8,7 @@ def test_canonical_shell_surface_is_executable_and_old_names_are_absent():
     canonical = (
         "train_leapbot.sh",
         "screen_learning_rate.sh",
+        "select_learning_rate.sh",
         "audit_learning_rate.sh",
         "screen_h0_retention.sh",
         "audit_h0_retention.sh",
@@ -168,9 +169,26 @@ def test_h0_retention_screen_consumes_the_selected_lr():
     source = (ROOT / "scripts" / "screen_h0_retention.sh").read_text()
     assert 'LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?' in source
     assert "--expected-kind learning_rate" in source
+    assert "--allowed-basis fixed_noise_audit" in source
+    assert "--allowed-basis user_directed" in source
     assert 'LEARNING_RATE="$SELECTED_LR"' in source
     assert "1.0e-5|1.0e-4" in source
     assert 'LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"' not in source
+
+
+def test_user_directed_lr_entry_validates_only_selected_complete_step100_run():
+    source = (ROOT / "scripts" / "select_learning_rate.sh").read_text()
+    assert 'SELECTED_LR="${SELECTED_LR:-1.0e-4}"' in source
+    assert 'FINAL_STEP="${FINAL_STEP:-100}"' in source
+    assert 'SELECTION_REASON="${SELECTION_REASON:?' in source
+    assert 'USER_SELECTION_NOTE="${USER_SELECTION_NOTE:?' in source
+    assert "create-user-directed-learning-rate" in source
+    assert "--allowed-basis user_directed" in source
+    assert "audit_learning_rate.sh" not in source
+    assert "LOW_CHECKPOINT" not in source
+    assert "HIGH_CHECKPOINT" not in source
+    assert 'run_root="$SCREEN_ROOT/$run_name"' in source
+    assert 'state_dir="$run_root/checkpoints/state/$final_tag"' in source
 
 
 def test_lr_audit_is_fixed_noise_paired_and_runtime_isomorphic():
@@ -193,11 +211,22 @@ def test_lr_audit_is_fixed_noise_paired_and_runtime_isomorphic():
 def test_h0_audit_validates_sampling_factor_and_uses_the_same_draw_contract():
     source = (ROOT / "scripts" / "audit_h0_retention.sh").read_text()
     assert 'LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?' in source
+    assert "--allowed-basis fixed_noise_audit" in source
+    assert "--allowed-basis user_directed" in source
     assert "initial_block_oversample" in source
     assert "[$RELEASE_CHECKPOINT,$X1_CHECKPOINT,$X4_CHECKPOINT]" in source
     assert "[correct,masked,shuffled]" in source
     assert "stratified.fixed_u_values" in source
     assert "--expected-run-contract-sha256" in source
+
+
+def test_causal_training_explicitly_accepts_lr_basis_and_binds_manifest_sha():
+    source = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
+    assert "--allowed-basis fixed_noise_audit" in source
+    assert "--allowed-basis user_directed" in source
+    assert 'LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST"' in source
+    assert 'LR_SELECTION_MANIFEST_SHA256="$LR_SELECTION_MANIFEST_SHA256"' in source
+    assert '"lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256"' in source
 
 
 def test_paired_screen_and_audit_defaults_use_v6_mb10_ga2_identity():

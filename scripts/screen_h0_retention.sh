@@ -14,6 +14,8 @@ SELECTED_LR="$("$ROOT_DIR/.venv/bin/python" \
     "$ROOT_DIR/scripts/history_audit_selection.py" validate \
     --manifest "$LR_SELECTION_MANIFEST" \
     --expected-kind learning_rate \
+    --allowed-basis fixed_noise_audit \
+    --allowed-basis user_directed \
     --selected-value-only)"
 LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST" | awk '{print $1}')"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"

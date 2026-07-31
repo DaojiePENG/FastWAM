@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
+
+from leapbot_va.positions import TEMPORAL_POSITION_SCHEME
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "history_audit_selection.py"
@@ -156,6 +159,92 @@ def _candidate(
         loss_ci=loss_ci,
         native_h0_mse=native_h0_mse,
     )
+
+
+def _write_complete_lr_screen_source(
+    tmp_path: Path,
+    *,
+    learning_rate: str = "1.0e-4",
+    trainer_step: int = 100,
+    checkpoint_contract_sha: str | None = None,
+) -> tuple[Path, Path, Path]:
+    root = tmp_path / ("lr1p0e-4" if learning_rate == "1.0e-4" else "lr1p0e-5")
+    payload_lines = [
+        "code_commit=" + "a" * 40,
+        "release_checkpoint_sha256=" + "b" * 64,
+        "dataset_stats_sha256=" + "c" * 64,
+        "mode=action_aggregator",
+        "num_processes=4",
+        "batch_size=10",
+        "gradient_accumulation_steps=2",
+        "global_batch=80",
+        "max_steps=100",
+        f"learning_rate={learning_rate}",
+        "lr_scheduler_type=constant",
+        "video_lora_multiplier=1.0",
+        "history_vae_batch_chunk_size=1",
+        "initial_block_oversample=1",
+        "save_every=100",
+        "seed=42",
+        "padding_attention_mask=true",
+        "history_training_mode=incremental_full_bptt",
+        "full_episode_history=true",
+        "max_history_blocks=70",
+        "replan_steps=10",
+        "action_horizon=32",
+        "training_exit_depths=30",
+    ]
+    payload_text = "\n".join(payload_lines)
+    contract_sha = hashlib.sha256(payload_text.encode()).hexdigest()
+    contract = root / "run_contract.txt"
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    contract.write_text(
+        f"run_contract_sha256={contract_sha}\n{payload_text}\n", encoding="utf-8"
+    )
+
+    final_tag = "step_000100"
+    checkpoint = root / "checkpoints" / "weights" / f"{final_tag}.pt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_payload = {
+        "step": 100,
+        "causal_mode": "action_aggregator",
+        "history_training_mode": "incremental_full_bptt",
+        "training_strategy": "video_lora_action_full",
+        "training_replan_steps": 10,
+        "training_action_horizon": 32,
+        "temporal_position_scheme": TEMPORAL_POSITION_SCHEME,
+        "history_vae_batch_chunk_size": 1,
+        "training_exit_depths": (30,),
+        "trained_exit_depths": (30,),
+        "run_contract_sha256": checkpoint_contract_sha or contract_sha,
+        "code_commit": "a" * 40,
+        "video_lora_config": {
+            "enabled": True,
+            "rank": 16,
+            "alpha": 16.0,
+            "dropout": 0.0,
+            "learning_rate_multiplier": 1.0,
+        },
+        "mot": {"weight": torch.zeros(1)},
+        "action_exit_heads": {"weight": torch.zeros(1)},
+        "video_exit_heads": {"weight": torch.zeros(1)},
+    }
+    torch.save(checkpoint_payload, checkpoint)
+
+    state_dir = root / "checkpoints" / "state" / final_tag
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "trainer_state.json").write_text(
+        json.dumps(
+            {
+                "global_step": trainer_step,
+                "run_contract_sha256": contract_sha,
+                "code_commit": "a" * 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_dir / "optimizer_state.bin").write_bytes(b"complete-state-shard")
+    return checkpoint, state_dir, contract
 
 
 def test_learning_rate_manifest_selects_minimum_correct_history_loss(tmp_path):
@@ -347,3 +436,143 @@ def test_validate_cli_can_print_only_selected_value(tmp_path):
         stderr=subprocess.PIPE,
     )
     assert completed.stdout == "1e-4\n"
+
+
+def test_user_directed_lr_manifest_is_explicit_non_statistical_and_revalidated(
+    tmp_path,
+):
+    checkpoint, state_dir, contract = _write_complete_lr_screen_source(tmp_path)
+    output = tmp_path / "user_directed_selection.json"
+
+    manifest = selection.create_user_directed_learning_rate_manifest(
+        selected_value="1.0e-4",
+        checkpoint_path=checkpoint,
+        state_dir=state_dir,
+        contract_path=contract,
+        selection_reason="The user explicitly chose the higher screened learning rate.",
+        user_selection_note="User stated that 1p0e-4 was clearly better and skipped the LR audit.",
+        selected_at_utc="2026-07-31T14:00:00Z",
+        output=output,
+    )
+
+    assert manifest["selection_basis"] == "user_directed"
+    assert manifest["statistical_audit_performed"] is False
+    assert manifest["allowed_candidate_values"] == ["1.0e-5", "1.0e-4"]
+    assert manifest["selected_value"] == "1.0e-4"
+    assert manifest["selected_at_utc"] == "2026-07-31T14:00:00Z"
+    assert manifest["source"]["step"] == 100
+    assert manifest["selected_checkpoint_sha256"] == _sha256(checkpoint)
+    assert manifest["selected_run_contract_file_sha256"] == _sha256(contract)
+    assert "audit" not in manifest
+    assert (
+        manifest["limitations"]["statistical_learning_rate_comparison_claim_supported"]
+        is False
+    )
+    assert selection.validate_manifest(
+        output,
+        expected_kind="learning_rate",
+        allowed_bases={"user_directed"},
+    ) == manifest
+    with pytest.raises(selection.SelectionValidationError, match="not accepted"):
+        selection.validate_manifest(
+            output,
+            expected_kind="learning_rate",
+            allowed_bases={"fixed_noise_audit"},
+        )
+
+
+@pytest.mark.parametrize("learning_rate", ["1e-4", "2.0e-4", "1.0e-3"])
+def test_user_directed_lr_rejects_values_outside_exact_screen_candidates(
+    tmp_path, learning_rate
+):
+    checkpoint, state_dir, contract = _write_complete_lr_screen_source(tmp_path)
+    with pytest.raises(selection.SelectionValidationError, match="exactly one of"):
+        selection.build_user_directed_learning_rate_manifest(
+            selected_value=learning_rate,
+            checkpoint_path=checkpoint,
+            state_dir=state_dir,
+            contract_path=contract,
+            selection_reason="Explicit user decision.",
+            user_selection_note="No fixed-noise LR audit was requested.",
+            selected_at_utc="2026-07-31T14:00:00Z",
+        )
+
+
+def test_user_directed_lr_does_not_require_unselected_run_but_rejects_terminated_run(
+    tmp_path,
+):
+    high_checkpoint, high_state, high_contract = _write_complete_lr_screen_source(
+        tmp_path, learning_rate="1.0e-4"
+    )
+    manifest = selection.build_user_directed_learning_rate_manifest(
+        selected_value="1.0e-4",
+        checkpoint_path=high_checkpoint,
+        state_dir=high_state,
+        contract_path=high_contract,
+        selection_reason="Explicit user decision.",
+        user_selection_note="The unselected 1.0e-5 run was stopped.",
+        selected_at_utc="2026-07-31T14:00:00Z",
+    )
+    assert manifest["selected_value"] == "1.0e-4"
+
+    low_checkpoint, low_state, low_contract = _write_complete_lr_screen_source(
+        tmp_path / "terminated", learning_rate="1.0e-5"
+    )
+    low_checkpoint.unlink()
+    with pytest.raises(selection.SelectionValidationError, match="complete self-identifying"):
+        selection.build_user_directed_learning_rate_manifest(
+            selected_value="1.0e-5",
+            checkpoint_path=low_checkpoint,
+            state_dir=low_state,
+            contract_path=low_contract,
+            selection_reason="Invalid attempt.",
+            user_selection_note="A terminated run cannot be selected.",
+            selected_at_utc="2026-07-31T14:00:00Z",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("state_step", "trainer state/checkpoint step mismatch"),
+        ("checkpoint_identity", "run_contract_sha256"),
+    ],
+)
+def test_user_directed_lr_requires_step100_state_and_self_identity(
+    tmp_path, mutation, match
+):
+    checkpoint, state_dir, contract = _write_complete_lr_screen_source(
+        tmp_path,
+        trainer_step=99 if mutation == "state_step" else 100,
+        checkpoint_contract_sha=("f" * 64 if mutation == "checkpoint_identity" else None),
+    )
+    with pytest.raises(selection.SelectionValidationError, match=match):
+        selection.build_user_directed_learning_rate_manifest(
+            selected_value="1.0e-4",
+            checkpoint_path=checkpoint,
+            state_dir=state_dir,
+            contract_path=contract,
+            selection_reason="Explicit user decision.",
+            user_selection_note="The source still requires strict validation.",
+            selected_at_utc="2026-07-31T14:00:00Z",
+        )
+
+
+def test_user_directed_manifest_detects_source_tampering(tmp_path):
+    checkpoint, state_dir, contract = _write_complete_lr_screen_source(tmp_path)
+    output = tmp_path / "selection.json"
+    selection.create_user_directed_learning_rate_manifest(
+        selected_value="1.0e-4",
+        checkpoint_path=checkpoint,
+        state_dir=state_dir,
+        contract_path=contract,
+        selection_reason="Explicit user decision.",
+        user_selection_note="No statistical LR comparison is claimed.",
+        selected_at_utc="2026-07-31T14:00:00Z",
+        output=output,
+    )
+
+    trainer_state = state_dir / "trainer_state.json"
+    trainer_state.write_text(trainer_state.read_text() + "\n", encoding="utf-8")
+    with pytest.raises(selection.SelectionValidationError, match="no longer matches"):
+        selection.validate_manifest(output, allowed_bases={"user_directed"})

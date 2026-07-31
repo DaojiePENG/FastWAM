@@ -310,7 +310,8 @@ bash scripts/screen_learning_rate.sh
 - GPU 0–3：LR `1e-5`；
 - GPU 4–7：LR `1e-4`。
 
-筛选结束后，在一张空闲 GPU 上跑固定噪声审计：
+LR 决策有两条互斥路径。默认、可做统计比较的路径是在一张空闲 GPU 上跑固定噪声
+审计：
 
 ```bash
 export LR_AUDIT_ROOT="$ROOT_DIR/runs/lr_audit_full_history_s100"
@@ -324,6 +325,35 @@ export LR_SELECTION_MANIFEST="$LR_AUDIT_ROOT/learning_rate_selection.json"
 ```
 
 审计覆盖 `H={0,1,4,8,16,32,50}`、correct/masked/cross-episode-shuffled 历史、固定 flow timestep 和固定 Gaussian noise，并用 bootstrap 生成选择 manifest。W&B 上的随机 minibatch loss 只能用于诊断，正式 LR 选择以该固定审计为准。
+
+如果用户明确要求跳过固定噪声 LR audit，可以改用非统计的显式决策入口。例如，用户
+指定 `1.0e-4` 时：
+
+```bash
+export LR_DECISION_ROOT="$ROOT_DIR/runs/lr_selection_user_directed_s100"
+
+SCREEN_ROOT="$LR_SCREEN_ROOT" \
+SELECTED_LR=1.0e-4 \
+FINAL_STEP=100 \
+SELECTION_REASON='The user explicitly selected 1.0e-4 from the online screen.' \
+USER_SELECTION_NOTE='The user judged 1p0e-4 clearly better and requested skipping the fixed-noise LR audit.' \
+OUTPUT_MANIFEST="$LR_DECISION_ROOT/learning_rate_selection.json" \
+bash scripts/select_learning_rate.sh
+
+export LR_SELECTION_MANIFEST="$LR_DECISION_ROOT/learning_rate_selection.json"
+```
+
+`select_learning_rate.sh` 只读取被选 run；不会把未选择或已终止的 `1.0e-5` 当作输入。
+但被选 run 必须有完整且互相一致的 `step_000100.pt`、DeepSpeed `step_000100`
+trainer state、run contract、`code_commit` 和 `run_contract_sha256`。候选值只允许
+`1.0e-5/1.0e-4`，缺少 step100 产物的已终止 run 不能被选择。
+
+这种 manifest 明确记录 `selection_basis=user_directed`、UTC 决策时间、理由、用户说明、
+checkpoint SHA 和 run-contract SHA，同时记录
+`statistical_audit_performed=false`。它只证明“用户选择了哪个完整 checkpoint”，不能用于
+声称 `1.0e-4` 在固定样本/噪声下统计优于 `1.0e-5`。后续 H0 与 causal-mode launcher
+会显式接受该 basis，并把整个 LR manifest 文件的 SHA-256 写入各自 run contract；因此
+决策来源不会在下游丢失或被静默替换。
 
 ### 8.2 H0 保真筛选
 

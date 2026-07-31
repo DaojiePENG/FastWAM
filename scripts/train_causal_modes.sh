@@ -16,11 +16,14 @@ SELECTED_LR="$("$ROOT_DIR/.venv/bin/python" \
     "$ROOT_DIR/scripts/history_audit_selection.py" validate \
     --manifest "$LR_SELECTION_MANIFEST" \
     --expected-kind learning_rate \
+    --allowed-basis fixed_noise_audit \
+    --allowed-basis user_directed \
     --selected-value-only)"
 INITIAL_BLOCK_OVERSAMPLE="$("$ROOT_DIR/.venv/bin/python" \
     "$ROOT_DIR/scripts/history_audit_selection.py" validate \
     --manifest "$H0_SELECTION_MANIFEST" \
     --expected-kind initial_block_oversample \
+    --allowed-basis fixed_noise_audit \
     --selected-value-only)"
 LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST" | awk '{print $1}')"
 H0_SELECTION_MANIFEST_SHA256="$(sha256sum "$H0_SELECTION_MANIFEST" | awk '{print $1}')"
