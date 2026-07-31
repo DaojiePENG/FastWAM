@@ -33,6 +33,7 @@ class ResumableEpochSampler(Sampler[int]):
         self.epoch_offset = 0
         self.resume_batch_offset = 0
         self._grouping_lengths = self._read_grouping_lengths(dataset)
+        self._anchor_flags = self._read_anchor_flags(dataset)
 
     @staticmethod
     def _read_grouping_lengths(dataset: Sized) -> tuple[int, ...] | None:
@@ -67,6 +68,40 @@ class ResumableEpochSampler(Sampler[int]):
             raise ValueError("sampler grouping lengths must be non-negative")
         return normalized
 
+    @staticmethod
+    def _read_anchor_flags(dataset: Sized) -> tuple[bool, ...] | None:
+        """Read an optional optimizer-step anchor classification.
+
+        LeapBot exposes genuine episode-start (H0) samples as anchors.  When
+        present, every distributed micro-batch contains the dataset-wide anchor
+        proportion instead of placing all H0 examples into length-homogeneous
+        batches.  With gradient accumulation this is stronger than the required
+        optimizer-step guarantee because every constituent micro-batch is mixed.
+        """
+
+        getter = getattr(dataset, "sampler_anchor_flags", None)
+        if getter is None:
+            return None
+        if not callable(getter):
+            raise TypeError("dataset.sampler_anchor_flags must be callable")
+        values = getter()
+        if values is None:
+            return None
+        if not isinstance(values, Sequence):
+            raise TypeError("sampler_anchor_flags() must return a sequence or None")
+        if len(values) != len(dataset):
+            raise ValueError(
+                "sampler anchor flag count must match dataset length: "
+                f"{len(values)} != {len(dataset)}"
+            )
+        normalized = tuple(bool(value) for value in values)
+        anchor_count = sum(normalized)
+        if anchor_count == 0 or anchor_count == len(normalized):
+            raise ValueError(
+                "sampler anchor flags must contain both anchor and non-anchor samples"
+            )
+        return normalized
+
     def set_epoch(self, epoch: int):
         self.epoch = int(epoch)
 
@@ -79,7 +114,219 @@ class ResumableEpochSampler(Sampler[int]):
     def clear_resume_batch_offset(self):
         self.resume_batch_offset = 0
 
+    def anchor_batch_contract(self) -> dict[str, int | float] | None:
+        """Return the deterministic H0/global-batch composition, if enabled."""
+
+        if self._anchor_flags is None:
+            return None
+        global_batch_size = self.batch_size * self.num_processes
+        anchor_count = sum(self._anchor_flags)
+        anchor_per_global_batch = int(
+            round(global_batch_size * anchor_count / len(self._anchor_flags))
+        )
+        anchor_per_global_batch = min(
+            global_batch_size - 1,
+            max(1, anchor_per_global_batch),
+        )
+        return {
+            "dataset_anchor_count": anchor_count,
+            "dataset_non_anchor_count": len(self._anchor_flags) - anchor_count,
+            "anchor_per_global_micro_batch": anchor_per_global_batch,
+            "non_anchor_per_global_micro_batch": (
+                global_batch_size - anchor_per_global_batch
+            ),
+            "effective_anchor_fraction": (
+                anchor_per_global_batch / global_batch_size
+            ),
+        }
+
+    @staticmethod
+    def _cyclic_slice(values: list[int], offset: int, count: int) -> list[int]:
+        if not values:
+            raise ValueError("cannot draw from an empty sampler pool")
+        return [values[(offset + index) % len(values)] for index in range(count)]
+
+    def _group_non_anchor_indices(
+        self,
+        indices: list[int],
+        *,
+        global_non_anchor_batch_size: int,
+        generator: torch.Generator,
+    ) -> list[int]:
+        """Group only the expensive H>0 pool while preserving random batches."""
+
+        if self._grouping_lengths is None:
+            return indices
+        mega_bucket_size = (
+            global_non_anchor_batch_size * self.LENGTH_BUCKET_GLOBAL_BATCHES
+        )
+        chunks: list[list[int]] = []
+        tail: list[int] = []
+        for mega_offset in range(0, len(indices), mega_bucket_size):
+            mega_bucket = indices[mega_offset : mega_offset + mega_bucket_size]
+            mega_bucket.sort(key=self._grouping_lengths.__getitem__)
+            complete_count = len(mega_bucket) // global_non_anchor_batch_size
+            for offset in range(
+                0,
+                complete_count * global_non_anchor_batch_size,
+                global_non_anchor_batch_size,
+            ):
+                chunks.append(
+                    mega_bucket[offset : offset + global_non_anchor_batch_size]
+                )
+            remainder = mega_bucket[
+                complete_count * global_non_anchor_batch_size :
+            ]
+            if remainder:
+                if tail:
+                    raise RuntimeError(
+                        "only the final non-anchor length mega-bucket may have a tail"
+                    )
+                tail = remainder
+        if tail:
+            # Repeat only from the same sorted tail.  Letting a short tail wrap
+            # into the first randomly shuffled chunk would create one accidental
+            # H-small/H-large global batch and a severe distributed straggler.
+            padded_tail = [
+                tail[index % len(tail)]
+                for index in range(global_non_anchor_batch_size)
+            ]
+            chunks.append(padded_tail)
+            tail = []
+        if chunks:
+            chunk_order = torch.randperm(
+                len(chunks), generator=generator
+            ).tolist()
+            ordered = [
+                index
+                for chunk_index in chunk_order
+                for index in chunks[chunk_index]
+            ]
+        else:
+            ordered = []
+        ordered.extend(tail)
+        return ordered
+
+    def _anchored_epoch_indices(self, generator: torch.Generator) -> list[int]:
+        """Build full distributed batches containing both H0 and H>0 samples."""
+
+        if self._anchor_flags is None:
+            raise RuntimeError("anchored epoch requested without anchor metadata")
+        permutation = torch.randperm(
+            len(self.dataset), generator=generator
+        ).tolist()
+        anchors = [index for index in permutation if self._anchor_flags[index]]
+        non_anchors = [
+            index for index in permutation if not self._anchor_flags[index]
+        ]
+        global_batch_size = self.batch_size * self.num_processes
+        anchor_per_global_batch = int(
+            round(global_batch_size * len(anchors) / len(permutation))
+        )
+        anchor_per_global_batch = min(
+            global_batch_size - 1,
+            max(1, anchor_per_global_batch),
+        )
+        non_anchor_per_global_batch = (
+            global_batch_size - anchor_per_global_batch
+        )
+        non_anchors = self._group_non_anchor_indices(
+            non_anchors,
+            global_non_anchor_batch_size=non_anchor_per_global_batch,
+            generator=generator,
+        )
+        num_global_batches = max(
+            (len(anchors) + anchor_per_global_batch - 1)
+            // anchor_per_global_batch,
+            (len(non_anchors) + non_anchor_per_global_batch - 1)
+            // non_anchor_per_global_batch,
+        )
+        accumulation_remainder = (
+            num_global_batches % self.gradient_accumulation_steps
+        )
+        if accumulation_remainder:
+            num_global_batches += (
+                self.gradient_accumulation_steps - accumulation_remainder
+            )
+
+        ordered: list[int] = []
+        anchor_offset = 0
+        non_anchor_offset = 0
+        for batch_index in range(num_global_batches):
+            batch_anchors = self._cyclic_slice(
+                anchors, anchor_offset, anchor_per_global_batch
+            )
+            batch_non_anchors = self._cyclic_slice(
+                non_anchors,
+                non_anchor_offset,
+                non_anchor_per_global_batch,
+            )
+            anchor_offset += anchor_per_global_batch
+            non_anchor_offset += non_anchor_per_global_batch
+
+            base_anchor_count, extra_anchor_ranks = divmod(
+                anchor_per_global_batch, self.num_processes
+            )
+            rank_anchor_counts = [base_anchor_count] * self.num_processes
+            for extra_index in range(extra_anchor_ranks):
+                rank_anchor_counts[
+                    (batch_index + extra_index) % self.num_processes
+                ] += 1
+            rank_non_anchor_capacities = [
+                self.batch_size - count for count in rank_anchor_counts
+            ]
+            if any(capacity <= 0 for capacity in rank_non_anchor_capacities):
+                raise RuntimeError(
+                    "anchor allocation left a rank without a non-anchor sample"
+                )
+
+            rank_anchor_bins: list[list[int]] = [
+                [] for _ in range(self.num_processes)
+            ]
+            anchor_cursor = 0
+            for rank, count in enumerate(rank_anchor_counts):
+                rank_anchor_bins[rank].extend(
+                    batch_anchors[anchor_cursor : anchor_cursor + count]
+                )
+                anchor_cursor += count
+
+            if self._grouping_lengths is not None:
+                batch_non_anchors.sort(
+                    key=self._grouping_lengths.__getitem__, reverse=True
+                )
+            rank_non_anchor_bins: list[list[int]] = [
+                [] for _ in range(self.num_processes)
+            ]
+            rank_cursor = batch_index % self.num_processes
+            for index in batch_non_anchors:
+                for _ in range(self.num_processes):
+                    rank = rank_cursor % self.num_processes
+                    rank_cursor += 1
+                    if (
+                        len(rank_non_anchor_bins[rank])
+                        < rank_non_anchor_capacities[rank]
+                    ):
+                        rank_non_anchor_bins[rank].append(index)
+                        break
+                else:
+                    raise RuntimeError("non-anchor rank allocation overflowed")
+
+            for rank in range(self.num_processes):
+                local_batch = [
+                    *rank_anchor_bins[rank],
+                    *rank_non_anchor_bins[rank],
+                ]
+                if len(local_batch) != self.batch_size:
+                    raise RuntimeError(
+                        "anchored sampler produced an incomplete local batch: "
+                        f"rank={rank} size={len(local_batch)} expected={self.batch_size}"
+                    )
+                ordered.extend(local_batch)
+        return ordered
+
     def _epoch_indices(self, generator: torch.Generator) -> list[int]:
+        if self._anchor_flags is not None:
+            return self._anchored_epoch_indices(generator)
         indices = torch.randperm(len(self.dataset), generator=generator).tolist()
         if self._grouping_lengths is None:
             return indices
@@ -156,6 +403,34 @@ class ResumableEpochSampler(Sampler[int]):
         return iter(indices)
 
     def __len__(self) -> int:
+        if self._anchor_flags is not None:
+            global_batch_size = self.batch_size * self.num_processes
+            anchor_count = sum(self._anchor_flags)
+            anchor_per_global_batch = int(
+                round(global_batch_size * anchor_count / len(self._anchor_flags))
+            )
+            anchor_per_global_batch = min(
+                global_batch_size - 1,
+                max(1, anchor_per_global_batch),
+            )
+            non_anchor_count = len(self._anchor_flags) - anchor_count
+            non_anchor_per_global_batch = (
+                global_batch_size - anchor_per_global_batch
+            )
+            num_global_batches = max(
+                (anchor_count + anchor_per_global_batch - 1)
+                // anchor_per_global_batch,
+                (non_anchor_count + non_anchor_per_global_batch - 1)
+                // non_anchor_per_global_batch,
+            )
+            accumulation_remainder = (
+                num_global_batches % self.gradient_accumulation_steps
+            )
+            if accumulation_remainder:
+                num_global_batches += (
+                    self.gradient_accumulation_steps - accumulation_remainder
+                )
+            return num_global_batches * global_batch_size
         if self._grouping_lengths is None:
             return len(self.dataset)
         global_optimizer_batch_size = (

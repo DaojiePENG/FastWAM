@@ -22,11 +22,11 @@ GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 BATCH_SIZE="${BATCH_SIZE:-20}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MAX_STEPS="${MAX_STEPS:-5000}"
-LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
+LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
-INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-1}"
+INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"
 TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29971}"
@@ -256,6 +256,7 @@ contract_fields+=( \
     "video_lora_multiplier=$VIDEO_LORA_MULTIPLIER" \
     "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
     "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
+    "h0_anchor_mixing=per_global_micro_batch" \
     "save_every=$SAVE_EVERY" \
     "seed=$SEED" \
     "padding_attention_mask=true" \
@@ -315,7 +316,7 @@ else
 fi
 
 preflight_gpus
-log "start incremental full-BPTT PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE topology=$TOPOLOGY_TAG gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
+log "start incremental full-BPTT PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE topology=$TOPOLOGY_TAG gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE h0_anchor_mixing=per_global_micro_batch resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \

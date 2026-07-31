@@ -380,12 +380,17 @@ export H0_SELECTION_MANIFEST="$H0_AUDIT_ROOT/initial_block_oversample_selection.
 ### 8.3 三种 D30 causal 模式候选正式训练
 
 先按第 10.1 节在准备运行的 causal mode 上完成 B20 容量探针。通过后，固定数据
-`x1` 有 28,523 个 replan 样本，因此每 epoch 为
-`ceil(28523 / 160) = 179` 个 optimizer steps；五个等计算量 epoch 的预算为
-`895` steps，每 179 steps 保存一次。若 H0 审计选择 `x4`，正式三模式仍统一跑
+`x1` 有 28,523 个 replan 样本，因此原始等计算量 epoch 为
+`ceil(28523 / 160) = 179` 个 optimizer steps；五个 epoch 的预算为 `895`
+steps，每 179 steps 保存一次。正式训练采用真实 H0 `x4`，但仍统一跑
 `895` optimizer steps，而不是按扩增后的数据长度重算“五个 augmented epochs”。
-这样三种 mode 的 optimizer update、global batch 和总计算预算完全一致；`x4` 只
-改变抽样分布。
+
+`ResumableEpochSampler` 会把 x4 后的数据级 H0 比例固定混入每一个 global
+micro-batch；在 8×B20 下约为 33 个 H0 与 127 个完整 H>0 样本。每个 rank
+均同时含 H0/H>0，因此 GA1 的每次 optimizer update 都获得两类梯度。H>0 样本
+仍携带从 episode 开始的全部 GT 观测、动作与 proprio，不进行历史截断、mask
+或模型生成动作替换。长度分组只在 H>0 池内部进行，以继续控制分布式 straggler。
+这样三种 mode 的 optimizer update、global batch 和总计算预算完全一致。
 
 ```bash
 export CAUSAL_TRAIN_ROOT="$ROOT_DIR/runs/causal_full_history_d30_b20_ga1_s895_seed42"
@@ -741,6 +746,11 @@ bash scripts/train_leapbot.sh
 ### action loss 不能和 FastWAM 曲线直接对齐
 
 `train/loss_action_d30` 只有在相同样本、历史、noise、flow timestep、mask、global batch 和权重初始化下才可直接做数值归因。全历史训练的随机 W&B step 与 FastWAM H0 reference 不满足这些条件。保真比较应使用 `audit_learning_rate.sh`/`audit_h0_retention.sh` 的固定噪声、native H0 和 masked/shuffled controls。
+
+正式训练还会记录 `train/loss_action_d30_h0`、`h1_4`、`h5_8`、`h9_16`、
+`h17_plus` 以及 `train/history_h0_fraction`。分桶 loss 使用真实样本数加权跨 rank
+聚合，不能用未加权的 per-rank 均值代替。H0 每步都有值；其他历史桶因 H>0
+长度分组可能稀疏出现，应结合各自 EMA 和固定噪声审计判断。
 
 ### video loss 初值在不同 causal mode 差异大
 

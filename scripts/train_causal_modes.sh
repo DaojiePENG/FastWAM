@@ -131,6 +131,7 @@ validate_existing_contract_group() {
         --expected-field lr_scheduler_type=cosine \
         --expected-field "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
         --expected-field "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
+        --expected-field h0_anchor_mixing=per_global_micro_batch \
         --expected-field "lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256" \
         --expected-field "h0_selection_manifest_sha256=$H0_SELECTION_MANIFEST_SHA256" \
         --expected-field "save_every=$SAVE_EVERY" \

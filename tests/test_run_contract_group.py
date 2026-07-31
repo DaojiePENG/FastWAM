@@ -45,6 +45,7 @@ BASE_FIELDS = (
     ("video_lora_multiplier", "1.0"),
     ("history_vae_batch_chunk_size", "1"),
     ("initial_block_oversample", "4"),
+    ("h0_anchor_mixing", "per_global_micro_batch"),
     ("save_every", "179"),
     ("seed", "42"),
     ("padding_attention_mask", "true"),

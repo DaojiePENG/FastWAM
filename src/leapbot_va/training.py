@@ -1664,9 +1664,12 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             video_losses[depth].append(video_per_sample.squeeze(0))
 
     losses: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    action_values_by_depth: dict[int, torch.Tensor] = {}
     for depth in training_depths:
         loss_video = torch.stack(video_losses[depth]).mean()
-        loss_action = torch.stack(action_losses[depth]).mean()
+        action_values = torch.stack(action_losses[depth])
+        action_values_by_depth[depth] = action_values
+        loss_action = action_values.mean()
         losses[depth] = (
             model.loss_lambda_video * loss_video
             + model.loss_lambda_action * loss_action,
@@ -1683,7 +1686,15 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             if depth != final_depth
         ]
         total = losses[final_depth][0] + torch.stack(shallow).mean()
-    metrics: dict[str, float] = {}
+    metrics: dict[str, Any] = {}
+    metric_weights: dict[str, float] = {}
+    history_bins = {
+        "h0": history_counts == 0,
+        "h1_4": (history_counts >= 1) & (history_counts <= 4),
+        "h5_8": (history_counts >= 5) & (history_counts <= 8),
+        "h9_16": (history_counts >= 9) & (history_counts <= 16),
+        "h17_plus": history_counts >= 17,
+    }
     for depth, (_, video_loss, action_loss) in losses.items():
         metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(
             video_loss.detach()
@@ -1691,8 +1702,27 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(
             action_loss.detach()
         )
+        action_values = action_values_by_depth[depth]
+        for bin_name, mask in history_bins.items():
+            metric_name = f"loss_action_d{depth}_{bin_name}"
+            bin_count = int(mask.sum().item())
+            metric_weights[metric_name] = float(bin_count)
+            metrics[metric_name] = (
+                model.loss_lambda_action
+                * float(action_values[mask].mean().detach())
+                if bin_count
+                else 0.0
+            )
     metrics["history_blocks_mean"] = float(
         history_counts.float().mean().detach()
     )
     metrics["history_blocks_max"] = float(history_counts.max().detach())
+    metrics["history_h0_fraction"] = float(
+        (history_counts == 0).float().mean().detach()
+    )
+    # Wan22Trainer consumes these per-metric sample counts when combining
+    # sparse H bins across ranks and gradient-accumulation micro-batches.  The
+    # key is intentionally private and is never emitted to W&B.
+    for metric_name, metric_weight in metric_weights.items():
+        metrics[f"__metric_weight__{metric_name}"] = metric_weight
     return total, metrics

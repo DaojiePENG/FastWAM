@@ -346,6 +346,12 @@ def test_mixed_history_batch_runs_each_episode_separately_and_never_reads_paddin
 
     assert torch.isfinite(total)
     assert metrics["history_blocks_mean"] == pytest.approx(1.5)
+    assert metrics["history_h0_fraction"] == 0.0
+    assert metrics["__metric_weight__loss_action_d2_h0"] == 0.0
+    assert metrics["__metric_weight__loss_action_d2_h1_4"] == 2.0
+    assert metrics["loss_action_d2_h1_4"] == pytest.approx(
+        metrics["loss_action_d2"]
+    )
     # Each valid history contributes V+A; each episode also contributes current
     # real V and transient future V. The invalid second slot of episode 1 adds 0.
     # Video and Action experts apply different context projections, so the

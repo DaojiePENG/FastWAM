@@ -122,6 +122,12 @@ class Wan22Trainer:
         )
         
         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
+        self.anchor_batch_contract = self.train_sampler.anchor_batch_contract()
+        if self.anchor_batch_contract is not None:
+            logger.info(
+                "Verified optimizer anchor mixing: %s",
+                self.anchor_batch_contract,
+            )
         total_train_steps = self._estimate_total_train_steps()
         self.max_steps = total_train_steps
         warmup_steps = int(total_train_steps * 0.05)
@@ -191,6 +197,14 @@ class Wan22Trainer:
                 ),
                 "derived/optimizer_steps": self.max_steps,
                 "derived/loss_ema_beta": self.metric_ema_beta,
+                **(
+                    {
+                        f"derived/{key}": value
+                        for key, value in self.anchor_batch_contract.items()
+                    }
+                    if self.anchor_batch_contract is not None
+                    else {}
+                ),
             },
             allow_val_change=True,
         )
@@ -942,6 +956,7 @@ class Wan22Trainer:
         accumulated_loss_sum = 0.0
         accumulated_sample_count = 0
         accumulated_metric_sums: dict[str, float] = {}
+        accumulated_metric_counts: dict[str, float] = {}
         accumulated_metric_maxima: dict[str, float] = {}
 
         while self.global_step < self.max_steps:
@@ -971,16 +986,34 @@ class Wan22Trainer:
                     raise ValueError("training micro-batch must contain at least one sample")
                 accumulated_loss_sum += float(loss.detach()) * micro_batch_samples
                 accumulated_sample_count += micro_batch_samples
+                metric_weights = {
+                    key.removeprefix("__metric_weight__"): float(value)
+                    for key, value in loss_dict.items()
+                    if key.startswith("__metric_weight__")
+                }
                 for key, value in loss_dict.items():
+                    if key.startswith("__metric_weight__"):
+                        continue
                     scalar = float(value)
                     if key.endswith("_max"):
                         accumulated_metric_maxima[key] = max(
                             accumulated_metric_maxima.get(key, scalar), scalar
                         )
                     else:
+                        metric_count = float(
+                            metric_weights.get(key, micro_batch_samples)
+                        )
+                        if not math.isfinite(metric_count) or metric_count < 0:
+                            raise ValueError(
+                                f"metric weight for {key!r} must be finite and non-negative"
+                            )
                         accumulated_metric_sums[key] = (
                             accumulated_metric_sums.get(key, 0.0)
-                            + scalar * micro_batch_samples
+                            + scalar * metric_count
+                        )
+                        accumulated_metric_counts[key] = (
+                            accumulated_metric_counts.get(key, 0.0)
+                            + metric_count
                         )
                 self.accelerator.backward(loss)
 
@@ -1007,17 +1040,19 @@ class Wan22Trainer:
                     global_loss_metrics = {}
                     for key, local_sum in accumulated_metric_sums.items():
                         local_metric_stats = torch.tensor(
-                            [local_sum, float(accumulated_sample_count)],
+                            [local_sum, accumulated_metric_counts[key]],
                             device=loss.device,
                             dtype=torch.float64,
                         )
                         gathered_metric_stats = self.accelerator.gather(
                             local_metric_stats.reshape(1, 2)
                         ).reshape(-1, 2)
-                        global_loss_metrics[key] = float(
-                            gathered_metric_stats[:, 0].sum().item()
-                            / gathered_metric_stats[:, 1].sum().clamp_min(1.0).item()
-                        )
+                        global_metric_count = gathered_metric_stats[:, 1].sum()
+                        if float(global_metric_count.item()) > 0:
+                            global_loss_metrics[key] = float(
+                                gathered_metric_stats[:, 0].sum().item()
+                                / global_metric_count.item()
+                            )
                     for key, local_maximum in accumulated_metric_maxima.items():
                         gathered_metric = self.accelerator.gather(
                             torch.tensor(
@@ -1028,6 +1063,7 @@ class Wan22Trainer:
                     accumulated_loss_sum = 0.0
                     accumulated_sample_count = 0
                     accumulated_metric_sums.clear()
+                    accumulated_metric_counts.clear()
                     accumulated_metric_maxima.clear()
                     ema_inputs = {"loss": global_loss, **global_loss_metrics}
                     for key, value in ema_inputs.items():

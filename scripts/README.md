@@ -15,7 +15,9 @@
 4. `audit_h0_retention.sh`：生成 H0 选择 manifest。
 5. `train_causal_modes.sh`：从相同 FastWAM 权重训练三种 D30 causal mode；
    候选正式拓扑硬锁 8×B20×GA1/global160，默认 895 steps、每 179 steps
-   保存。固定数据 x1 时 179 steps/epoch；即使 H0 选择 x4 也保持相同 895
+   保存。正式训练使用真实 episode-start x4；采样器在每个 global
+   micro-batch 中按数据比例固定混合 H0 与完整 H>0 历史，因此每次 optimizer
+   update 都同时获得 H0 锚定梯度和全历史梯度。仍保持相同 895
    optimizer-step 预算，不改成 5 个 augmented epochs。
 6. `evaluate_causal_modes.sh`：统一运行 dev10 或 final50 模式对比。
 7. `train_multi_exit.sh`：从获胜 D30 checkpoint 训练 D8/16/24/30 出口。

@@ -46,6 +46,7 @@ _REQUIRED_FIELDS = (
     "video_lora_multiplier",
     "history_vae_batch_chunk_size",
     "initial_block_oversample",
+    "h0_anchor_mixing",
     "save_every",
     "seed",
     "padding_attention_mask",
@@ -160,6 +161,11 @@ def _validate_semantics(contract: RunContract) -> None:
         raise ValueError(
             "padding_attention_mask must be exactly 'true', got "
             f"{values['padding_attention_mask']!r}"
+        )
+    if values["h0_anchor_mixing"] != "per_global_micro_batch":
+        raise ValueError(
+            "h0_anchor_mixing must be exactly 'per_global_micro_batch', got "
+            f"{values['h0_anchor_mixing']!r}"
         )
 
 

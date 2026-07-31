@@ -288,6 +288,21 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             for index in self._valid_replan_indices
         )
 
+    def sampler_anchor_flags(self) -> tuple[bool, ...] | None:
+        """Identify genuine episode starts for per-update H0 anchoring.
+
+        Oversampled entries remain genuine H0 observations from the source
+        episodes.  The distributed sampler mixes their dataset-wide proportion
+        into every global micro-batch while leaving every H>0 item full-history.
+        """
+
+        if not self.full_episode_history:
+            return None
+        return tuple(
+            self._episode_step[index] == 0
+            for index in self._valid_replan_indices
+        )
+
     def _choose_history_blocks(self, sample_index: int) -> int:
         current_block = self._episode_step[sample_index] // self.replan_steps
         if self.full_episode_history:

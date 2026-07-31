@@ -91,6 +91,9 @@ def test_base_launcher_contract_identifies_initial_weights_and_exit_set():
     assert '"padding_attention_mask=true"' in source
     assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
     assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert 'LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"' in source
+    assert 'INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"' in source
+    assert '"h0_anchor_mixing=per_global_micro_batch"' in source
     assert 'TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"' in source
     assert "${TOPOLOGY_TAG}" in source
     assert "mb8_ga2" not in source
