@@ -14,15 +14,23 @@ def test_base_launcher_contract_identifies_initial_weights_and_exit_set():
     assert "training_asset_manifest.py" in source
     assert '"dataset_content_sha256=$DATASET_CONTENT_SHA256"' in source
     assert '"text_embedding_cache_sha256=$TEXT_EMBEDDING_CACHE_SHA256"' in source
+    assert '"text_cache_provenance_sha256=$TEXT_CACHE_PROVENANCE_SHA256"' in source
+    assert '"text_cache_verification_method=$TEXT_CACHE_VERIFICATION_METHOD"' in source
+    assert '"text_cache_verified_file_count=$TEXT_CACHE_VERIFIED_FILE_COUNT"' in source
+    assert '"text_encoder_checkpoint_sha256=$TEXT_ENCODER_CHECKPOINT_SHA256"' in source
+    assert '"tokenizer_sha256=$TOKENIZER_SHA256"' in source
     assert '"vae_checkpoint_sha256=$VAE_CHECKPOINT_SHA256"' in source
     assert 'DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"' in source
+    assert 'flock -s "$TEXT_CACHE_LOCK_FD"' in source
+    assert '"data.train.text_embedding_cache_dir=$TEXT_EMBEDDING_CACHE"' in source
+    assert '"data.train.dataset_dirs=[$ROOT_DIR/data/' in source
     assert 'ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT"' in source
     assert 'RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"' in source
     assert '"padding_attention_mask=true"' in source
-    assert "final_incremental_full_bptt_v4_" in source
-    assert "final-incremental-full-bptt-v4" in source
-    assert "full_bptt_v3" not in source
-    assert "full-bptt-v3" not in source
+    assert "final_incremental_full_bptt_v5_mb8_ga2_" in source
+    assert "final-incremental-full-bptt-v5-mb8-ga2" in source
+    assert "full_bptt_v4" not in source
+    assert "full-bptt-v4" not in source
 
 
 def test_multi_exit_launcher_requires_winner_and_all_four_exits():
@@ -39,6 +47,8 @@ def test_multi_exit_launcher_requires_winner_and_all_four_exits():
     assert "full_episode_history=true" in source
     assert "padding_attention_mask=true" in source
     assert "training_exit_depths=30" in source
+    assert "batch_size=8" in source
+    assert "gradient_accumulation_steps=2" in source
     assert "^[0-9a-f]{64}$" in source
     assert "^[0-9a-f]{40}$" in source
     assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
@@ -60,10 +70,12 @@ def test_formal_causal_comparison_requires_self_identifying_checkpoints():
     assert "--expected-kind initial_block_oversample" in source
     assert "lr_selection_manifest_sha256" in source
     assert "h0_selection_manifest_sha256" in source
-    assert "causal_incremental_full_bptt_v4" in source
-    assert "causal-incremental-full-bptt-v4" in source
-    assert "full_bptt_v3" not in source
-    assert "full-bptt-v3" not in source
+    assert "causal_incremental_full_bptt_v5_mb8_ga2" in source
+    assert "causal-incremental-full-bptt-v5-mb8-ga2" in source
+    assert 'BATCH_SIZE="${BATCH_SIZE:-8}"' in source
+    assert 'GRAD_ACCUM="${GRAD_ACCUM:-2}"' in source
+    assert "full_bptt_v4" not in source
+    assert "full-bptt-v4" not in source
 
 
 def test_h0_retention_screen_consumes_the_selected_lr():
@@ -102,7 +114,7 @@ def test_h0_audit_validates_sampling_factor_and_uses_the_same_draw_contract():
     assert "--expected-run-contract-sha256" in source
 
 
-def test_paired_screen_and_audit_defaults_use_v5_identity():
+def test_paired_screen_and_audit_defaults_use_v6_mb10_ga2_identity():
     launchers = (
         "run_paired_lr_screen.sh",
         "run_paired_lr_audit.sh",
@@ -111,12 +123,28 @@ def test_paired_screen_and_audit_defaults_use_v5_identity():
     )
     for launcher in launchers:
         source = (ROOT / "scripts" / launcher).read_text()
-        assert "incremental_v5" in source
-        assert "incremental_v4" not in source
-        assert "incremental-v4" not in source
-    assert "lr-screen-incremental-v5" in (
+        assert "incremental_v6_mb10_ga2" in source
+        assert "incremental_v5" not in source
+        assert "incremental-v5" not in source
+    assert "lr-screen-incremental-v6-mb10-ga2" in (
         ROOT / "scripts" / "run_paired_lr_screen.sh"
     ).read_text()
-    assert "h0-retention-incremental-v5" in (
+    assert "h0-retention-incremental-v6-mb10-ga2" in (
         ROOT / "scripts" / "run_paired_h0_retention_screen.sh"
     ).read_text()
+
+
+def test_paired_screens_enforce_measured_b10_ga2_topology():
+    for launcher in (
+        "run_paired_lr_screen.sh",
+        "run_paired_h0_retention_screen.sh",
+    ):
+        source = (ROOT / "scripts" / launcher).read_text()
+        assert 'BATCH_SIZE="${BATCH_SIZE:-10}"' in source
+        assert 'GRAD_ACCUM="${GRAD_ACCUM:-2}"' in source
+        assert '[[ "$BATCH_SIZE" -ne 10 ]]' in source
+        assert '[[ "$GRAD_ACCUM" -ne 2 ]]' in source
+        assert 'WANDB_ENABLED="${WANDB_ENABLED:-true}"' in source
+        assert 'WANDB_MODE="${WANDB_MODE:-online}"' in source
+        assert 'WANDB_ENABLED="$WANDB_ENABLED"' in source
+        assert 'WANDB_MODE="$WANDB_MODE"' in source

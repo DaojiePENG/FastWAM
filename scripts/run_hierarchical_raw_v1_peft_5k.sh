@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Correct-architecture phase-A v4 recipe:
+# Correct-architecture phase-A v5 recipe:
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
@@ -19,8 +19,8 @@ VAE_CHECKPOINT="${VAE_CHECKPOINT:-$ROOT_DIR/checkpoints/DiffSynth-Studio/Wan-Ser
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
-BATCH_SIZE="${BATCH_SIZE:-1}"
-GRAD_ACCUM="${GRAD_ACCUM:-10}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 MAX_STEPS="${MAX_STEPS:-5000}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
@@ -47,9 +47,9 @@ EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="${EXPECTED_TRAINING_ASSET_MANIFEST_SHA2
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v4_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
-WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v4-seed42}"
-RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v4-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v5_mb8_ga2_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
+WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v5-mb8-ga2-seed42}"
+RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v5-mb8-ga2-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -152,11 +152,19 @@ if [[ "$ALLOW_DIRTY" != "true" ]] \
     exit 1
 fi
 
+# Hold a shared lock for the complete training process. Text-cache generation
+# takes the matching exclusive lock, so cached tensors cannot change after the
+# manifest is verified or midway through an epoch.
+TEXT_CACHE_LOCK_FILE="$TEXT_EMBEDDING_CACHE/.leapbot_text_cache.lock"
+exec {TEXT_CACHE_LOCK_FD}>>"$TEXT_CACHE_LOCK_FILE"
+flock -s "$TEXT_CACHE_LOCK_FD"
+
 ASSET_MANIFEST_TMP="$(mktemp "${TMPDIR:-/tmp}/leapbot-training-assets.XXXXXX.json")"
 cleanup_asset_manifest() {
     rm -f "$ASSET_MANIFEST_TMP"
 }
 trap cleanup_asset_manifest EXIT
+DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
 "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/training_asset_manifest.py" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot" \
@@ -184,6 +192,11 @@ DATASET_FILE_COUNT="$(manifest_value dataset_file_count)"
 DATASET_BYTES="$(manifest_value dataset_bytes)"
 TEXT_EMBEDDING_CACHE_SHA256="$(manifest_value text_embedding_cache.sha256)"
 TEXT_EMBEDDING_CACHE_FILE_COUNT="$(manifest_value text_embedding_cache.file_count)"
+TEXT_CACHE_PROVENANCE_SHA256="$(manifest_value text_cache_provenance.provenance_sha256)"
+TEXT_CACHE_VERIFICATION_METHOD="$(manifest_value text_cache_provenance.verification.method)"
+TEXT_CACHE_VERIFIED_FILE_COUNT="$(manifest_value text_cache_provenance.verification.verified_file_count)"
+TEXT_ENCODER_CHECKPOINT_SHA256="$(manifest_value text_cache_provenance.source_assets.text_encoder.sha256)"
+TOKENIZER_SHA256="$(manifest_value text_cache_provenance.source_assets.tokenizer.sha256)"
 VAE_CHECKPOINT_SHA256="$(manifest_value vae_checkpoint.sha256)"
 if [[ -n "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" ]] \
     && [[ "$TRAINING_ASSET_MANIFEST_SHA256" != "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" ]]; then
@@ -217,6 +230,11 @@ contract_fields+=( \
     "dataset_bytes=$DATASET_BYTES" \
     "text_embedding_cache_sha256=$TEXT_EMBEDDING_CACHE_SHA256" \
     "text_embedding_cache_file_count=$TEXT_EMBEDDING_CACHE_FILE_COUNT" \
+    "text_cache_provenance_sha256=$TEXT_CACHE_PROVENANCE_SHA256" \
+    "text_cache_verification_method=$TEXT_CACHE_VERIFICATION_METHOD" \
+    "text_cache_verified_file_count=$TEXT_CACHE_VERIFIED_FILE_COUNT" \
+    "text_encoder_checkpoint_sha256=$TEXT_ENCODER_CHECKPOINT_SHA256" \
+    "tokenizer_sha256=$TOKENIZER_SHA256" \
     "vae_checkpoint_sha256=$VAE_CHECKPOINT_SHA256" \
 )
 if [[ -n "$LR_SELECTION_MANIFEST_SHA256" ]]; then
@@ -296,7 +314,7 @@ else
 fi
 
 preflight_gpus
-log "start incremental full-BPTT v4 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
+log "start incremental full-BPTT v5_mb8_ga2 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \
@@ -331,6 +349,8 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "model.video_lora.learning_rate_multiplier=$VIDEO_LORA_MULTIPLIER" \
     model.mot_checkpoint_mixed_attn=true \
     data.train.full_episode_history=true \
+    "data.train.text_embedding_cache_dir=$TEXT_EMBEDDING_CACHE" \
+    "data.train.dataset_dirs=[$ROOT_DIR/data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_10_no_noops_lerobot]" \
     data.train.min_history_blocks=0 \
     data.train.max_history_blocks=70 \
     "data.train.initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \

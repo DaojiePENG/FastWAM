@@ -16,8 +16,8 @@ FINAL_STEP="${FINAL_STEP:-100}"
 GPU_ID="${GPU_ID:-0}"
 LR_TAG="${SELECTED_LR//./p}"
 LR_TAG="${LR_TAG//+/_}"
-SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/h0_retention_incremental_v5_s${FINAL_STEP}_bs80_lr${LR_TAG}_chunk1}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/h0_retention_audit_incremental_v5_s${FINAL_STEP}_lr${LR_TAG}}"
+SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/h0_retention_incremental_v6_mb10_ga2_s${FINAL_STEP}_bs80_lr${LR_TAG}_chunk1}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/h0_retention_audit_incremental_v6_mb10_ga2_s${FINAL_STEP}_lr${LR_TAG}}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 FINAL_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
@@ -60,6 +60,18 @@ for factor in 1 4; do
             "$factor" "$contract_file" >&2
         exit 2
     fi
+    "$ROOT_DIR/.venv/bin/python" \
+        "$ROOT_DIR/scripts/validate_run_contract_group.py" \
+        --contract "action_aggregator=$contract_file" \
+        --expected-field "learning_rate=$SELECTED_LR" \
+        --expected-field "initial_block_oversample=$factor" \
+        --expected-field "max_steps=$FINAL_STEP" \
+        --expected-field num_processes=4 \
+        --expected-field batch_size=10 \
+        --expected-field gradient_accumulation_steps=2 \
+        --expected-field global_batch=80 \
+        --expected-field padding_attention_mask=true \
+        >/dev/null
     candidate="$candidate_root/checkpoints/weights/$FINAL_TAG.pt"
     "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
         "$candidate" \

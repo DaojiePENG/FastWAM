@@ -490,6 +490,106 @@ def validate_incremental_action_equivalence(
             model.train()
 
 
+def validate_incremental_packed_loss_equivalence(
+    model,
+    sample: dict[str, Any],
+    *,
+    seed: int = 1203,
+    tiled: bool = False,
+    atol: float = 1e-3,
+    rtol: float = 1e-3,
+) -> dict[str, Any]:
+    """Compare rollout-ordered training with the one-shot causal reference.
+
+    Resetting the RNG before each program makes the video/action noise and
+    sampled timesteps identical.  The one-shot implementation is deliberately
+    retained outside the production path as an independent causal-mask oracle.
+    """
+
+    from leapbot_va.training import _packed_causal_history_reference_loss
+
+    if sample["video"].shape[0] != 1:
+        raise ValueError("packed-loss equivalence validation requires batch size 1")
+    action_is_pad = sample.get("action_is_pad")
+    if action_is_pad is None or action_is_pad.dtype != torch.bool:
+        raise ValueError("packed-loss equivalence requires bool action_is_pad")
+    if bool(action_is_pad.any().item()):
+        raise ValueError(
+            "packed-loss equivalence requires a fully real action target; "
+            "padded tails are covered by the padding-isolation audit"
+        )
+
+    device = torch.device(model.device)
+    was_training = bool(model.training)
+    model.eval()
+    try:
+        _set_seed(seed, device)
+        with torch.no_grad():
+            incremental_total, incremental_metrics = model.training_loss(
+                sample, tiled=tiled
+            )
+        _set_seed(seed, device)
+        with torch.no_grad():
+            packed_total, packed_metrics = _packed_causal_history_reference_loss(
+                model, sample, tiled=tiled
+            )
+    finally:
+        if was_training:
+            model.train()
+
+    if set(incremental_metrics) != set(packed_metrics):
+        raise ValueError(
+            "metric key mismatch between incremental and packed programs: "
+            f"incremental={sorted(incremental_metrics)} "
+            f"packed={sorted(packed_metrics)}"
+        )
+    total = compare_tensors(
+        incremental_total.detach().reshape(1),
+        packed_total.detach().reshape(1),
+        atol=atol,
+        rtol=rtol,
+    )
+    metrics: dict[str, Any] = {}
+    for name in sorted(incremental_metrics):
+        incremental_value = torch.as_tensor(
+            incremental_metrics[name], dtype=torch.float64
+        ).reshape(1)
+        packed_value = torch.as_tensor(
+            packed_metrics[name], dtype=torch.float64
+        ).reshape(1)
+        metrics[name] = compare_tensors(
+            incremental_value,
+            packed_value,
+            atol=atol,
+            rtol=rtol,
+        )
+        metrics[name].update(
+            {
+                "incremental": float(incremental_value.item()),
+                "packed": float(packed_value.item()),
+            }
+        )
+    tolerance_pass = bool(
+        total["allclose"]
+        and all(comparison["allclose"] for comparison in metrics.values())
+    )
+    bitwise_pass = bool(
+        total["bitwise_equal"]
+        and all(
+            comparison["bitwise_equal"] for comparison in metrics.values()
+        )
+    )
+    return {
+        "seed": int(seed),
+        "atol": float(atol),
+        "rtol": float(rtol),
+        "total": total,
+        "metrics": metrics,
+        "bitwise_pass": bitwise_pass,
+        "tolerance_pass": tolerance_pass,
+    }
+
+
 def _git_metadata(root: Path) -> dict[str, Any]:
     def run(*args: str) -> bytes:
         return subprocess.run(
@@ -537,6 +637,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tiled", action="store_true")
     parser.add_argument("--atol", type=float, default=0.0)
     parser.add_argument("--rtol", type=float, default=0.0)
+    parser.add_argument("--packed-atol", type=float, default=1e-3)
+    parser.add_argument("--packed-rtol", type=float, default=1e-3)
+    parser.add_argument(
+        "--skip-packed-loss-equivalence",
+        action="store_true",
+        help="Skip the independent one-shot causal loss oracle.",
+    )
     parser.add_argument(
         "--require-bitwise",
         action=argparse.BooleanOptionalAction,
@@ -640,6 +747,16 @@ def main() -> int:
         atol=args.atol,
         rtol=args.rtol,
     )
+    packed_loss_equivalence = None
+    if not args.skip_packed_loss_equivalence:
+        packed_loss_equivalence = validate_incremental_packed_loss_equivalence(
+            model,
+            sample,
+            seed=args.seed,
+            tiled=args.tiled,
+            atol=args.packed_atol,
+            rtol=args.packed_rtol,
+        )
     resolved_model_config = OmegaConf.to_container(cfg.model, resolve=True)
     resolved_data_config = OmegaConf.to_container(cfg.data.train, resolve=True)
     checkpoint_sha256 = (
@@ -664,6 +781,7 @@ def main() -> int:
             "device": str(args.device),
             "seed": int(args.seed),
             "source": _git_metadata(ROOT_DIR),
+            "packed_loss_equivalence": packed_loss_equivalence,
         }
     )
     encoded = json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True)
@@ -671,6 +789,8 @@ def main() -> int:
     if args.output_json is not None:
         _write_json(args.output_json.expanduser().resolve(), result)
     passed = result["bitwise_pass"] if args.require_bitwise else result["tolerance_pass"]
+    if packed_loss_equivalence is not None:
+        passed = passed and packed_loss_equivalence["tolerance_pass"]
     return 0 if passed else 1
 
 

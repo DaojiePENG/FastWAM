@@ -1,4 +1,3 @@
-import hashlib
 import os
 from typing import Optional
 import time
@@ -16,11 +15,10 @@ from .utils.normalizer import save_dataset_stats_to_json, load_dataset_stats_fro
 from ..dataset_utils import ResizeSmallestSideAspectPreserving, CenterCrop, Normalize
 from fastwam.utils.logging_config import get_logger
 from fastwam.utils import misc, pytorch_utils
+from .text_cache import DEFAULT_PROMPT, wan_text_cache_filename
 from accelerate import PartialState
 logger = get_logger(__name__)
 
-
-DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the following instruction: {task}"
 
 class RobotVideoDataset(torch.utils.data.Dataset):
     def __init__(
@@ -240,8 +238,14 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             raise ValueError("text_embedding_cache_dir is not set.")
         cache_dir = self.text_embedding_cache_dir
         os.makedirs(cache_dir, exist_ok=True)
-        hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{self.context_len}.wan22ti2v5b.pt")
+        cache_path = os.path.join(
+            cache_dir,
+            wan_text_cache_filename(
+                prompt,
+                context_len=self.context_len,
+                model_id="Wan-AI/Wan2.2-TI2V-5B",
+            ),
+        )
         if not os.path.exists(cache_path):
             raise FileNotFoundError(
                 f"Missing text embedding cache: {cache_path}. "

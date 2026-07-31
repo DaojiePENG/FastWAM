@@ -7,12 +7,14 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 MAX_STEPS="${MAX_STEPS:-100}"
-BATCH_SIZE="${BATCH_SIZE:-1}"
-GRAD_ACCUM="${GRAD_ACCUM:-20}"
+BATCH_SIZE="${BATCH_SIZE:-10}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
+WANDB_ENABLED="${WANDB_ENABLED:-true}"
+WANDB_MODE="${WANDB_MODE:-online}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 RELEASE_CHECKPOINT_SHA256="${RELEASE_CHECKPOINT_SHA256:-$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')}"
-SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v5_s${MAX_STEPS}_bs80_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
+SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v6_mb10_ga2_s${MAX_STEPS}_bs80_chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}}"
 LEARNING_RATES=(1.0e-5 1.0e-4)
 GPU_GROUPS=(0,1,2,3 4,5,6,7)
 PORTS=(29974 29975)
@@ -21,8 +23,8 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if [[ "$BATCH_SIZE" -ne 1 ]] || [[ "$GRAD_ACCUM" -ne 20 ]]; then
-    log "paired screen contract requires 4 GPUs x batch 1 x grad accumulation 20"
+if [[ "$BATCH_SIZE" -ne 10 ]] || [[ "$GRAD_ACCUM" -ne 2 ]]; then
+    log "paired screen contract requires 4 GPUs x batch 10 x grad accumulation 2"
     exit 1
 fi
 
@@ -49,9 +51,10 @@ for index in "${!LEARNING_RATES[@]}"; do
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
     RELEASE_CHECKPOINT_SHA256="$RELEASE_CHECKPOINT_SHA256" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="lr-screen-incremental-v5-action-aggregator-${lr_tag}-s${MAX_STEPS}-bs80-chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}-seed42" \
-    WANDB_ENABLED=false \
-    WANDB_MODE=disabled \
+    RUN_NAME="lr-screen-incremental-v6-mb10-ga2-action-aggregator-${lr_tag}-s${MAX_STEPS}-bs80-chunk${HISTORY_VAE_BATCH_CHUNK_SIZE}-seed42" \
+    WANDB_ENABLED="$WANDB_ENABLED" \
+    WANDB_MODE="$WANDB_MODE" \
+    WANDB_GROUP="paired-lr-incremental-v6-mb10-ga2-s${MAX_STEPS}-bs80-seed42" \
     MAIN_PROCESS_PORT="$port" \
         bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh" &
     pids+=("$!")

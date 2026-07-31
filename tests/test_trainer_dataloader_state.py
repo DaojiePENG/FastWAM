@@ -104,3 +104,16 @@ def test_resume_rejects_changed_distributed_batch_contract(tmp_path):
     )
     with pytest.raises(ValueError, match="batch_size_per_process"):
         trainer.load_training_state(str(tmp_path))
+
+
+def test_loader_passes_gradient_accumulation_to_resumable_sampler():
+    trainer = Wan22Trainer.__new__(Wan22Trainer)
+    trainer.seed = 42
+    trainer.batch_size = 2
+    trainer.num_workers = 0
+    trainer.gradient_accumulation_steps = 3
+    trainer.accelerator = _Accelerator()
+
+    trainer._build_loader(_Sized(37))
+
+    assert trainer.train_sampler.gradient_accumulation_steps == 3

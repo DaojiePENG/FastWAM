@@ -10,7 +10,10 @@ from fastwam.models.wan22.action_dit import ActionDiT
 from fastwam.models.wan22.mot import MoT
 from fastwam.models.wan22.wan_video_dit import WanVideoDiT
 from leapbot_va.models.leapbot import LeapBotVA
-from leapbot_va.training import _use_segment_activation_checkpointing
+from leapbot_va.training import (
+    _packed_causal_history_reference_loss,
+    _use_segment_activation_checkpointing,
+)
 from scripts.validate_real_6b_runtime_training_equivalence import (
     validate_incremental_action_equivalence,
 )
@@ -483,6 +486,89 @@ def test_segment_checkpoint_loss_and_parameter_gradients_match_reference(
                     f"{modality} pre-DiT segment {index}: {message}"
                 ),
             )
+
+
+@pytest.mark.parametrize("history_blocks", (0, 1, 2))
+@pytest.mark.parametrize("causal_mode", CAUSAL_MODES)
+def test_incremental_full_bptt_matches_one_shot_packed_causal_reference(
+    causal_mode,
+    history_blocks,
+    monkeypatch,
+):
+    """Incremental V/A segments must implement the packed causal objective."""
+
+    reference = _model(causal_mode)
+    incremental = _model(causal_mode)
+    sample = _sample((history_blocks,))
+
+    # Use distinct, explicit diffusion times for the two modalities. Resetting
+    # the RNG before each path then supplies bitwise-identical video/action
+    # noise without coupling this equivalence check to scheduler sampling.
+    fixed_timesteps = (
+        (reference.train_video_scheduler, 237.5),
+        (incremental.train_video_scheduler, 237.5),
+        (reference.train_action_scheduler, 681.25),
+        (incremental.train_action_scheduler, 681.25),
+    )
+    for scheduler, value in fixed_timesteps:
+        monkeypatch.setattr(
+            scheduler,
+            "sample_training_t",
+            lambda batch_size, device, dtype, value=value: torch.full(
+                (batch_size,), value, device=device, dtype=dtype
+            ),
+        )
+
+    torch.manual_seed(9127)
+    reference_loss, reference_metrics = _packed_causal_history_reference_loss(
+        reference,
+        sample,
+    )
+    torch.manual_seed(9127)
+    incremental_loss, incremental_metrics = incremental.training_loss(sample)
+
+    final_depth = reference.mot.num_layers
+    for modality in ("video", "action"):
+        metric = f"loss_{modality}_d{final_depth}"
+        assert incremental_metrics[metric] == pytest.approx(
+            reference_metrics[metric],
+            rel=1e-6,
+            abs=1e-6,
+        )
+    assert incremental_metrics["history_blocks_mean"] == history_blocks
+    assert incremental_metrics["history_blocks_max"] == history_blocks
+    torch.testing.assert_close(
+        incremental_loss,
+        reference_loss,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    reference_loss.backward()
+    incremental_loss.backward()
+    reference_parameters = dict(reference.named_parameters())
+    incremental_parameters = dict(incremental.named_parameters())
+    assert incremental_parameters.keys() == reference_parameters.keys()
+
+    saw_gradient = False
+    for name, reference_parameter in reference_parameters.items():
+        incremental_parameter = incremental_parameters[name]
+        reference_gradient = reference_parameter.grad
+        incremental_gradient = incremental_parameter.grad
+        assert (incremental_gradient is None) is (reference_gradient is None), name
+        if reference_gradient is None:
+            continue
+        saw_gradient = True
+        assert torch.isfinite(reference_gradient).all(), name
+        assert torch.isfinite(incremental_gradient).all(), name
+        torch.testing.assert_close(
+            incremental_gradient,
+            reference_gradient,
+            rtol=1e-5,
+            atol=1e-6,
+            msg=lambda message, name=name: f"{name}: {message}",
+        )
+    assert saw_gradient
 
 
 @pytest.mark.parametrize("causal_mode", CAUSAL_MODES)

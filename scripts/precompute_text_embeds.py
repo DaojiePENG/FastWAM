@@ -1,9 +1,9 @@
-import hashlib
+import atexit
 import json
 import logging
 import os
-import re
 import uuid
+import fcntl
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +14,18 @@ from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+from fastwam.datasets.lerobot.text_cache import (
+    wan_text_cache_filename,
+)
 from fastwam.models.wan22.helpers.loader import _load_registered_model, _resolve_configs
 from fastwam.models.wan22.wan_video_text_encoder import HuggingfaceTokenizer
 from fastwam.utils.config_resolvers import register_default_resolvers
 from fastwam.utils.logging_config import get_logger, setup_logging
+from leapbot_va.conditioning_assets import (
+    build_text_cache_provenance,
+    load_and_validate_text_cache_provenance,
+    write_text_cache_provenance,
+)
 
 register_default_resolvers()
 logger = get_logger(__name__)
@@ -26,6 +34,25 @@ DEFAULT_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B"
 DEFAULT_TOKENIZER_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B"
 DEFAULT_CONTEXT_LEN = 128
 DEFAULT_BATCH_SIZE = 16
+
+
+def _acquire_cache_locks(cache_dirs: list[Path]):
+    locks = []
+    for cache_dir in sorted(cache_dirs):
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stream = (cache_dir / ".leapbot_text_cache.lock").open("a+b")
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        locks.append(stream)
+    return locks
+
+
+def _release_cache_locks(locks) -> None:
+    while locks:
+        stream = locks.pop()
+        if stream.closed:
+            continue
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        stream.close()
 
 
 def _init_distributed():
@@ -154,12 +181,6 @@ def _get_override_prompt(override_instruction: Any) -> str | None:
     return DEFAULT_PROMPT.format(task=task)
 
 
-def _model_id_to_enc_id(model_id: str) -> str:
-    base = str(model_id).split("/")[-1]
-    enc_id = re.sub(r"[^a-z0-9]+", "", base.lower())
-    return enc_id or "textenc"
-
-
 def _atomic_torch_save(payload: dict[str, torch.Tensor], output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.parent / f".{output_path.name}.tmp.{uuid.uuid4().hex}"
@@ -190,7 +211,6 @@ def main(cfg: DictConfig):
     dataset_dirs, cache_dirs, context_lens = _collect_dataset_settings(cfg.data)
     if not cache_dirs:
         raise ValueError("No `text_embedding_cache_dir` found under `cfg.data`.")
-
     context_len = _resolve_context_len(context_lens)
     override_prompt = _get_override_prompt(cfg.get("override_instruction"))
     if override_prompt is not None:
@@ -204,6 +224,13 @@ def main(cfg: DictConfig):
         logger.warning("No prompts found from tasks.jsonl; nothing to do.")
         return
 
+    cache_locks = []
+    if (not is_distributed) or rank == 0:
+        cache_locks = _acquire_cache_locks(cache_dirs)
+    atexit.register(_release_cache_locks, cache_locks)
+    if is_distributed:
+        dist.barrier()
+
     if torch.cuda.is_available():
         device = f"cuda:{local_rank}" if is_distributed else "cuda"
     else:
@@ -212,7 +239,13 @@ def main(cfg: DictConfig):
     model_id = str(model_cfg.get("model_id", DEFAULT_MODEL_ID))
     tokenizer_model_id = str(model_cfg.get("tokenizer_model_id", DEFAULT_TOKENIZER_MODEL_ID))
     redirect_common_files = bool(model_cfg.get("redirect_common_files", True))
-    enc_id = _model_id_to_enc_id(model_id)
+    all_prompts = list(prompts)
+    cache_file_names = [
+        wan_text_cache_filename(
+            prompt, context_len=context_len, model_id=model_id
+        )
+        for prompt in all_prompts
+    ]
 
     logger.info(
         "Preparing text encoder with model_id=%s tokenizer_model_id=%s device=%s dtype=%s context_len=%d overwrite=%s",
@@ -244,8 +277,32 @@ def main(cfg: DictConfig):
         clean="whitespace",
     )
 
+    reuse_verified_provenance = {str(cache_dir): False for cache_dir in cache_dirs}
+    if not overwrite and ((not is_distributed) or rank == 0):
+        for cache_dir in cache_dirs:
+            existing = [
+                name for name in cache_file_names if (cache_dir / name).is_file()
+            ]
+            if existing and len(existing) != len(cache_file_names):
+                raise ValueError(
+                    f"partial unverified text cache at {cache_dir}; rerun with overwrite=true"
+                )
+            if existing:
+                load_and_validate_text_cache_provenance(
+                    cache_dir,
+                    text_encoder_path=text_config.path,
+                    tokenizer_path=tokenizer_config.path,
+                    model_id=model_id,
+                    tokenizer_model_id=tokenizer_model_id,
+                    redirect_common_files=redirect_common_files,
+                    context_len=context_len,
+                )
+                reuse_verified_provenance[str(cache_dir)] = True
+    if not overwrite and is_distributed:
+        dist.barrier()
+
     stats = {
-        str(cache_dir): {"new": 0, "overwrite": 0, "skip": 0}
+        str(cache_dir): {"new": 0, "overwrite": 0, "skip": 0, "verified": 0}
         for cache_dir in cache_dirs
     }
 
@@ -255,8 +312,9 @@ def main(cfg: DictConfig):
         fully_cached_local = 0
         prompts_to_encode: list[str] = []
         for prompt in prompts:
-            hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-            filename = f"{hashed}.t5_len{context_len}.{enc_id}.pt"
+            filename = wan_text_cache_filename(
+                prompt, context_len=context_len, model_id=model_id
+            )
             fully_cached = True
             for cache_dir in cache_dirs:
                 cache_path = cache_dir / filename
@@ -315,7 +373,6 @@ def main(cfg: DictConfig):
                 context = text_encoder(ids, mask)
 
                 for i, prompt in enumerate(batch_prompts):
-                    hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
                     context_i = context[i].detach().to(device="cpu", dtype=torch.bfloat16).contiguous()
                     mask_i = mask[i].detach().to(device="cpu", dtype=torch.bool).contiguous()
                     payload = {
@@ -324,7 +381,9 @@ def main(cfg: DictConfig):
                     }
 
                     for cache_dir in cache_dirs:
-                        cache_path = cache_dir / f"{hashed}.t5_len{context_len}.{enc_id}.pt"
+                        cache_path = cache_dir / wan_text_cache_filename(
+                            prompt, context_len=context_len, model_id=model_id
+                        )
                         key = str(cache_dir)
                         if cache_path.exists() and not overwrite:
                             stats[key]["skip"] += 1
@@ -336,6 +395,30 @@ def main(cfg: DictConfig):
                             stats[key]["new"] += 1
 
                         _atomic_torch_save(payload, cache_path)
+                        saved = torch.load(
+                            cache_path, map_location="cpu", weights_only=True
+                        )
+                        saved_context = saved.get("context")
+                        saved_mask = saved.get("mask")
+                        if (
+                            not isinstance(saved_context, torch.Tensor)
+                            or saved_context.dtype is not torch.bfloat16
+                            or saved_context.shape != context_i.shape
+                            or not torch.equal(saved_context, context_i)
+                        ):
+                            raise RuntimeError(
+                                f"saved text context failed exact reload check: {cache_path}"
+                            )
+                        if (
+                            not isinstance(saved_mask, torch.Tensor)
+                            or saved_mask.dtype is not torch.bool
+                            or saved_mask.shape != mask_i.shape
+                            or not torch.equal(saved_mask, mask_i)
+                        ):
+                            raise RuntimeError(
+                                f"saved text mask failed exact reload check: {cache_path}"
+                            )
+                        stats[key]["verified"] += 1
 
                 pbar.update(len(batch_prompts))
 
@@ -348,7 +431,12 @@ def main(cfg: DictConfig):
 
         counts_tensor = torch.tensor(
             [
-                [stats[str(cache_dir)]["new"], stats[str(cache_dir)]["overwrite"], stats[str(cache_dir)]["skip"]]
+                [
+                    stats[str(cache_dir)]["new"],
+                    stats[str(cache_dir)]["overwrite"],
+                    stats[str(cache_dir)]["skip"],
+                    stats[str(cache_dir)]["verified"],
+                ]
                 for cache_dir in cache_dirs
             ],
             device=reduce_device,
@@ -361,6 +449,7 @@ def main(cfg: DictConfig):
                 stats[key]["new"] = int(counts_tensor[idx, 0].item())
                 stats[key]["overwrite"] = int(counts_tensor[idx, 1].item())
                 stats[key]["skip"] = int(counts_tensor[idx, 2].item())
+                stats[key]["verified"] = int(counts_tensor[idx, 3].item())
 
     if (not is_distributed) or rank == 0:
         logger.info("Finished precomputing text embeddings.")
@@ -373,15 +462,38 @@ def main(cfg: DictConfig):
         for cache_dir in cache_dirs:
             key = str(cache_dir)
             logger.info(
-                "Cache dir: %s | new=%d overwrite=%d skip=%d",
+                "Cache dir: %s | new=%d overwrite=%d skip=%d verified=%d",
                 key,
                 stats[key]["new"],
                 stats[key]["overwrite"],
                 stats[key]["skip"],
+                stats[key]["verified"],
+            )
+            if reuse_verified_provenance[key]:
+                continue
+            provenance = build_text_cache_provenance(
+                cache_dir=cache_dir,
+                cache_file_names=cache_file_names,
+                model_id=model_id,
+                tokenizer_model_id=tokenizer_model_id,
+                redirect_common_files=redirect_common_files,
+                context_len=context_len,
+                text_encoder_path=text_config.path,
+                tokenizer_path=tokenizer_config.path,
+                verified_file_count=stats[key]["verified"],
+            )
+            provenance_path = write_text_cache_provenance(cache_dir, provenance)
+            logger.info(
+                "Text cache provenance: %s sha256=%s",
+                provenance_path,
+                provenance["provenance_sha256"],
             )
 
     if is_distributed and dist.is_initialized():
         dist.barrier()
+    _release_cache_locks(cache_locks)
+    atexit.unregister(_release_cache_locks)
+    if is_distributed and dist.is_initialized():
         dist.destroy_process_group()
 
 

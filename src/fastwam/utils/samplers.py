@@ -8,11 +8,27 @@ from torch.utils.data import Sampler
 class ResumableEpochSampler(Sampler[int]):
     LENGTH_BUCKET_GLOBAL_BATCHES = 32
 
-    def __init__(self, dataset: Sized, seed: int, batch_size: int, num_processes: int):
+    def __init__(
+        self,
+        dataset: Sized,
+        seed: int,
+        batch_size: int,
+        num_processes: int,
+        gradient_accumulation_steps: int = 1,
+    ):
+        if (
+            isinstance(gradient_accumulation_steps, bool)
+            or not isinstance(gradient_accumulation_steps, int)
+            or gradient_accumulation_steps <= 0
+        ):
+            raise ValueError(
+                "gradient_accumulation_steps must be a positive integer"
+            )
         self.dataset = dataset
         self.seed = int(seed)
         self.batch_size = int(batch_size)
         self.num_processes = int(num_processes)
+        self.gradient_accumulation_steps = int(gradient_accumulation_steps)
         self.epoch = 0
         self.epoch_offset = 0
         self.resume_batch_offset = 0
@@ -74,16 +90,22 @@ class ResumableEpochSampler(Sampler[int]):
         # Complete global batches are shuffled once more to avoid a length
         # curriculum.  The only incomplete tail remains at the physical end,
         # where DataLoader/Accelerate expect it.
-        global_batch_size = self.batch_size * self.num_processes
-        mega_bucket_size = global_batch_size * self.LENGTH_BUCKET_GLOBAL_BATCHES
+        global_micro_batch_size = self.batch_size * self.num_processes
+        mega_bucket_size = (
+            global_micro_batch_size * self.LENGTH_BUCKET_GLOBAL_BATCHES
+        )
         complete_chunks: list[list[int]] = []
         tail: list[int] = []
         for mega_offset in range(0, len(indices), mega_bucket_size):
             mega_bucket = indices[mega_offset : mega_offset + mega_bucket_size]
             mega_bucket.sort(key=self._grouping_lengths.__getitem__)
-            complete_count = len(mega_bucket) // global_batch_size
-            for offset in range(0, complete_count * global_batch_size, global_batch_size):
-                chunk = mega_bucket[offset : offset + global_batch_size]
+            complete_count = len(mega_bucket) // global_micro_batch_size
+            for offset in range(
+                0,
+                complete_count * global_micro_batch_size,
+                global_micro_batch_size,
+            ):
+                chunk = mega_bucket[offset : offset + global_micro_batch_size]
                 # Accelerate gives each rank one consecutive local batch.  Round
                 # robin assignment keeps every rank's local maximum similar.
                 chunk.sort(key=self._grouping_lengths.__getitem__, reverse=True)
@@ -93,7 +115,7 @@ class ResumableEpochSampler(Sampler[int]):
                 complete_chunks.append(
                     [index for rank_bin in rank_bins for index in rank_bin]
                 )
-            remainder = mega_bucket[complete_count * global_batch_size :]
+            remainder = mega_bucket[complete_count * global_micro_batch_size :]
             if remainder:
                 if tail:
                     raise RuntimeError("only the final length mega-bucket may have a tail")
@@ -110,13 +132,16 @@ class ResumableEpochSampler(Sampler[int]):
         else:
             ordered = []
         ordered.extend(tail)
-        remainder = len(ordered) % global_batch_size
+        global_optimizer_batch_size = (
+            global_micro_batch_size * self.gradient_accumulation_steps
+        )
+        remainder = len(ordered) % global_optimizer_batch_size
         if remainder:
-            # Accelerate otherwise pads its distributed tail from the beginning
-            # of the *post-resume* iterator, which changes duplicated samples
-            # after a restart.  Padding the absolute epoch order here makes an
-            # uninterrupted and resumed run consume exactly the same indices.
-            needed = global_batch_size - remainder
+            # Accelerate synchronizes gradients at the dataloader boundary even
+            # when a full accumulation window has not completed. Padding the
+            # absolute epoch order to an optimizer-batch boundary keeps every
+            # update the declared size and makes resumed duplication exact.
+            needed = global_optimizer_batch_size - remainder
             repeats = (needed + len(ordered) - 1) // len(ordered)
             ordered.extend((ordered * repeats)[:needed])
         return ordered
@@ -133,7 +158,12 @@ class ResumableEpochSampler(Sampler[int]):
     def __len__(self) -> int:
         if self._grouping_lengths is None:
             return len(self.dataset)
-        global_batch_size = self.batch_size * self.num_processes
+        global_optimizer_batch_size = (
+            self.batch_size
+            * self.num_processes
+            * self.gradient_accumulation_steps
+        )
         return (
-            (len(self.dataset) + global_batch_size - 1) // global_batch_size
-        ) * global_batch_size
+            (len(self.dataset) + global_optimizer_batch_size - 1)
+            // global_optimizer_batch_size
+        ) * global_optimizer_batch_size

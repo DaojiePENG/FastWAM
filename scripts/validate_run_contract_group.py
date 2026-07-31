@@ -29,6 +29,11 @@ _REQUIRED_FIELDS = (
     "dataset_bytes",
     "text_embedding_cache_sha256",
     "text_embedding_cache_file_count",
+    "text_cache_provenance_sha256",
+    "text_cache_verification_method",
+    "text_cache_verified_file_count",
+    "text_encoder_checkpoint_sha256",
+    "tokenizer_sha256",
     "vae_checkpoint_sha256",
     "mode",
     "num_processes",
@@ -120,6 +125,7 @@ def _validate_semantics(contract: RunContract) -> None:
         "dataset_file_count",
         "dataset_bytes",
         "text_embedding_cache_file_count",
+        "text_cache_verified_file_count",
         "history_vae_batch_chunk_size",
         "initial_block_oversample",
         "save_every",
@@ -128,6 +134,22 @@ def _validate_semantics(contract: RunContract) -> None:
         "action_horizon",
     ):
         _positive_int(values, key)
+    if int(values["text_cache_verified_file_count"]) != int(
+        values["text_embedding_cache_file_count"]
+    ):
+        raise ValueError(
+            "text-cache verified/file counts differ: "
+            f"verified={values['text_cache_verified_file_count']} "
+            f"files={values['text_embedding_cache_file_count']}"
+        )
+    if values["text_cache_verification_method"] not in {
+        "source_forward_atomic_save_reload_tensor_exact",
+        "online_source_forward_cache_tensor_exact",
+    }:
+        raise ValueError(
+            "unsupported text_cache_verification_method: "
+            f"{values['text_cache_verification_method']!r}"
+        )
     try:
         int(values["seed"])
     except ValueError as error:

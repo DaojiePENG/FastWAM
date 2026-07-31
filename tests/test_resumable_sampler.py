@@ -1,3 +1,4 @@
+import pytest
 import torch
 from accelerate.data_loader import DataLoaderShard
 
@@ -132,6 +133,71 @@ def test_length_grouping_keeps_incomplete_tail_at_end_and_resume_exact():
     assert len(sampler) == 40
     sampler.set_resume_batch_offset(2)
     assert list(sampler) == full[16:]
+
+
+def test_length_grouping_pads_to_complete_gradient_accumulation_windows():
+    lengths = [index // 3 for index in range(37)]
+    dataset = _LengthDataset(lengths)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=23,
+        batch_size=2,
+        num_processes=4,
+        gradient_accumulation_steps=3,
+    )
+
+    epoch_zero = list(sampler)
+    assert len(epoch_zero) == 48
+    assert len(sampler) == 48
+    assert set(epoch_zero) == set(range(len(dataset)))
+    assert epoch_zero[-11:] == epoch_zero[:11]
+    assert (len(epoch_zero) // (2 * 4)) % 3 == 0
+
+    # Resume offsets remain global-microbatch offsets, not optimizer-step offsets.
+    sampler.set_resume_batch_offset(2)
+    assert list(sampler) == epoch_zero[2 * 2 * 4 :]
+
+    sampler.clear_resume_batch_offset()
+    sampler.set_epoch(1)
+    epoch_one = list(sampler)
+    assert len(epoch_one) == 48
+    assert set(epoch_one) == set(range(len(dataset)))
+    assert epoch_one != epoch_zero
+
+
+def test_length_grouping_default_ga_one_preserves_existing_order_and_length():
+    lengths = [index // 3 for index in range(37)]
+    dataset = _LengthDataset(lengths)
+    implicit = ResumableEpochSampler(
+        dataset=dataset,
+        seed=23,
+        batch_size=2,
+        num_processes=4,
+    )
+    explicit = ResumableEpochSampler(
+        dataset=dataset,
+        seed=23,
+        batch_size=2,
+        num_processes=4,
+        gradient_accumulation_steps=1,
+    )
+
+    assert list(explicit) == list(implicit)
+    assert len(explicit) == len(implicit) == 40
+
+
+@pytest.mark.parametrize("value", (0, -1, True, 1.5, "2"))
+def test_sampler_rejects_invalid_gradient_accumulation_steps(value):
+    with pytest.raises(
+        ValueError, match="gradient_accumulation_steps must be a positive integer"
+    ):
+        ResumableEpochSampler(
+            dataset=_Dataset(8),
+            seed=42,
+            batch_size=2,
+            num_processes=1,
+            gradient_accumulation_steps=value,
+        )
 
 
 def test_accelerate_dataloader_shard_advances_sampler_epoch():

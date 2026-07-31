@@ -51,8 +51,8 @@ if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 1 ]] \
 fi
 for expected_field in \
     num_processes=8 \
-    batch_size=1 \
-    gradient_accumulation_steps=16 \
+    batch_size=8 \
+    gradient_accumulation_steps=2 \
     history_vae_batch_chunk_size=1 \
     padding_attention_mask=true \
     history_training_mode=incremental_full_bptt \

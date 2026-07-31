@@ -259,6 +259,14 @@ def test_runtime_contract_audits_recursive_physical_kv_retention(
             "distribution": distribution_name,
         },
     )
+    monkeypatch.setattr(
+        eval_contract,
+        "build_wan_conditioning_identity",
+        lambda **kwargs: {
+            "schema_version": 1,
+            "identity_sha256": "d" * 64,
+        },
+    )
     cfg = OmegaConf.create(
         {
             "ckpt": str(tmp_path / "checkpoint.pt"),
@@ -276,7 +284,12 @@ def test_runtime_contract_audits_recursive_physical_kv_retention(
                 "replan_steps": 10,
                 "action_horizon": 32,
             },
-            "model": {"causal_mode": "interleaved"},
+            "model": {
+                "causal_mode": "interleaved",
+                "model_id": "Wan-AI/Wan2.2-TI2V-5B",
+                "tokenizer_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                "load_text_encoder": True,
+            },
             "data": {
                 "train": {
                     "num_frames": 33,
@@ -300,6 +313,7 @@ def test_runtime_contract_audits_recursive_physical_kv_retention(
     assert memory["retention_semantics"] == KV_RETENTION_SEMANTICS
     assert memory["effective_kv_retention_cap"] == effective_kv_retention_cap
     assert memory["effective_history_cap"] == effective_kv_retention_cap
+    assert contract["conditioning_assets"]["identity_sha256"] == "d" * 64
 
 
 @pytest.mark.parametrize(

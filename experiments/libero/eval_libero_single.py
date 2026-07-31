@@ -104,6 +104,7 @@ def _build_result_fingerprint(
     dataset_stats_path: Path,
     task: Any,
     initial_states_path: Path,
+    resolved_model_paths: dict[str, Any],
 ) -> dict[str, Any]:
     """Build identity from actual files and strictly verify preflight output."""
     hydra_choices = OmegaConf.to_container(
@@ -117,6 +118,7 @@ def _build_result_fingerprint(
         dataset_stats_path=dataset_stats_path,
         source_root=project_root,
         configured_causal_mode=configured_causal_mode,
+        resolved_model_paths=resolved_model_paths,
     )
     result_contract = build_result_contract(
         cfg,
@@ -891,6 +893,7 @@ def eval_single_process(cfg: DictConfig):
         dataset_stats_path=dataset_stats_path,
         task=task,
         initial_states_path=initial_states_path,
+        resolved_model_paths=dict(getattr(model, "model_paths", {})),
     )
 
     local_log_dir = Path(cfg.EVALUATION.output_dir)

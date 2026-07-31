@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from omegaconf import DictConfig, OmegaConf
 
+from leapbot_va.conditioning_assets import build_wan_conditioning_identity
 from leapbot_va.eval_fingerprint import normalize_json_value, sha256_file
 
 
@@ -178,6 +179,7 @@ def build_runtime_contract(
     dataset_stats_path: str | Path,
     source_root: str | Path,
     configured_causal_mode: str | None = None,
+    resolved_model_paths: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Expand every inference-relevant setting into a stable JSON contract."""
     evaluation = cfg.EVALUATION
@@ -223,6 +225,20 @@ def build_runtime_contract(
     processor_config = _to_resolved_container(cfg.data.train.processor)
     model_config = _to_resolved_container(cfg.model)
     dataset_stats = Path(dataset_stats_path).resolve()
+    required_asset_keys = ("model_id", "tokenizer_model_id")
+    missing_asset_keys = [key for key in required_asset_keys if key not in model_config]
+    if missing_asset_keys:
+        raise ValueError(
+            "evaluation model config cannot identify Wan conditioning assets; "
+            f"missing={missing_asset_keys}"
+        )
+    conditioning_assets = build_wan_conditioning_identity(
+        model_id=str(model_config["model_id"]),
+        tokenizer_model_id=str(model_config["tokenizer_model_id"]),
+        redirect_common_files=bool(model_config.get("redirect_common_files", True)),
+        load_text_encoder=bool(model_config.get("load_text_encoder", True)),
+        resolved_paths=resolved_model_paths,
+    )
 
     contract = {
         "config": {
@@ -264,6 +280,7 @@ def build_runtime_contract(
         "normalization": {
             "dataset_stats_sha256": sha256_file(dataset_stats),
         },
+        "conditioning_assets": conditioning_assets,
         "precision_and_adapters": {
             "mixed_precision": str(cfg.get("mixed_precision", "bf16")).lower(),
             "merge_video_lora": bool(evaluation.get("merge_video_lora", False)),

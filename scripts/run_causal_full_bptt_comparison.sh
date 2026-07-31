@@ -26,8 +26,8 @@ H0_SELECTION_MANIFEST_SHA256="$(sha256sum "$H0_SELECTION_MANIFEST" | awk '{print
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 MAX_STEPS="${MAX_STEPS:-1115}"
 SAVE_EVERY="${SAVE_EVERY:-223}"
-BATCH_SIZE="${BATCH_SIZE:-1}"
-GRAD_ACCUM="${GRAD_ACCUM:-16}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
@@ -35,7 +35,7 @@ WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 SEED="${SEED:-42}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v4_d30_e5_bs128_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v5_mb8_ga2_d30_e5_bs128_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
 CANONICAL_MODES=(action_aggregator interleaved vision_causal)
@@ -44,8 +44,8 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 1 ]] || [[ "$GRAD_ACCUM" -ne 16 ]]; then
-    log "formal comparison requires 8 GPUs x batch 1 x grad accumulation 16 (global batch 128)"
+if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 8 ]] || [[ "$GRAD_ACCUM" -ne 2 ]]; then
+    log "formal comparison requires 8 GPUs x batch 8 x grad accumulation 2 (global batch 128)"
     exit 1
 fi
 if (( ${#MODES[@]} == 0 )); then
@@ -175,7 +175,7 @@ for mode in "${MODES[@]}"; do
     DATASET_STATS="$DATASET_STATS" \
     SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-incremental-full-bptt-v4-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed${SEED}" \
+    RUN_NAME="causal-incremental-full-bptt-v5-mb8-ga2-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \

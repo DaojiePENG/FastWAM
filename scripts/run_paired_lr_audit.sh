@@ -6,10 +6,10 @@ set -euo pipefail
 # observations, flow timesteps, Gaussian noise, and causal-history controls.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v5_s100_bs80_chunk1}"
+SCREEN_ROOT="${SCREEN_ROOT:-$ROOT_DIR/runs/lr_screen_incremental_v6_mb10_ga2_s100_bs80_chunk1}"
 FINAL_STEP="${FINAL_STEP:-100}"
 GPU_ID="${GPU_ID:-0}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/lr_audit_incremental_v5_s${FINAL_STEP}}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/lr_audit_incremental_v6_mb10_ga2_s${FINAL_STEP}}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 FINAL_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
@@ -48,6 +48,10 @@ for index in "${!CANDIDATE_CHECKPOINTS[@]}"; do
         --contract "action_aggregator=$contract_file" \
         --expected-field "learning_rate=$learning_rate" \
         --expected-field "max_steps=$FINAL_STEP" \
+        --expected-field num_processes=4 \
+        --expected-field batch_size=10 \
+        --expected-field gradient_accumulation_steps=2 \
+        --expected-field global_batch=80 \
         --expected-field padding_attention_mask=true \
         >/dev/null
     expected_contract="$(awk -F= '$1 == "run_contract_sha256" {print $2}' "$contract_file")"

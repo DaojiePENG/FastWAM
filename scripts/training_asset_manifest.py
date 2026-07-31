@@ -9,6 +9,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fastwam.datasets.lerobot.text_cache import (
+    DEFAULT_PROMPT,
+    wan_text_cache_filename,
+)
+from leapbot_va.conditioning_assets import (
+    load_and_validate_text_cache_provenance,
+    resolve_wan_conditioning_paths,
+)
+
 
 PINNED_REVISIONS = {
     "yuanty/LIBERO-fastwam": "117413dc0ca99c7cd64036c4eaa4a316c537d692",
@@ -48,6 +57,33 @@ def _sha256_file(path: Path) -> str:
 def _canonical_sha256(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def expected_text_cache_files(
+    dataset_dirs: list[Path], *, context_len: int, model_id: str
+) -> list[str]:
+    """Derive the exact cache key set consumed by the formal datasets."""
+    prompts: set[str] = set()
+    for dataset_dir in dataset_dirs:
+        tasks_path = dataset_dir.expanduser().resolve() / "meta" / "tasks.jsonl"
+        if not tasks_path.is_file():
+            raise FileNotFoundError(f"formal dataset tasks metadata is missing: {tasks_path}")
+        with tasks_path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if not isinstance(item, dict) or "task" not in item:
+                    raise ValueError(f"missing task at {tasks_path}:{line_number}")
+                prompts.add(DEFAULT_PROMPT.format(task=str(item["task"])))
+    if not prompts:
+        raise ValueError("formal datasets contain no text prompts")
+    return sorted(
+        wan_text_cache_filename(
+            prompt, context_len=context_len, model_id=model_id
+        )
+        for prompt in prompts
+    )
 
 
 def hash_tree(path: Path) -> dict[str, Any]:
@@ -141,6 +177,13 @@ def build_manifest(
     text_embedding_cache: Path,
     vae_checkpoint: Path,
     download_manifest: Path,
+    text_encoder_checkpoint: Path,
+    tokenizer_dir: Path,
+    *,
+    model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
+    tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+    redirect_common_files: bool = True,
+    context_len: int = 128,
 ) -> dict[str, Any]:
     if len(dataset_dirs) != 4:
         raise ValueError(f"formal LIBERO training requires exactly four datasets, got {len(dataset_dirs)}")
@@ -152,19 +195,46 @@ def build_manifest(
         {key: item[key] for key in ("file_count", "bytes", "sha256")} | {"name": name}
         for name, item in sorted(zip(names, datasets))
     ]
-    text_cache = hash_tree(text_embedding_cache)
+    text_cache_provenance = load_and_validate_text_cache_provenance(
+        text_embedding_cache,
+        text_encoder_path=text_encoder_checkpoint,
+        tokenizer_path=tokenizer_dir,
+        model_id=model_id,
+        tokenizer_model_id=tokenizer_model_id,
+        redirect_common_files=redirect_common_files,
+        context_len=context_len,
+        required_verification_method="online_source_forward_cache_tensor_exact",
+    )
+    cache_path = text_embedding_cache.expanduser().resolve()
+    expected_cache_files = expected_text_cache_files(
+        dataset_dirs, context_len=context_len, model_id=model_id
+    )
+    if text_cache_provenance["cache_files"] != expected_cache_files:
+        missing = sorted(
+            set(expected_cache_files) - set(text_cache_provenance["cache_files"])
+        )
+        extra = sorted(
+            set(text_cache_provenance["cache_files"]) - set(expected_cache_files)
+        )
+        raise ValueError(
+            f"text cache provenance does not match dataset prompts: "
+            f"missing={missing} extra={extra}"
+        )
+    text_cache = dict(text_cache_provenance["cache"])
+    text_cache["path"] = str(cache_path)
     vae = vae_checkpoint.expanduser().resolve()
     if not vae.is_file():
         raise FileNotFoundError(vae)
     download_identity = _validated_download_manifest(download_manifest)
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "download_manifest": download_identity,
         "datasets": datasets,
         "dataset_file_count": sum(item["file_count"] for item in datasets),
         "dataset_bytes": sum(item["bytes"] for item in datasets),
         "dataset_content_sha256": _canonical_sha256(dataset_identity),
         "text_embedding_cache": text_cache,
+        "text_cache_provenance": text_cache_provenance,
         "vae_checkpoint": {
             "path": str(vae),
             "bytes": vae.stat().st_size,
@@ -184,6 +254,15 @@ def build_manifest(
             "text_embedding_cache_sha256": text_cache["sha256"],
             "text_embedding_cache_file_count": text_cache["file_count"],
             "text_embedding_cache_bytes": text_cache["bytes"],
+            "text_cache_provenance_sha256": text_cache_provenance[
+                "provenance_sha256"
+            ],
+            "text_encoder_checkpoint_sha256": text_cache_provenance[
+                "source_assets"
+            ]["text_encoder"]["sha256"],
+            "tokenizer_sha256": text_cache_provenance["source_assets"][
+                "tokenizer"
+            ]["sha256"],
             "vae_checkpoint_sha256": result["vae_checkpoint"]["sha256"],
             "vae_checkpoint_bytes": result["vae_checkpoint"]["bytes"],
         }
@@ -197,13 +276,42 @@ def main() -> None:
     parser.add_argument("--text-embedding-cache", type=Path, required=True)
     parser.add_argument("--vae-checkpoint", type=Path, required=True)
     parser.add_argument("--download-manifest", type=Path, required=True)
+    parser.add_argument("--model-id", default="Wan-AI/Wan2.2-TI2V-5B")
+    parser.add_argument(
+        "--tokenizer-model-id", default="Wan-AI/Wan2.1-T2V-1.3B"
+    )
+    parser.add_argument(
+        "--redirect-common-files",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--context-len", type=int, default=128)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    resolved = resolve_wan_conditioning_paths(
+        model_id=args.model_id,
+        tokenizer_model_id=args.tokenizer_model_id,
+        redirect_common_files=args.redirect_common_files,
+        load_text_encoder=True,
+    )
+    configured_vae = args.vae_checkpoint.expanduser().resolve()
+    resolved_vae = Path(str(resolved["vae"])).expanduser().resolve()
+    if configured_vae != resolved_vae:
+        raise ValueError(
+            "--vae-checkpoint is not the VAE resolved by the configured Wan loader: "
+            f"configured={configured_vae} resolved={resolved_vae}"
+        )
     result = build_manifest(
         args.dataset_dir,
         args.text_embedding_cache,
-        args.vae_checkpoint,
+        resolved_vae,
         args.download_manifest,
+        Path(str(resolved["text_encoder"])),
+        Path(str(resolved["tokenizer"])),
+        model_id=args.model_id,
+        tokenizer_model_id=args.tokenizer_model_id,
+        redirect_common_files=args.redirect_common_files,
+        context_len=args.context_len,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")

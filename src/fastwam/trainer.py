@@ -11,6 +11,7 @@ import time
 import numpy as np
 import torch
 from accelerate import Accelerator
+from accelerate.utils import DistributedType
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch.optim.lr_scheduler import ConstantLR, LambdaLR, LinearLR, SequentialLR
@@ -149,6 +150,9 @@ class Wan22Trainer:
         self.model, self.optimizer, self.train_loader, self.scheduler = self.accelerator.prepare(
             self.model, self.optimizer, self.train_loader, self.scheduler
         )
+        self.distributed_training_topology = (
+            self._assert_deepspeed_training_topology()
+        )
         self.optimizer.zero_grad(set_to_none=True)
         self.wandb_run = None
         self._init_wandb()
@@ -214,6 +218,7 @@ class Wan22Trainer:
             seed=self.seed,
             batch_size=self.batch_size,
             num_processes=self.accelerator.num_processes,
+            gradient_accumulation_steps=self.gradient_accumulation_steps,
         )
         return DataLoader(
             dataset,
@@ -224,6 +229,108 @@ class Wan22Trainer:
             pin_memory=torch.cuda.is_available(),
             worker_init_fn=worker_init_fn,
         )
+
+    def _assert_deepspeed_training_topology(self) -> dict[str, int] | None:
+        """Verify the topology resolved by the prepared DeepSpeed engine."""
+
+        if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
+            return None
+
+        plugin = getattr(self.accelerator.state, "deepspeed_plugin", None)
+        config = None if plugin is None else getattr(plugin, "deepspeed_config", None)
+        try:
+            configured_zero_stage = int(config["zero_optimization"]["stage"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                "DeepSpeed plugin is missing a concrete zero_optimization.stage"
+            ) from error
+
+        accessor_names = {
+            "micro_batch_size_per_gpu": "train_micro_batch_size_per_gpu",
+            "gradient_accumulation_steps": "gradient_accumulation_steps",
+            "global_batch_size": "train_batch_size",
+            "zero_stage": "zero_optimization_stage",
+        }
+        actual: dict[str, int] = {}
+        for field, accessor_name in accessor_names.items():
+            accessor = getattr(self.model, accessor_name, None)
+            if not callable(accessor):
+                raise RuntimeError(
+                    "prepared DeepSpeed engine is missing topology accessor "
+                    f"{accessor_name}"
+                )
+            try:
+                actual[field] = int(accessor())
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"DeepSpeed topology accessor {accessor_name} returned "
+                    "a non-integer value"
+                ) from error
+
+        expected = {
+            "micro_batch_size_per_gpu": self.batch_size,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "global_batch_size": (
+                self.batch_size
+                * self.gradient_accumulation_steps
+                * self.accelerator.num_processes
+            ),
+            "zero_stage": configured_zero_stage,
+        }
+        mismatches = {
+            field: (expected[field], actual[field])
+            for field in expected
+            if actual[field] != expected[field]
+        }
+        if mismatches:
+            details = ", ".join(
+                f"{field}: expected={expected_value} actual={actual_value}"
+                for field, (expected_value, actual_value) in mismatches.items()
+            )
+            raise RuntimeError(f"DeepSpeed training topology mismatch: {details}")
+
+        logger.info(
+            "Verified DeepSpeed topology: micro_batch_per_gpu=%d "
+            "grad_accum=%d global_batch=%d world_size=%d zero_stage=%d",
+            actual["micro_batch_size_per_gpu"],
+            actual["gradient_accumulation_steps"],
+            actual["global_batch_size"],
+            self.accelerator.num_processes,
+            actual["zero_stage"],
+        )
+        return actual
+
+    def _clip_and_validate_gradient_norm(self) -> float:
+        """Clip gradients and make every rank fail before stepping on non-finite norms."""
+
+        grad_norm = self.accelerator.clip_grad_norm_(
+            self.model.parameters(), self.max_grad_norm
+        )
+        local_grad_norm = torch.as_tensor(
+            grad_norm,
+            device=self.accelerator.device,
+            dtype=torch.float32,
+        ).detach()
+        if local_grad_norm.numel() != 1:
+            raise RuntimeError(
+                "clip_grad_norm_ must return one scalar per rank, got "
+                f"shape={tuple(local_grad_norm.shape)}"
+            )
+        gathered_grad_norms = self.accelerator.gather(
+            local_grad_norm.reshape(1)
+        ).reshape(-1)
+        if not bool(torch.isfinite(gathered_grad_norms).all().item()):
+            values = gathered_grad_norms.cpu().tolist()
+            raise FloatingPointError(
+                "non-finite clipped gradient norm across ranks; "
+                f"rank_values={values}"
+            )
+        return float(gathered_grad_norms.mean().item())
+
+    def _optimizer_step_with_validated_gradients(self) -> float:
+        global_grad_norm = self._clip_and_validate_gradient_norm()
+        self.optimizer.step()
+        return global_grad_norm
 
     def _assert_dataset_length_consistent(self, dataset, dataset_name: str):
         if not hasattr(dataset, "__len__"):
@@ -878,8 +985,9 @@ class Wan22Trainer:
                 self.accelerator.backward(loss)
 
                 if self.accelerator.sync_gradients:
-                    grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    self.optimizer.step()
+                    global_grad_norm = (
+                        self._optimizer_step_with_validated_gradients()
+                    )
                     if not self.accelerator.optimizer_step_was_skipped:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
@@ -928,8 +1036,6 @@ class Wan22Trainer:
                             self.metric_ema_beta * previous
                             + (1.0 - self.metric_ema_beta) * value
                         )
-                    grad_norm_tensor = torch.tensor(grad_norm, device=loss.device, dtype=torch.float32)
-                    global_grad_norm = float(self.accelerator.gather(grad_norm_tensor).mean().item())
                     if self.accelerator.device.type == "cuda":
                         peak_allocated = torch.tensor(
                             torch.cuda.max_memory_allocated(self.accelerator.device),
@@ -971,10 +1077,11 @@ class Wan22Trainer:
                             * self.gradient_accumulation_steps
                         )
                         description += (
-                            "lr=%.2e speed=%.2f step/s, %.2f samples/s "
+                            "lr=%.2e grad_norm=%.4f speed=%.2f step/s, %.2f samples/s "
                             "peak_allocated=%.2fGiB peak_reserved=%.2fGiB eta=%s"
                         ) % (
                             current_lr,
+                            global_grad_norm,
                             steps_per_sec,
                             samples_per_second,
                             global_peak_allocated_gib,
