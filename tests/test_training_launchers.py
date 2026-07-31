@@ -17,6 +17,7 @@ def test_canonical_shell_surface_is_executable_and_old_names_are_absent():
         "evaluate_checkpoint.sh",
         "evaluate_fastwam_baseline.sh",
         "evaluate_pareto.sh",
+        "probe_zero2_high_history_capacity.sh",
     )
     for name in canonical:
         path = ROOT / "scripts" / name

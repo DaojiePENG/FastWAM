@@ -490,6 +490,49 @@ canonical launcher 在结束时会运行 `validate_leapbot_checkpoint.py` 并生
 | 上述两个 run 同时运行 | 2026-07-31 step8 整机快照 | `free -h` 当时显示全机 used 158–159 GiB / total 1.8 TiB / available 1.6 TiB / 无 swap；这是系统级占用，不能全部归因到训练进程，也不是训练完成值 |
 | 单卡 full-optimizer B10，真实 H41–H50，2 updates×2 microbatches | 显存压力实测 | action_aggregator 47.01/49.93 GiB、interleaved 47.63/50.10 GiB、vision_causal 49.02/51.21 GiB（allocated/reserved） |
 
+上表的单卡 `full_prefix_smoke.py` 会完整执行真实图和 AdamW，但它不是
+DeepSpeed engine，因此只能用作保守趋势证据，不能代替最终 8 卡拓扑验收。正式
+扩大 micro-batch 前运行 checkpoint-free 容量探针：
+
+```bash
+su sheng -c '
+  cd /home/sheng/workspace/leapbot-va &&
+  BATCH_SIZE=20 \
+  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_b20 \
+  bash scripts/probe_zero2_high_history_capacity.sh
+'
+```
+
+该入口固定为 8 卡、ZeRO-2、BF16、`action_aggregator`、D30、chunk1、
+`incremental_full_bptt`、正式 ActionDiT/VideoLoRA optimizer，并执行恰好两次
+optimizer update。每个 rank 的一个 micro-batch 包含 B 个不同的真实数据行；每行
+都是同一 episode 内未截断、未合成的 H41–H50 完整前缀。固定批次只在 rank 和
+update 之间重复，历史张量本身绝不复制延长。探针禁用 W&B，且不得写 portable
+weights 或 DeepSpeed state；结果只写 `capacity_probe.json`、小型 config/contract
+和日志。
+
+当前 release 数据对 B20 的确定性选择为 H44×8、H45×6、H46×2、
+H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择和每 rank
+收到的数据行/H 列表都会写入报告，不能只凭配置推断。
+
+先测 B20。若报告 `status=passed` 且最坏 rank 的 `global_peak_reserved_gib` 落在
+约 70–75 GiB，可把 B20/GA1 作为候选。若 launcher OOM，它仍会聚合 rank OOM
+证据并明确写出 `status=oom`；随后必须换全新目录回退 B18：
+
+```bash
+su sheng -c '
+  cd /home/sheng/workspace/leapbot-va &&
+  BATCH_SIZE=18 \
+  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_b18 \
+  bash scripts/probe_zero2_high_history_capacity.sh
+'
+```
+
+容量通过不等于可以悄悄改变实验合同。8 卡 B20/GA1 的 global batch 是 160；
+B18/GA1 是 144；原 B8/GA2 和 B16/GA1 都是 128。最终选择若改变 global batch，
+三种 causal mode 必须统一采用同一 B/GA/world、重新冻结每 epoch optimizer step、
+scheduler/save 间隔和 run contract，不能从 global128 的 optimizer state 续训。
+
 ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 3 个 dataloader workers、视频解码/预取、Python/模型元数据和系统 page cache。迁移到较小 RAM 节点时应实测，不应把 1.8 TiB 机器上的 available 数字当作最低要求。
 
 ### 10.2 时间规划

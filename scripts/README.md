@@ -22,6 +22,9 @@
 - `evaluate_checkpoint.sh`：评测一个 LeapBot checkpoint。
 - `evaluate_fastwam_baseline.sh`：评测 FastWAM release baseline。
 - `precompute_text_embeds.py`：正式训练前生成 T5 prompt cache。
+- `probe_zero2_high_history_capacity.sh`：在正式训练前，用真实 H41–H50
+  前缀做两次无 checkpoint 的 8 卡 ZeRO-2 显存验收；默认先测 B20，OOM
+  时用新输出目录改测 B18。
 
 这些入口都应从仓库根目录执行，并由实际拥有数据与 checkpoint 的用户运行。
 不要把 `train.py` 当作正式入口：它是 Hydra/Trainer 内核，不包含完整的资产、GPU、
@@ -38,6 +41,8 @@ run-contract 和 checkpoint 验收保护。
 - `history_audit_selection.py`、`history_stratified_loss.py`：固定噪声历史审计与选择报告。
 - `full_prefix_smoke.py`、`validate_real_6b_runtime_training_equivalence.py`：
   验证完整历史训练和在线 KV 路径的数值等价性。
+- `probe_zero2_high_history_capacity.py`：上述 8 卡容量入口的 Hydra/Trainer
+  内核；不要脱离 shell 入口直接作为正式训练器使用。
 - `preprocess_action_dit_backbone.py`：上游 FastWAM checkpoint 准备工具。
 
 `accelerate_configs/` 与 `ds_configs/` 是 `train_leapbot.sh` 使用的正式 DeepSpeed 配置，
