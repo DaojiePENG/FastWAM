@@ -9,7 +9,7 @@ SOURCE_TRAIN_ROOT="${SOURCE_TRAIN_ROOT:?SOURCE_TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
 SOURCE_STEP="${SOURCE_STEP:?SOURCE_STEP is required}"
 MAX_STEPS="${MAX_STEPS:?MAX_STEPS is required}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/multi_exit_incremental_full_bptt}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/multi_exit_incremental_full_bptt_b1_ga16_bs128}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
@@ -53,8 +53,9 @@ if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 1 ]] \
 fi
 for expected_field in \
     num_processes=8 \
-    batch_size=8 \
-    gradient_accumulation_steps=2 \
+    batch_size=20 \
+    gradient_accumulation_steps=1 \
+    global_batch=160 \
     history_vae_batch_chunk_size=1 \
     padding_attention_mask=true \
     history_training_mode=incremental_full_bptt \
@@ -126,7 +127,7 @@ RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
 RELEASE_CHECKPOINT_SHA256="$SOURCE_RELEASE_SHA256" \
 DATASET_STATS="$DATASET_STATS" \
 SEED="$SOURCE_SEED" \
-RUN_NAME="multi-exit-incremental-full-bptt-${MODE//_/-}-s${MAX_STEPS}-seed42" \
+RUN_NAME="multi-exit-incremental-full-bptt-b1-ga16-bs128-${MODE//_/-}-s${MAX_STEPS}-seed42" \
 WANDB_ENABLED="$WANDB_ENABLED" \
 WANDB_MODE="$WANDB_MODE" \
 MAIN_PROCESS_PORT=29972 \

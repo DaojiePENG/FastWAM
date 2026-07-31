@@ -88,8 +88,12 @@ def test_base_launcher_contract_identifies_initial_weights_and_exit_set():
     assert 'ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT"' in source
     assert 'RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"' in source
     assert '"padding_attention_mask=true"' in source
-    assert "final_incremental_full_bptt_v5_mb8_ga2_" in source
-    assert "final-incremental-full-bptt-v5-mb8-ga2" in source
+    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
+    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert 'TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"' in source
+    assert "${TOPOLOGY_TAG}" in source
+    assert "mb8_ga2" not in source
+    assert "mb8-ga2" not in source
     assert "full_bptt_v4" not in source
     assert "full-bptt-v4" not in source
 
@@ -108,8 +112,10 @@ def test_multi_exit_launcher_requires_winner_and_all_four_exits():
     assert "full_episode_history=true" in source
     assert "padding_attention_mask=true" in source
     assert "training_exit_depths=30" in source
-    assert "batch_size=8" in source
-    assert "gradient_accumulation_steps=2" in source
+    assert "batch_size=20" in source
+    assert "gradient_accumulation_steps=1" in source
+    assert "global_batch=160" in source
+    assert "multi_exit_incremental_full_bptt_b1_ga16_bs128" in source
     assert "^[0-9a-f]{64}$" in source
     assert "^[0-9a-f]{40}$" in source
     assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
@@ -131,12 +137,31 @@ def test_formal_causal_comparison_requires_self_identifying_checkpoints():
     assert "--expected-kind initial_block_oversample" in source
     assert "lr_selection_manifest_sha256" in source
     assert "h0_selection_manifest_sha256" in source
-    assert "causal_incremental_full_bptt_v5_mb8_ga2" in source
-    assert "causal-incremental-full-bptt-v5-mb8-ga2" in source
-    assert 'BATCH_SIZE="${BATCH_SIZE:-8}"' in source
-    assert 'GRAD_ACCUM="${GRAD_ACCUM:-2}"' in source
+    assert "causal_incremental_full_bptt_v5_b20_ga1" in source
+    assert "causal-incremental-full-bptt-v5-b20-ga1" in source
+    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
+    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert 'MAX_STEPS="${MAX_STEPS:-895}"' in source
+    assert 'SAVE_EVERY="${SAVE_EVERY:-179}"' in source
+    assert '[[ "$BATCH_SIZE" -ne 20 ]]' in source
+    assert '[[ "$GRAD_ACCUM" -ne 1 ]]' in source
+    assert '[[ "$GLOBAL_BATCH" -ne 160 ]]' in source
+    assert "mb8_ga2" not in source
+    assert "mb8-ga2" not in source
     assert "full_bptt_v4" not in source
     assert "full-bptt-v4" not in source
+
+
+def test_candidate_formal_budget_is_five_x1_epochs_and_fixed_under_h0_x4():
+    launcher = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
+    docs = (ROOT / "docs" / "TRAINING_AND_REPRODUCTION.md").read_text()
+
+    assert 'MAX_STEPS="${MAX_STEPS:-895}"' in launcher
+    assert 'SAVE_EVERY="${SAVE_EVERY:-179}"' in launcher
+    assert "ceil(28523 / 160) = 179" in docs
+    assert "`895` optimizer steps" in docs
+    assert "不是按扩增后的数据长度重算" in docs
+    assert "必须先" in docs and "H41--H50" in docs
 
 
 def test_h0_retention_screen_consumes_the_selected_lr():

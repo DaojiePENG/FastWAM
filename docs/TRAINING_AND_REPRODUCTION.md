@@ -47,10 +47,17 @@ model.history_vae_batch_chunk_size=1
 |---|---|---:|---:|---:|---:|---:|
 | 学习率配对筛选 | 两个 run 并发，各占 4 卡 | 4 | 10 | 2 | 80 | D30 |
 | H0 保真配对筛选 | 两个 run 并发，各占 4 卡 | 4 | 10 | 2 | 80 | D30 |
-| 三种 causal 模式正式训练 | 三个 run 顺序运行，各用 8 卡 | 8 | 8 | 2 | 128 | D30 |
+| 三种 causal 模式候选正式训练 | 三个 run 顺序运行，各用 8 卡 | 8 | 20 | 1 | 160 | D30 |
 | 多出口训练 | 一个 8 卡 run | 8 | 1 | 16 | 128 | D8/16/24/30 |
 
 每次 optimizer step 都是完整 global batch。`ResumableEpochSampler` 会把 epoch 尾部确定性补齐到 `B × GA × world_size` 的整数倍，避免 Accelerate 在 dataloader 结尾提前同步一个不足 global batch 的更新。
+
+表中的 D30 `B20/GA1/global160` 是为了充分使用 80 GiB H800 而准备的候选
+正式拓扑，不是仅凭静态配置就已经冻结的结果。它必须先在目标硬件、目标 mode 和
+同一代码 commit 上通过第 10.1 节的真实 H41--H50 ZeRO-2 容量探针，确认无 OOM、
+两次 optimizer update 都真实提交且没有写 checkpoint，之后才能启动该 mode 的
+正式训练。若探针失败，必须形成新的 B/GA/global-batch 协议并重新计算步数，不能
+绕过 launcher guard。
 
 ## 2. 模型和训练不变量
 
@@ -242,7 +249,7 @@ canonical launcher 会强制注入并散列 release dataset stats。若绕过它
 DeepSpeed JSON 的 batch 字段为 `auto`，但这不意味着拓扑未经检查。`Accelerator.prepare()` 后，Trainer 从实际 DeepSpeed engine 读取 micro-batch、GA、global batch 和 ZeRO stage，与 Hydra 配置逐项比较；任一不一致立即失败。日志中必须出现类似：
 
 ```text
-Verified DeepSpeed topology: micro_batch_per_gpu=8 grad_accum=2 global_batch=128 world_size=8 zero_stage=2
+Verified DeepSpeed topology: micro_batch_per_gpu=20 grad_accum=1 global_batch=160 world_size=8 zero_stage=2
 ```
 
 每个 optimizer step 前还会收集所有 rank 的 gradient norm；任一 rank 非有限时在 `optimizer.step()` 前失败。
@@ -340,16 +347,24 @@ bash scripts/audit_h0_retention.sh
 export H0_SELECTION_MANIFEST="$H0_AUDIT_ROOT/initial_block_oversample_selection.json"
 ```
 
-### 8.3 三种 D30 causal 模式正式训练
+### 8.3 三种 D30 causal 模式候选正式训练
+
+先按第 10.1 节在准备运行的 causal mode 上完成 B20 容量探针。通过后，固定数据
+`x1` 有 28,523 个 replan 样本，因此每 epoch 为
+`ceil(28523 / 160) = 179` 个 optimizer steps；五个等计算量 epoch 的预算为
+`895` steps，每 179 steps 保存一次。若 H0 审计选择 `x4`，正式三模式仍统一跑
+`895` optimizer steps，而不是按扩增后的数据长度重算“五个 augmented epochs”。
+这样三种 mode 的 optimizer update、global batch 和总计算预算完全一致；`x4` 只
+改变抽样分布。
 
 ```bash
-export CAUSAL_TRAIN_ROOT="$ROOT_DIR/runs/causal_full_history_d30_s1115_seed42"
+export CAUSAL_TRAIN_ROOT="$ROOT_DIR/runs/causal_full_history_d30_b20_ga1_s895_seed42"
 
 LR_SELECTION_MANIFEST="$LR_SELECTION_MANIFEST" \
 H0_SELECTION_MANIFEST="$H0_SELECTION_MANIFEST" \
 TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-MAX_STEPS=1115 \
-SAVE_EVERY=223 \
+MAX_STEPS=895 \
+SAVE_EVERY=179 \
 bash scripts/train_causal_modes.sh
 ```
 
@@ -364,7 +379,7 @@ bash scripts/train_causal_modes.sh
 ```bash
 export DEV_EVAL_ROOT="$ROOT_DIR/evaluate_results/causal_full_history_dev10"
 TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-FINAL_STEP=1115 \
+FINAL_STEP=895 \
 NUM_TRIALS=10 \
 GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
 EVAL_ROOT="$DEV_EVAL_ROOT" \
@@ -376,7 +391,7 @@ bash scripts/evaluate_causal_modes.sh
 ```bash
 export FINAL_EVAL_ROOT="$ROOT_DIR/evaluate_results/causal_full_history_final50"
 TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-FINAL_STEP=1115 \
+FINAL_STEP=895 \
 NUM_TRIALS=50 \
 GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
 EVAL_ROOT="$FINAL_EVAL_ROOT" \
@@ -406,13 +421,13 @@ export MULTI_EXIT_ROOT="$ROOT_DIR/runs/multi_exit_full_history"
 
 SOURCE_TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
 MODE="$WINNER_MODE" \
-SOURCE_STEP=1115 \
+SOURCE_STEP=895 \
 MAX_STEPS="$MULTI_EXIT_STEPS" \
 TRAIN_ROOT="$MULTI_EXIT_ROOT" \
 bash scripts/train_multi_exit.sh
 ```
 
-`MAX_STEPS` 当前无隐式默认，必须在实验协议中先冻结。若决定给多出口与 D30 相同的 1115 次更新，应明确写 `MULTI_EXIT_STEPS=1115`；不要事后根据曲线改口径。
+`MAX_STEPS` 当前无隐式默认，必须在实验协议中先冻结。若决定给多出口与 D30 相同的 895 次更新，应明确写 `MULTI_EXIT_STEPS=895`；不要事后根据曲线改口径。多出口自身仍固定使用 8×B1×GA16/global128；其 source contract 则必须是已经验收的 D30 8×B20×GA1/global160。
 
 ### 8.6 深度×KV 保留上限 Pareto
 
@@ -464,7 +479,7 @@ checkpoint_validation.json
 
 安全恢复方法是：在相同 commit、相同资产、相同输出目录上，重新执行逐字相同的 canonical 命令。launcher 只选择已经完整写出 `trainer_state.json` 的最新 state，忽略半写入目录；Trainer 再检查 run contract 和 dataloader topology。不要手工把 `.pt` 当作“断点恢复”，因为这只加载权重，不恢复 optimizer/scheduler/step。
 
-`max_steps` 是 run contract 的组成部分。当前实现不支持把一个 1115-step run 原地改成 2000 steps 并声称是同一实验；应在开跑前冻结预算。不要用 `ALLOW_CROSS_CONTRACT_RESUME`、`ALLOW_DIRTY` 等逃生开关构造正式结果。
+`max_steps` 是 run contract 的组成部分。当前实现不支持把一个 895-step run 原地改成 2000 steps 并声称是同一实验；应在开跑前冻结预算。不要用 `ALLOW_CROSS_CONTRACT_RESUME`、`ALLOW_DIRTY` 等逃生开关构造正式结果。
 
 验证某个 final checkpoint 的关键证据：
 
@@ -484,8 +499,8 @@ canonical launcher 在结束时会运行 `validate_leapbot_checkpoint.py` 并生
 
 | 场景 | 状态 | 观测 |
 |---|---|---|
-| 8卡 ZeRO-2，B8/GA2/global128，两步 smoke | 实测 | step1 Hmean=5.7109/Hmax=8，113s，日志累计 1.13 samples/s；step2 Hmean=2.0938/Hmax=4，46s，累计 1.61 samples/s |
-| 同一两步 smoke | 实测 | 峰值每卡 allocated 21.00 GiB，reserved 22.07 GiB；含资产合同、模型加载和 checkpoint 保存的总墙钟 5m31s |
+| 历史验收：8卡 ZeRO-2，B8/GA2/global128，两步 smoke | 实测 | step1 Hmean=5.7109/Hmax=8，113s，日志累计 1.13 samples/s；step2 Hmean=2.0938/Hmax=4，46s，累计 1.61 samples/s；该结果证明旧拓扑链路，不是 B20 容量证据 |
+| 同一历史 B8/GA2 两步 smoke | 实测 | 峰值每卡 allocated 21.00 GiB，reserved 22.07 GiB；含资产合同、模型加载和 checkpoint 保存的总墙钟 5m31s；保留用于回归审计，不作为当前正式配方 |
 | 双 4 卡 LR 正式筛选，B10/GA2/global80 | 2026-07-31 step8 运行中快照 | 当时见到 Hmean 最高 18.125；峰值每卡 allocated 32.66 GiB、reserved 34.51 GiB，`nvidia-smi` 约 36.9 GiB；不是 100-step 最终峰值 |
 | 上述两个 run 同时运行 | 2026-07-31 step8 整机快照 | `free -h` 当时显示全机 used 158–159 GiB / total 1.8 TiB / available 1.6 TiB / 无 swap；这是系统级占用，不能全部归因到训练进程，也不是训练完成值 |
 | 单卡 full-optimizer B10，真实 H41–H50，2 updates×2 microbatches | 显存压力实测 | action_aggregator 47.01/49.93 GiB、interleaved 47.63/50.10 GiB、vision_causal 49.02/51.21 GiB（allocated/reserved） |
@@ -536,8 +551,10 @@ Accelerate 未报告 skipped；最终还断言 `global_steps` 总 delta 恰好�
 H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择和每 rank
 收到的数据行/H 列表都会写入报告，不能只凭配置推断。
 
-先测 B20。若报告 `status=passed` 且最坏 rank 的 `global_peak_reserved_gib` 落在
-约 70–75 GiB，可把 B20/GA1 作为候选。若 launcher OOM，它仍会聚合 rank OOM
+先测 B20。只有报告 `status=passed`、拓扑字段为 8×B20×GA1/global160、代码与
+资产身份匹配，并且最坏 rank 的 `global_peak_reserved_gib` 留有足够安全余量，
+才可冻结 B20/GA1 候选。`70–75 GiB` 是期望的充分利用区间，不是允许忽略 OOM、
+跳步或合同违规的宽限条件。若 launcher OOM，它仍会聚合 rank OOM
 证据并明确写出 `status=oom`；随后必须换全新目录回退 B18：
 
 ```bash
@@ -551,7 +568,7 @@ su sheng -c '
 ```
 
 容量通过不等于可以悄悄改变实验合同。8 卡 B20/GA1 的 global batch 是 160；
-B18/GA1 是 144；原 B8/GA2 和 B16/GA1 都是 128。最终选择若改变 global batch，
+B18/GA1 是 144；历史 B8/GA2 和 B16/GA1 都是 128。最终选择若改变 global batch，
 三种 causal mode 必须统一采用同一 B/GA/world、重新冻结每 epoch optimizer step、
 scheduler/save 间隔和 run contract，不能从 global128 的 optimizer state 续训。
 
@@ -563,8 +580,8 @@ ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 
 |---|---|
 | 两个 100-step LR run 并发 | 运行早期动态 ETA 约 3.5–4.5 小时；尚不是完成实测，后续高 H batch 可能改变 ETA |
 | 100-step H0 配对筛选 | 拓扑相同，预计同量级；需用实际前 20–50 step 校准 |
-| D30 正式 1115-step 单模式，8×H800 | 约 36–60 小时/模式，仅为容量规划估计 |
-| 三模式顺序训练 | 约 108–180 小时，即约 4.5–7.5 天，不含筛选、审计和评测 |
+| D30 候选正式 895-step 单模式，8×H800、B20/GA1 | 容量探针通过前不承诺时长；按旧拓扑早期吞吐只能粗略规划约 29–48 小时/模式，必须在正式 step50 重估 |
+| 三模式顺序训练 | 粗略规划约 87–144 小时，即约 3.6–6 天；探针和首个 mode 实测优先于该估计 |
 | 多出口训练 | 尚无可负责的端到端实测；四深度 loss 和 B1/GA16 会改变吞吐，应在前 50 step 后重新估计 |
 | LIBERO 评测/Pareto | 强依赖 simulator reset、任务 episode 长度和 inference steps；以 episode 数规划，不给未经实测的小时数 |
 
@@ -581,7 +598,7 @@ ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 
 
 合计约 34 GB，不含 `.venv`、Hugging Face/ModelScope 元数据和文件系统开销。
 
-8卡 ZeRO-2 两步 smoke 的一个完整 checkpoint 实测约 46 GiB：portable weights 约 12.1 GB，DeepSpeed model state 约 24.9 GB，8 个 optimizer shards 合计约 12.4 GB。按 `SAVE_EVERY=223` 保存 1115 steps 会有 5 个 checkpoint，约 230 GiB/模式，三模式约 690 GiB。正式集群至少应在此基础上为多出口、筛选和评测留余量。
+历史 8卡 B8/GA2 ZeRO-2 两步 smoke 的一个完整 checkpoint 实测约 46 GiB：portable weights 约 12.1 GB，DeepSpeed model state 约 24.9 GB，8 个 optimizer shards 合计约 12.4 GB。B20/GA1 仍是相同模型与 ZeRO stage，暂以这个实测值做磁盘下限规划；必须用首个 B20 checkpoint 校准。按候选 `SAVE_EVERY=179` 保存 895 steps 会有 5 个 checkpoint，粗略约 230 GiB/模式，三模式约 690 GiB。正式集群至少应在此基础上为多出口、筛选和评测留余量。
 
 可以在确认 final checkpoint 已复制、验证且不再需要从中间 step 恢复后归档旧 state，但 final `state/` 和 `checkpoint_validation.json` 必须保留；评测中间 checkpoint 时也需要对应 state 通过身份验证。不要在训练写 checkpoint 时并发移动或删除 shard。
 
@@ -593,7 +610,7 @@ ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 
 
 ### 11.1 最安全的扩展：实验级并行
 
-优先保持每个 run 的 8卡/B8/GA2/global128 不变，在不同节点并行跑三种 causal mode、不同 seed 或评测配置。这样单个 run 的数值拓扑最接近当前 reference。
+在 B20 探针通过并冻结后，优先保持每个 D30 run 的 8卡/B20/GA1/global160 不变，在不同节点并行跑三种 causal mode、不同 seed 或评测配置。多出口仍保持其独立的 8卡/B1/GA16/global128。这样每类 run 都与各自冻结的 reference 拓扑一致。
 
 需要为每个 job 保证：
 
@@ -604,7 +621,7 @@ ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 
 
 ### 11.2 扩大单个 run 的 world size
 
-`train_causal_modes.sh` 当前故意强制 8 GPU×B8×GA2。要改成多机或更多卡，必须作为一个新的训练协议修改并重新验收：
+`train_causal_modes.sh` 当前故意强制 8 GPU×B20×GA1；该候选首先必须通过容量探针。要改成多机、更多卡或 B18 回退，必须作为一个新的训练协议修改并重新验收：
 
 1. 创建多机 Accelerate 配置，正确设置 `num_machines`、`machine_rank`、主节点地址/端口和 rendezvous；
 2. 调整 B/GA，使目标 global batch 明确；
@@ -662,7 +679,8 @@ for mode in action_aggregator interleaved vision_causal; do
 done
 ```
 
-再用 canonical base 做 8卡 ZeRO-2 两步 smoke：
+下面的 B8/GA2 命令仅用于复现已有历史回归 smoke，不是当前 B20 正式容量验收；
+正式开跑前必须使用第 10.1 节的 checkpoint-free B20/H41--H50 probe：
 
 ```bash
 SMOKE_ROOT="/tmp/leapbot-zero2-w8-b8-ga2-$(git rev-parse --short HEAD)"
@@ -682,7 +700,7 @@ REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
 bash scripts/train_leapbot.sh
 ```
 
-检查 `run_contract.txt` 的 `8/8/2/128`、日志中的 ZeRO stage 2、有限 grad norm、峰值显存、`trainer_state.json` 的 step/cursor，以及 `checkpoint_validation.json`。
+检查该历史 smoke 的 `run_contract.txt` 中 `8/8/2/128`、日志中的 ZeRO stage 2、有限 grad norm、峰值显存、`trainer_state.json` 的 step/cursor，以及 `checkpoint_validation.json`。不得把这一结果写成 B20/GA1/global160 已通过。
 
 ## 13. 常见误判和故障定位
 

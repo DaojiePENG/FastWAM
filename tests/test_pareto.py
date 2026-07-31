@@ -303,7 +303,7 @@ def test_kv_retention_profile_rejects_runtime_retention_mismatch(tmp_path):
 def test_config_key_uses_checkpoint_and_runtime_hash_not_basename():
     first = _attach_fingerprint(
         {
-            "checkpoint": "/one/step_001115.pt",
+            "checkpoint": "/one/step_000895.pt",
             "task_id": 0,
             "total_episodes": 1,
             "memory_config": {

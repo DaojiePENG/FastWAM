@@ -2,11 +2,12 @@
 
 set -euo pipefail
 
-# Canonical controlled causal-mode training. Every mode uses the same eight-rank topology,
-# sampler sharding, global batches, RNG streams, and optimizer updates.  The
-# optional MODES_CSV subset permits an effect audit between expensive stages;
-# invoking the remaining modes later with the same TRAIN_ROOT preserves the
-# identical per-mode run contracts.
+# Candidate canonical controlled causal-mode training. Every mode uses the same
+# eight-rank B20/GA1 topology, sampler sharding, global batches, RNG streams, and
+# optimizer updates. This topology must pass the real H41--H50 ZeRO-2 capacity
+# probe before it is frozen for formal results. The optional MODES_CSV subset
+# permits an effect audit between expensive stages; invoking the remaining modes
+# later with the same TRAIN_ROOT preserves identical per-mode run contracts.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?LR_SELECTION_MANIFEST is required}"
@@ -24,10 +25,10 @@ INITIAL_BLOCK_OVERSAMPLE="$("$ROOT_DIR/.venv/bin/python" \
 LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST" | awk '{print $1}')"
 H0_SELECTION_MANIFEST_SHA256="$(sha256sum "$H0_SELECTION_MANIFEST" | awk '{print $1}')"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
-MAX_STEPS="${MAX_STEPS:-1115}"
-SAVE_EVERY="${SAVE_EVERY:-223}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
-GRAD_ACCUM="${GRAD_ACCUM:-2}"
+MAX_STEPS="${MAX_STEPS:-895}"
+SAVE_EVERY="${SAVE_EVERY:-179}"
+BATCH_SIZE="${BATCH_SIZE:-20}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
@@ -35,7 +36,7 @@ WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 SEED="${SEED:-42}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v5_mb8_ga2_d30_e5_bs128_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v5_b20_ga1_d30_s${MAX_STEPS}_bs160_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
 CANONICAL_MODES=(action_aggregator interleaved vision_causal)
@@ -44,8 +45,8 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 8 ]] || [[ "$GRAD_ACCUM" -ne 2 ]]; then
-    log "formal comparison requires 8 GPUs x batch 8 x grad accumulation 2 (global batch 128)"
+if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 20 ]] || [[ "$GRAD_ACCUM" -ne 1 ]]; then
+    log "candidate formal comparison requires 8 GPUs x batch 20 x grad accumulation 1 (global batch 160); run the H41-H50 capacity probe before freezing results"
     exit 1
 fi
 if (( ${#MODES[@]} == 0 )); then
@@ -84,6 +85,10 @@ RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"
 DATASET_STATS_SHA256="$(sha256sum "$DATASET_STATS" | awk '{print $1}')"
 CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
+if [[ "$GLOBAL_BATCH" -ne 160 ]]; then
+    log "candidate formal comparison requires global batch 160; got $GLOBAL_BATCH"
+    exit 1
+fi
 
 validate_existing_contract_group() {
     local mode mode_dir contract_file
@@ -153,7 +158,7 @@ validate_existing_contract_group
 for mode in "${MODES[@]}"; do
     EXPECTED_ASSET_MANIFEST_SHA256="$(existing_asset_manifest_sha)"
     output_dir="$TRAIN_ROOT/$mode"
-    log "start controlled full-BPTT mode=$mode output=$output_dir"
+    log "start controlled full-BPTT mode=$mode output=$output_dir topology=8xb20xga1 global_batch=160 max_steps=$MAX_STEPS save_every=$SAVE_EVERY"
     MODE="$mode" \
     NUM_PROCESSES="$NUM_PROCESSES" \
     GPU_IDS_CSV="$GPU_IDS_CSV" \
@@ -175,7 +180,7 @@ for mode in "${MODES[@]}"; do
     DATASET_STATS="$DATASET_STATS" \
     SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-incremental-full-bptt-v5-mb8-ga2-d30-e5-${mode//_/-}-bs128-cosine-lr${LR_TAG}-seed${SEED}" \
+    RUN_NAME="causal-incremental-full-bptt-v5-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \

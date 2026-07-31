@@ -11,7 +11,10 @@
 2. `audit_learning_rate.sh`：固定样本/噪声审计并生成 LR 选择 manifest。
 3. `screen_h0_retention.sh`：比较真实 episode-start 样本的 x1/x4 采样。
 4. `audit_h0_retention.sh`：生成 H0 选择 manifest。
-5. `train_causal_modes.sh`：从相同 FastWAM 权重训练三种 D30 causal mode。
+5. `train_causal_modes.sh`：从相同 FastWAM 权重训练三种 D30 causal mode；
+   候选正式拓扑硬锁 8×B20×GA1/global160，默认 895 steps、每 179 steps
+   保存。固定数据 x1 时 179 steps/epoch；即使 H0 选择 x4 也保持相同 895
+   optimizer-step 预算，不改成 5 个 augmented epochs。
 6. `evaluate_causal_modes.sh`：统一运行 dev10 或 final50 模式对比。
 7. `train_multi_exit.sh`：从获胜 D30 checkpoint 训练 D8/16/24/30 出口。
 8. `evaluate_pareto.sh`：评测深度与 KV 保留上限网格。
@@ -27,6 +30,12 @@
   `action_aggregator`，也可在另外两种正式模式开跑前复验；默认先测 B20，OOM
   时用新输出目录改测 B18。入口持有 T5 shared lock、绑定完整训练资产 manifest，
   默认墙钟上限为 7200 秒且任何 checkpoint 写入都会使验收失败。
+
+`B20/GA1/global160` 仍是候选正式拓扑。必须先在目标 H800、目标 mode、同一
+commit 上得到 `capacity_probe.json: status=passed`，再冻结和启动该 mode 的正式
+训练。历史 B8/GA2 两步 smoke 只用于链路回归，不能替代 B20 的容量验收。多出口
+训练不继承 B20 micro-batch：它仍固定为 8×B1×GA16/global128，但要求 source D30
+contract 为 8×B20×GA1/global160。
 
 这些入口都应从仓库根目录执行，并由实际拥有数据与 checkpoint 的用户运行。
 不要把 `train.py` 当作正式入口：它是 Hydra/Trainer 内核，不包含完整的资产、GPU、

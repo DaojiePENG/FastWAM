@@ -19,8 +19,8 @@ VAE_CHECKPOINT="${VAE_CHECKPOINT:-$ROOT_DIR/checkpoints/DiffSynth-Studio/Wan-Ser
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
-GRAD_ACCUM="${GRAD_ACCUM:-2}"
+BATCH_SIZE="${BATCH_SIZE:-20}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MAX_STEPS="${MAX_STEPS:-5000}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
@@ -45,11 +45,12 @@ H0_SELECTION_MANIFEST_SHA256="${H0_SELECTION_MANIFEST_SHA256:-}"
 EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="${EXPECTED_TRAINING_ASSET_MANIFEST_SHA256:-}"
 
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
+TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v5_mb8_ga2_${MODE}_peft_${MAX_STEPS}steps_bs${GLOBAL_BATCH}_${LR_SCHEDULER_TYPE}_lr${LR_TAG}}"
-WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v5-mb8-ga2-seed42}"
-RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v5-mb8-ga2-${MODE//_/-}-peft-${MAX_STEPS}steps-bs${GLOBAL_BATCH}-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed42}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v5_${TOPOLOGY_TAG}_${MODE}_peft_${MAX_STEPS}steps_${LR_SCHEDULER_TYPE}_lr${LR_TAG}_seed${SEED}}"
+WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v5-${TOPOLOGY_TAG}-seed${SEED}}"
+RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v5-${TOPOLOGY_TAG//_/-}-${MODE//_/-}-peft-${MAX_STEPS}steps-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed${SEED}}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -314,7 +315,7 @@ else
 fi
 
 preflight_gpus
-log "start incremental full-BPTT v5_mb8_ga2 PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
+log "start incremental full-BPTT PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE topology=$TOPOLOGY_TAG gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \

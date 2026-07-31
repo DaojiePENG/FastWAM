@@ -36,16 +36,16 @@ BASE_FIELDS = (
     ("vae_checkpoint_sha256", "8" * 64),
     ("mode", "action_aggregator"),
     ("num_processes", "8"),
-    ("batch_size", "1"),
-    ("gradient_accumulation_steps", "16"),
-    ("global_batch", "128"),
-    ("max_steps", "1115"),
+    ("batch_size", "20"),
+    ("gradient_accumulation_steps", "1"),
+    ("global_batch", "160"),
+    ("max_steps", "895"),
     ("learning_rate", "1.0e-4"),
     ("lr_scheduler_type", "cosine"),
     ("video_lora_multiplier", "1.0"),
     ("history_vae_batch_chunk_size", "1"),
     ("initial_block_oversample", "4"),
-    ("save_every", "223"),
+    ("save_every", "179"),
     ("seed", "42"),
     ("padding_attention_mask", "true"),
     ("history_training_mode", "incremental_full_bptt"),
@@ -85,7 +85,7 @@ def test_group_accepts_only_mode_and_derived_hash_differences(tmp_path):
     ]
     result = validator.validate_contract_group(
         contracts,
-        expected_fields=(("max_steps", "1115"),),
+        expected_fields=(("max_steps", "895"),),
     )
     assert [item["mode"] for item in result["contracts"]] == [
         "action_aggregator",
@@ -162,8 +162,8 @@ def test_contract_requires_padding_attention_mask_to_be_true(tmp_path):
         {"learning_rate": "5.0e-5"},
         {"seed": "7"},
         {"dataset_stats_sha256": "b" * 64},
-        {"num_processes": "4", "global_batch": "64"},
-        {"max_steps": "2230"},
+        {"num_processes": "4", "global_batch": "80"},
+        {"max_steps": "1790"},
     ),
     ids=("commit", "learning-rate", "seed", "stats", "topology", "step"),
 )
