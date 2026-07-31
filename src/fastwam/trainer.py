@@ -970,10 +970,15 @@ class Wan22Trainer:
                             * self.accelerator.num_processes
                             * self.gradient_accumulation_steps
                         )
-                        description += "lr=%.2e speed=%.2f step/s, %.2f samples/s eta=%s" % (
+                        description += (
+                            "lr=%.2e speed=%.2f step/s, %.2f samples/s "
+                            "peak_allocated=%.2fGiB peak_reserved=%.2fGiB eta=%s"
+                        ) % (
                             current_lr,
                             steps_per_sec,
                             samples_per_second,
+                            global_peak_allocated_gib,
+                            global_peak_reserved_gib,
                             eta_str,
                         )
                         logger.info(description)
