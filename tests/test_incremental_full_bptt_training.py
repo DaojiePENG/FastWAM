@@ -508,6 +508,15 @@ def test_incremental_training_action_is_bitwise_public_runtime(causal_mode):
     assert result["bitwise_pass"]
 
 
+def test_runtime_equivalence_rejects_padded_action_target_contract():
+    model = _model("interleaved")
+    sample = _sample((1,))
+    sample["action_is_pad"][0, -1] = True
+
+    with pytest.raises(ValueError, match="complete, unpadded action horizon"):
+        validate_incremental_action_equivalence(model, sample)
+
+
 def test_padded_current_action_and_video_tokens_are_masked_before_attention(
     monkeypatch,
 ):

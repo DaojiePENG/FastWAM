@@ -208,6 +208,19 @@ def validate_incremental_action_equivalence(
 
     if sample["video"].shape[0] != 1:
         raise ValueError("equivalence validation requires batch size 1")
+    action_is_pad = sample.get("action_is_pad")
+    if action_is_pad is None:
+        raise ValueError(
+            "equivalence validation requires an explicit action_is_pad mask"
+        )
+    if action_is_pad.dtype != torch.bool or action_is_pad.ndim != 2:
+        raise ValueError("action_is_pad must be bool [B,T]")
+    if bool(action_is_pad.any().item()):
+        raise ValueError(
+            "runtime/training action equivalence requires a complete, unpadded "
+            "action horizon; padded episode tails use a deliberately different "
+            "key mask and must be validated by the padding-isolation audit"
+        )
     if model.history_training_mode != "incremental_full_bptt":
         raise ValueError(
             "model must use history_training_mode=incremental_full_bptt"
@@ -588,12 +601,21 @@ def main() -> int:
             block = int(dataset._episode_step[frame_index]) // int(
                 dataset.replan_steps
             )
-            if block == args.history_blocks:
+            if block != args.history_blocks:
+                continue
+            candidate = dataset[dataset_index]
+            action_is_pad = candidate.get("action_is_pad")
+            if action_is_pad is None:
+                raise ValueError(
+                    "LeapBot dataset sample is missing action_is_pad"
+                )
+            if not bool(action_is_pad.any().item()):
                 selected_index = dataset_index
                 break
         if selected_index is None:
             raise ValueError(
-                f"dataset contains no full-prefix sample with H={args.history_blocks}"
+                "dataset contains no complete, unpadded action target with "
+                f"full-prefix H={args.history_blocks}"
             )
     else:
         selected_index = int(args.dataset_index)
@@ -637,6 +659,7 @@ def main() -> int:
             "validation_script_sha256": _file_sha256(Path(__file__).resolve()),
             "resolved_model_config": resolved_model_config,
             "dataset_index": selected_index,
+            "action_target_is_fully_real": True,
             "dtype": str(dtype),
             "device": str(args.device),
             "seed": int(args.seed),
