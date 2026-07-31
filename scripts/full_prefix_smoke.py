@@ -51,16 +51,49 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
     smoke = cfg.get("smoke")
     if smoke is None:
         raise ValueError("missing +smoke configuration")
-    if int(cfg.get("batch_size", -1)) != 1:
-        raise ValueError(
-            "incremental_full_bptt production smoke requires cfg.batch_size=1"
-        )
+    batch_size = int(cfg.get("batch_size", -1))
+    if batch_size <= 0:
+        raise ValueError("incremental_full_bptt smoke requires a positive batch size")
     batch_repeats = int(smoke.get("batch_repeats", 1))
     if batch_repeats != 1:
         raise ValueError(
-            "runtime-isomorphic smoke requires smoke.batch_repeats=1; "
-            "independent episodes must never share one incremental prefix graph"
+            "smoke.batch_repeats=1 is required; batch capacity must use distinct "
+            "real episode prefixes through smoke.history_blocks_per_sample"
         )
+    history_blocks_per_sample_raw = smoke.get("history_blocks_per_sample")
+    if history_blocks_per_sample_raw is None:
+        history_blocks_per_sample = None
+        if batch_size != 1:
+            raise ValueError(
+                "cfg.batch_size=1 is required unless "
+                "smoke.history_blocks_per_sample is provided"
+            )
+    else:
+        raw_history_values = list(history_blocks_per_sample_raw)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in raw_history_values
+        ):
+            raise ValueError(
+                "smoke.history_blocks_per_sample must contain only integers"
+            )
+        history_blocks_per_sample = [int(value) for value in raw_history_values]
+        if len(history_blocks_per_sample) != batch_size:
+            raise ValueError(
+                "smoke.history_blocks_per_sample must contain exactly one history "
+                f"length per batch row: batch={batch_size} "
+                f"lengths={len(history_blocks_per_sample)}"
+            )
+        if history_blocks_per_sample != sorted(set(history_blocks_per_sample)):
+            raise ValueError(
+                "smoke.history_blocks_per_sample must be strictly increasing and unique"
+            )
+        if not history_blocks_per_sample or history_blocks_per_sample[0] < 0:
+            raise ValueError("smoke history lengths must be non-negative")
+        if history_blocks_per_sample[-1] > FORMAL_REAL_HISTORY_BLOCKS:
+            raise ValueError(
+                "optimizer topology smoke may use only real released prefixes H<=50"
+            )
 
     model_cfg = cfg.get("model")
     if model_cfg is None:
@@ -76,6 +109,11 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
             "runtime-equivalent observation encoding requires "
             "model.history_vae_batch_chunk_size=1"
         )
+    training_strategy = str(model_cfg.get("training_strategy", ""))
+    video_lora_cfg = model_cfg.get("video_lora")
+    video_lora_enabled = bool(
+        video_lora_cfg is not None and video_lora_cfg.get("enabled", False)
+    )
     replan_steps = int(model_cfg.get("replan_steps", -1))
     action_horizon = int(model_cfg.get("action_horizon", -1))
     if (replan_steps, action_horizon) != (
@@ -110,7 +148,36 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
     synthetic_source = (
         None if synthetic_source_raw is None else int(synthetic_source_raw)
     )
-    if synthetic_source is None:
+    if history_blocks_per_sample is not None:
+        if synthetic_source is not None:
+            raise ValueError(
+                "optimizer topology smoke cannot synthesize or extend history"
+            )
+        optimizer_updates = int(smoke.get("optimizer_updates", -1))
+        microbatches_per_update = int(
+            smoke.get("microbatches_per_update", -1)
+        )
+        if optimizer_updates != 2:
+            raise ValueError(
+                "optimizer topology smoke requires exactly two optimizer updates"
+            )
+        if microbatches_per_update < 2:
+            raise ValueError(
+                "optimizer topology smoke requires at least two microbatches per update"
+            )
+        if training_strategy != "video_lora_action_full" or not video_lora_enabled:
+            raise ValueError(
+                "optimizer topology smoke requires the formal "
+                "video_lora_action_full strategy with video LoRA enabled"
+            )
+        target_history_blocks = max(history_blocks_per_sample)
+        selection_history_blocks: int | list[int] = history_blocks_per_sample
+        history_provenance = "distinct_real_episode_prefixes"
+        smoke_profile = f"real_optimizer_topology_b{batch_size}"
+        measurement_scope = "optimizer_memory_topology_only_not_loss_or_quality"
+    elif synthetic_source is None:
+        optimizer_updates = 0
+        microbatches_per_update = 1
         if target_history_blocks > FORMAL_REAL_HISTORY_BLOCKS:
             raise ValueError(
                 "released LIBERO data provides at most a real H50 prefix; "
@@ -125,6 +192,8 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
         )
         measurement_scope = "training_path_smoke"
     else:
+        optimizer_updates = 0
+        microbatches_per_update = 1
         if (
             synthetic_source != FORMAL_REAL_HISTORY_BLOCKS
             or target_history_blocks != FORMAL_CAPACITY_HISTORY_BLOCKS
@@ -162,16 +231,22 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
     return {
         "smoke_profile": smoke_profile,
         "measurement_scope": measurement_scope,
-        "batch_size": 1,
+        "batch_size": batch_size,
         "history_blocks": target_history_blocks,
         "selection_history_blocks": selection_history_blocks,
+        "history_blocks_per_sample": history_blocks_per_sample,
         "real_history_blocks": selection_history_blocks,
         "history_provenance": history_provenance,
         "is_synthetic_capacity_smoke": synthetic_source is not None,
+        "is_optimizer_topology_smoke": history_blocks_per_sample is not None,
+        "optimizer_updates": optimizer_updates,
+        "microbatches_per_update": microbatches_per_update,
         "synthetic_source_history_blocks": synthetic_source,
         "configured_max_history_blocks": capacity,
         "history_training_mode": history_training_mode,
         "history_vae_batch_chunk_size": history_vae_chunk,
+        "training_strategy": training_strategy,
+        "video_lora_enabled": video_lora_enabled,
         "runtime_observation_vae_contract": RUNTIME_OBSERVATION_VAE_CONTRACT,
         "future_video_vae_contract": FUTURE_VIDEO_VAE_CONTRACT,
         "replan_steps": replan_steps,
@@ -267,6 +342,92 @@ def _finite_scalar_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     return resolved
 
 
+def _select_distinct_real_history_indices(
+    dataset: Any,
+    history_blocks_per_sample: list[int],
+) -> list[int]:
+    """Select one genuine, distinct dataset row for every requested prefix."""
+
+    remaining = set(int(value) for value in history_blocks_per_sample)
+    selected: dict[int, int] = {}
+    for dataset_index, frame_index in enumerate(dataset._valid_replan_indices):
+        history_blocks = int(
+            dataset._episode_step[frame_index] // dataset.replan_steps
+        )
+        if history_blocks in remaining:
+            selected[history_blocks] = int(dataset_index)
+            remaining.remove(history_blocks)
+            if not remaining:
+                break
+    if remaining:
+        missing = sorted(remaining)
+        raise ValueError(f"dataset contains no real samples for history lengths {missing}")
+    result = [selected[int(value)] for value in history_blocks_per_sample]
+    if len(result) != len(set(result)):
+        raise AssertionError("distinct history requests resolved to duplicate dataset rows")
+    return result
+
+
+def _formal_adamw(model: torch.nn.Module, cfg: DictConfig) -> torch.optim.AdamW:
+    """Build the same local AdamW parameter groups used by formal training."""
+
+    learning_rate = float(cfg.learning_rate)
+    weight_decay = float(cfg.weight_decay)
+    group_getter = getattr(model, "optimizer_parameter_groups", None)
+    if group_getter is None:
+        trainable_parameters: Any = [
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        ]
+    else:
+        trainable_parameters = group_getter(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+        )
+    return torch.optim.AdamW(
+        trainable_parameters,
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        betas=(0.9, 0.95),
+    )
+
+
+def _gradient_statistics(
+    trainable: list[torch.nn.Parameter],
+) -> dict[str, int | float | bool]:
+    gradients = [parameter.grad for parameter in trainable if parameter.grad is not None]
+    if not gradients:
+        raise AssertionError("no trainable parameter received a gradient")
+    finite_gradients = True
+    grad_norm_squared = 0.0
+    max_abs_gradient = 0.0
+    for gradient in gradients:
+        finite_gradients = finite_gradients and bool(
+            torch.isfinite(gradient).all().item()
+        )
+        gradient_float = gradient.detach().float()
+        grad_norm_squared += float(gradient_float.square().sum().item())
+        max_abs_gradient = max(
+            max_abs_gradient,
+            float(gradient_float.abs().max().item()),
+        )
+    if not finite_gradients:
+        raise AssertionError("non-finite gradient in full-prefix smoke test")
+    gradient_l2_norm = math.sqrt(grad_norm_squared)
+    if not math.isfinite(gradient_l2_norm) or not math.isfinite(
+        max_abs_gradient
+    ):
+        raise AssertionError("non-finite aggregate gradient statistics")
+    return {
+        "parameters_with_grad": int(
+            sum(parameter.numel() for parameter in trainable if parameter.grad is not None)
+        ),
+        "gradient_tensors": len(gradients),
+        "finite_gradients": finite_gradients,
+        "gradient_l2_norm": gradient_l2_norm,
+        "max_abs_gradient": max_abs_gradient,
+    }
+
+
 def _cuda_memory_snapshot(device: torch.device) -> dict[str, float]:
     return {
         "allocated_gib": float(torch.cuda.memory_allocated(device) / 2**30),
@@ -312,33 +473,37 @@ def run_smoke(cfg: DictConfig) -> dict:
     misc.register_work_dir(str(output_dir))
 
     target_history_blocks = int(contract["history_blocks"])
-    selection_history_blocks = int(contract["selection_history_blocks"])
+    selection_history_raw = contract["selection_history_blocks"]
+    selection_history_blocks = (
+        [int(value) for value in selection_history_raw]
+        if isinstance(selection_history_raw, list)
+        else [int(selection_history_raw)]
+    )
     dataset = instantiate(cfg.data.train)
     if int(dataset.replan_steps) != int(contract["replan_steps"]):
         raise AssertionError(
             "instantiated dataset replan_steps differs from the validated config"
         )
-    selected_index = None
-    for dataset_index, frame_index in enumerate(dataset._valid_replan_indices):
-        block = dataset._episode_step[frame_index] // dataset.replan_steps
-        if block == selection_history_blocks:
-            selected_index = dataset_index
-            break
-    if selected_index is None:
-        raise ValueError(f"dataset contains no sample with H={selection_history_blocks}")
-
-    # A single episode is the unit of the runtime state machine and BPTT graph.
-    sample = default_collate([dataset[selected_index]])
+    selected_indices = _select_distinct_real_history_indices(
+        dataset,
+        selection_history_blocks,
+    )
+    # The production loss executes each row through an independent batch-one
+    # episode-prefix graph.  Collation only retains those graphs until their
+    # mean loss is backpropagated together.
+    sample = default_collate([dataset[index] for index in selected_indices])
     source_counts = sample["history_valid_blocks"].sum(dim=1)
-    if source_counts.tolist() != [selection_history_blocks]:
+    if source_counts.tolist() != selection_history_blocks:
         raise AssertionError(
             "selected dataset sample does not contain its complete real prefix: "
             f"expected H={selection_history_blocks}, got {source_counts.tolist()}"
         )
-    if sample["current_block_position"].tolist() != [selection_history_blocks]:
+    if sample["current_block_position"].tolist() != selection_history_blocks:
         raise AssertionError("current block is not contiguous with the real prefix")
-    expected_episode_step = selection_history_blocks * int(dataset.replan_steps)
-    if sample["episode_step"].tolist() != [expected_episode_step]:
+    expected_episode_steps = [
+        value * int(dataset.replan_steps) for value in selection_history_blocks
+    ]
+    if sample["episode_step"].tolist() != expected_episode_steps:
         raise AssertionError("episode_step is inconsistent with the real prefix")
     full_episode_history = sample.get("full_episode_history")
     if full_episode_history is None or not bool(full_episode_history.all().item()):
@@ -347,6 +512,8 @@ def run_smoke(cfg: DictConfig) -> dict:
     synthetic_history_extension = None
     synthetic_source = contract["synthetic_source_history_blocks"]
     if synthetic_source is not None:
+        if len(selected_indices) != 1:
+            raise AssertionError("synthetic capacity extension must remain batch one")
         synthetic_history_extension = _extend_history_for_capacity_smoke(
             sample,
             source_history_blocks=int(synthetic_source),
@@ -354,8 +521,15 @@ def run_smoke(cfg: DictConfig) -> dict:
             replan_steps=int(dataset.replan_steps),
         )
     actual_history_counts = sample["history_valid_blocks"].sum(dim=1)
-    if actual_history_counts.tolist() != [target_history_blocks]:
-        raise AssertionError((actual_history_counts.tolist(), target_history_blocks))
+    expected_actual_histories = (
+        [target_history_blocks]
+        if synthetic_source is not None
+        else selection_history_blocks
+    )
+    if actual_history_counts.tolist() != expected_actual_histories:
+        raise AssertionError(
+            (actual_history_counts.tolist(), expected_actual_histories)
+        )
 
     precision = str(contract["mixed_precision"])
     dtype = _mixed_precision_to_model_dtype(precision)
@@ -397,44 +571,94 @@ def run_smoke(cfg: DictConfig) -> dict:
     seed = int(cfg.seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    is_optimizer_topology_smoke = bool(contract["is_optimizer_topology_smoke"])
+    optimizer = _formal_adamw(model, cfg) if is_optimizer_topology_smoke else None
+    optimizer_updates = int(contract["optimizer_updates"])
+    microbatches_per_update = int(contract["microbatches_per_update"])
+    execution_updates = optimizer_updates if is_optimizer_topology_smoke else 1
+    execution_microbatches = (
+        microbatches_per_update if is_optimizer_topology_smoke else 1
+    )
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     torch.cuda.empty_cache()
     baseline_memory = {
         "allocated_gib": float(torch.cuda.memory_allocated(cuda_device) / 2**30),
         "reserved_gib": float(torch.cuda.memory_reserved(cuda_device) / 2**30),
     }
-    torch.cuda.reset_peak_memory_stats(cuda_device)
     torch.cuda.synchronize(cuda_device)
 
     phase = "forward"
+    update_records: list[dict[str, Any]] = []
+    loss_values: list[float] = []
+    metric_values: list[dict[str, float]] = []
+    forward_s = 0.0
+    backward_s = 0.0
+    gradient_statistics: dict[str, int | float | bool] | None = None
     try:
         model._encode_input_image_latents_tensor = recording_observation_encoder
         model._encode_video_latents = recording_video_encoder
-        forward_start = time.perf_counter()
-        try:
-            with torch.autocast(device_type="cuda", dtype=dtype, enabled=True):
-                loss, raw_metrics = model.training_loss(sample, tiled=False)
-        finally:
-            model._encode_input_image_latents_tensor = original_observation_encoder
-            model._encode_video_latents = original_video_encoder
-        torch.cuda.synchronize(cuda_device)
-        forward_s = time.perf_counter() - forward_start
+        if optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
+        for update_index in range(execution_updates):
+            torch.cuda.reset_peak_memory_stats(cuda_device)
+            update_forward_s = 0.0
+            update_backward_s = 0.0
+            update_loss_values: list[float] = []
+            clip_grad_norm = None
+            for microbatch_index in range(execution_microbatches):
+                phase = f"forward_update_{update_index + 1}_microbatch_{microbatch_index + 1}"
+                forward_start = time.perf_counter()
+                with torch.autocast(device_type="cuda", dtype=dtype, enabled=True):
+                    loss, raw_metrics = model.training_loss(sample, tiled=False)
+                torch.cuda.synchronize(cuda_device)
+                elapsed_forward = time.perf_counter() - forward_start
+                forward_s += elapsed_forward
+                update_forward_s += elapsed_forward
 
-        if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
-            raise AssertionError("training loss must be a scalar tensor")
-        loss_value = float(loss.detach().float().item())
-        if not math.isfinite(loss_value):
-            raise AssertionError(f"non-finite training loss: {loss_value}")
-        metrics = _finite_scalar_metrics(raw_metrics)
+                if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
+                    raise AssertionError("training loss must be a scalar tensor")
+                loss_value = float(loss.detach().float().item())
+                if not math.isfinite(loss_value):
+                    raise AssertionError(f"non-finite training loss: {loss_value}")
+                metrics = _finite_scalar_metrics(raw_metrics)
+                loss_values.append(loss_value)
+                update_loss_values.append(loss_value)
+                metric_values.append(metrics)
 
-        phase = "backward"
-        backward_start = time.perf_counter()
-        loss.backward()
-        torch.cuda.synchronize(cuda_device)
-        backward_s = time.perf_counter() - backward_start
-        timed_memory = _cuda_memory_snapshot(cuda_device)
+                phase = f"backward_update_{update_index + 1}_microbatch_{microbatch_index + 1}"
+                backward_start = time.perf_counter()
+                scaled_loss = loss / float(execution_microbatches)
+                scaled_loss.backward()
+                torch.cuda.synchronize(cuda_device)
+                elapsed_backward = time.perf_counter() - backward_start
+                backward_s += elapsed_backward
+                update_backward_s += elapsed_backward
+
+            if update_index == execution_updates - 1:
+                gradient_statistics = _gradient_statistics(trainable)
+            if optimizer is not None:
+                phase = f"optimizer_update_{update_index + 1}"
+                clip_result = torch.nn.utils.clip_grad_norm_(
+                    trainable,
+                    float(cfg.max_grad_norm),
+                    error_if_nonfinite=True,
+                )
+                clip_grad_norm = float(clip_result.detach().float().item())
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                torch.cuda.synchronize(cuda_device)
+            update_records.append(
+                {
+                    "update": update_index + 1,
+                    "microbatches": execution_microbatches,
+                    "loss_mean": sum(update_loss_values) / len(update_loss_values),
+                    "forward_s": update_forward_s,
+                    "backward_s": update_backward_s,
+                    "clip_grad_norm": clip_grad_norm,
+                    "gpu_memory": _cuda_memory_snapshot(cuda_device),
+                }
+            )
     except torch.cuda.OutOfMemoryError as error:
-        model._encode_input_image_latents_tensor = original_observation_encoder
-        model._encode_video_latents = original_video_encoder
         oom_result = {
             "kind": "incremental_full_bptt_training_smoke",
             "status": "oom",
@@ -450,8 +674,51 @@ def run_smoke(cfg: DictConfig) -> dict:
         _write_json(output_path, oom_result)
         logger.exception("Full-prefix smoke OOM during %s; report: %s", phase, output_path)
         raise
+    finally:
+        model._encode_input_image_latents_tensor = original_observation_encoder
+        model._encode_video_latents = original_video_encoder
 
-    expected_observation_calls = target_history_blocks + 1
+    if gradient_statistics is None:
+        gradient_statistics = _gradient_statistics(trainable)
+    loss_value = sum(loss_values) / len(loss_values)
+    metric_names = set(metric_values[0])
+    if any(set(values) != metric_names for values in metric_values):
+        raise AssertionError("training metric keys changed during topology smoke")
+    metrics = {
+        name: sum(values[name] for values in metric_values) / len(metric_values)
+        for name in sorted(metric_names)
+    }
+    timed_memory = dict(update_records[-1]["gpu_memory"])
+    timed_memory["peak_allocated_gib"] = max(
+        float(record["gpu_memory"]["peak_allocated_gib"])
+        for record in update_records
+    )
+    timed_memory["peak_reserved_gib"] = max(
+        float(record["gpu_memory"]["peak_reserved_gib"])
+        for record in update_records
+    )
+    optimizer_groups = []
+    if optimizer is not None:
+        optimizer_groups = [
+            {
+                "name": str(group.get("group_name", f"group_{index}")),
+                "learning_rate": float(group["lr"]),
+                "weight_decay": float(group["weight_decay"]),
+                "parameters": int(
+                    sum(parameter.numel() for parameter in group["params"])
+                ),
+            }
+            for index, group in enumerate(optimizer.param_groups)
+        ]
+
+    expected_observation_calls_per_microbatch = sum(
+        history_blocks + 1 for history_blocks in expected_actual_histories
+    )
+    expected_observation_calls = (
+        expected_observation_calls_per_microbatch
+        * execution_microbatches
+        * execution_updates
+    )
     expected_image_shape = (
         1,
         3,
@@ -482,41 +749,30 @@ def run_smoke(cfg: DictConfig) -> dict:
             f"got {sorted(set(runtime_observation_devices))}"
         )
     expected_future_video_shape = tuple(int(size) for size in sample["video"].shape)
-    if future_video_shapes != [expected_future_video_shape]:
+    expected_future_video_calls = execution_updates * execution_microbatches
+    if future_video_shapes != [expected_future_video_shape] * expected_future_video_calls:
         raise AssertionError(
             "future-video supervision must use exactly one independent full-clip VAE "
-            f"call with shape {expected_future_video_shape}, got {future_video_shapes}"
+            "call per microbatch: "
+            f"expected {expected_future_video_calls} calls with shape "
+            f"{expected_future_video_shape}, got {future_video_shapes}"
         )
-
-    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    gradients = [parameter.grad for parameter in trainable if parameter.grad is not None]
-    if not gradients:
-        raise AssertionError("no trainable parameter received a gradient")
-    finite_gradients = True
-    grad_norm_squared = 0.0
-    max_abs_gradient = 0.0
-    for gradient in gradients:
-        finite_gradients = finite_gradients and bool(torch.isfinite(gradient).all().item())
-        gradient_float = gradient.detach().float()
-        grad_norm_squared += float(gradient_float.square().sum().item())
-        max_abs_gradient = max(max_abs_gradient, float(gradient_float.abs().max().item()))
-    if not finite_gradients:
-        raise AssertionError("non-finite gradient in full-prefix smoke test")
-    gradient_l2_norm = math.sqrt(grad_norm_squared)
-    if not math.isfinite(gradient_l2_norm) or not math.isfinite(max_abs_gradient):
-        raise AssertionError("non-finite aggregate gradient statistics")
 
     result = {
         "kind": "incremental_full_bptt_training_smoke",
         "status": "passed",
         "checkpoint": str(checkpoint),
-        "dataset_index": selected_index,
-        "batch_size": 1,
+        "dataset_indices": selected_indices,
+        "dataset_index": selected_indices[0] if len(selected_indices) == 1 else None,
+        "batch_size": int(contract["batch_size"]),
         "history_blocks": target_history_blocks,
+        "history_blocks_per_sample": expected_actual_histories,
         "history_provenance": contract["history_provenance"],
         "measurement_scope": contract["measurement_scope"],
         "contract": contract,
         "causal_mode": model.causal_mode,
+        "training_strategy": model.training_strategy,
+        "video_lora_config": model.video_lora_config.__dict__,
         "training_exit_depths": [int(depth) for depth in model.training_exit_depths],
         "history_training_mode": model.history_training_mode,
         "loss": loss_value,
@@ -525,6 +781,17 @@ def run_smoke(cfg: DictConfig) -> dict:
             "forward": forward_s,
             "backward": backward_s,
             "forward_backward": forward_s + backward_s,
+        },
+        "optimizer_topology": {
+            "enabled": optimizer is not None,
+            "optimizer": "adamw_beta0.9_0.95",
+            "learning_rate": float(cfg.learning_rate),
+            "weight_decay": float(cfg.weight_decay),
+            "max_grad_norm": float(cfg.max_grad_norm),
+            "updates": execution_updates if optimizer is not None else 0,
+            "microbatches_per_update": execution_microbatches,
+            "parameter_groups": optimizer_groups,
+            "update_records": update_records,
         },
         # Preserve the old flat timing/memory keys for existing report readers.
         "forward_s": forward_s,
@@ -545,17 +812,12 @@ def run_smoke(cfg: DictConfig) -> dict:
         "future_video_vae": {
             "contract": FUTURE_VIDEO_VAE_CONTRACT,
             "calls": len(future_video_shapes),
+            "expected_calls": expected_future_video_calls,
             "input_shape": list(expected_future_video_shape),
             "compared_to_runtime_observation_latents": False,
         },
         "trainable_parameters": int(sum(parameter.numel() for parameter in trainable)),
-        "parameters_with_grad": int(
-            sum(parameter.numel() for parameter in trainable if parameter.grad is not None)
-        ),
-        "gradient_tensors": len(gradients),
-        "finite_gradients": finite_gradients,
-        "gradient_l2_norm": gradient_l2_norm,
-        "max_abs_gradient": max_abs_gradient,
+        **gradient_statistics,
     }
     if synthetic_history_extension is not None:
         result["synthetic_history_extension"] = synthetic_history_extension
