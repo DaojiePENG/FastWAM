@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Paired action_aggregator screen for native H0 retention. Both runs start from
+# Canonical paired action_aggregator screen for native H0 retention. Both runs start from
 # the same FastWAM release and differ only in genuine episode-start frequency.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
@@ -72,8 +72,9 @@ for index in "${!OVERSAMPLE_FACTORS[@]}"; do
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     WANDB_GROUP="paired-h0-incremental-v6-mb10-ga2-s${MAX_STEPS}-bs80-lr${LR_TAG}-seed42" \
+    REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
     MAIN_PROCESS_PORT="$port" \
-        bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh" &
+        bash "$ROOT_DIR/scripts/train_leapbot.sh" &
     pids+=("$!")
 done
 

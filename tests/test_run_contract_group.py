@@ -233,9 +233,8 @@ def test_cli_fails_without_writing_output_for_a_mixed_group(tmp_path):
 @pytest.mark.parametrize(
     "launcher",
     (
-        "run_causal_full_bptt_comparison.sh",
-        "run_phase1_eval_after_training.sh",
-        "run_final_50_trial_comparison.sh",
+        "train_causal_modes.sh",
+        "evaluate_causal_modes.sh",
     ),
 )
 def test_formal_launchers_use_strict_contract_group_validation(launcher):
@@ -243,7 +242,7 @@ def test_formal_launchers_use_strict_contract_group_validation(launcher):
     assert "validate_run_contract_group.py" in source
     assert "--contract" in source
     assert "--expected-field" in source
-    if "eval_after_training" in launcher or "final_50_trial" in launcher:
+    if launcher == "evaluate_causal_modes.sh":
         group_validation = source.index("validate_run_contract_group.py")
         checkpoint_validation = source.index("validate_leapbot_checkpoint.py")
         fingerprint_build = source.index("build_mode_fingerprint")
@@ -253,7 +252,7 @@ def test_formal_launchers_use_strict_contract_group_validation(launcher):
 
 
 def test_batched_training_validates_existing_contracts_before_each_mode():
-    source = (ROOT / "scripts" / "run_causal_full_bptt_comparison.sh").read_text()
+    source = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
     loop = source.index('for mode in "${MODES[@]}"; do', source.index("CODE_COMMIT="))
     assert source.index("validate_existing_contract_group", source.index("CODE_COMMIT=")) < loop
     loop_body = source[loop:]

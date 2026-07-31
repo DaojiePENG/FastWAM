@@ -148,11 +148,11 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         max_padding_retry: int = 3,
         concat_multi_camera: str = "horizontal",
         override_instruction: Optional[str] = None,
-        max_history_blocks: int = 8,
+        max_history_blocks: int = 70,
         min_history_blocks: int = 0,
         replan_steps: int = 10,
         history_seed: int = 42,
-        full_episode_history: bool = False,
+        full_episode_history: bool = True,
         initial_block_oversample: int = 1,
     ):
         if max_history_blocks < 0:

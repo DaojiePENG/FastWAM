@@ -1,5 +1,9 @@
 # FastWAM
 
+> 本分支包含基于 FastWAM 的 LeapBot-VA 实现。架构说明见
+> [LEAPBOT.md](./LEAPBOT.md)，正式启动、资产校验、DeepSpeed 拓扑、断点恢复、
+> 评测和集群交接见[训练与复现手册](./docs/TRAINING_AND_REPRODUCTION.md)。
+
 **Fast-WAM: Do World Action Models Need Test-time Future Imagination?** 的官方代码仓库。
 
 [![English](https://img.shields.io/badge/README-English-111111.svg)](./README.md)
@@ -35,7 +39,7 @@ FastWAM/
 │   └── task/                 # 任务级配置（训练 task 名）
 ├── scripts/
 │   ├── train.py
-│   ├── train_zero1.sh        # deepspeed zero1 训练入口
+│   ├── fastwam_legacy/       # 上游 FastWAM 兼容启动脚本
 │   ├── preprocess_action_dit_backbone.py  # 训练前预处理 ActionDiT backbone
 │   └── precompute_text_embeds.py  # 训练前预计算 T5 文本 embedding cache
 ├── experiments/
@@ -251,13 +255,15 @@ torchrun --standalone --nproc_per_node=8 scripts/precompute_text_embeds.py task=
 
 ```bash
 # LIBERO
-bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
+bash scripts/fastwam_legacy/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
 
 # RoboTwin
-bash scripts/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
+bash scripts/fastwam_legacy/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
 ```
 
-对于LIBERO，我们使用单机8卡训练。对于RoboTwin，我们使用了64卡来加速训练，你可以尝试调小卡数和训练总epoch数。
+上述兼容启动脚本仅支持单机。论文中 LIBERO 使用单机 8 卡训练，RoboTwin
+使用了 64 卡；复现 64 卡配置需要额外的多机启动器，并完整传入
+Accelerate/DeepSpeed 拓扑。也可以尝试调小卡数和训练总 epoch 数。
 
 ## 使用自己训练的权重推理
 

@@ -12,20 +12,26 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHERS = (
-    "run_fastwam_baseline_dev.sh",
-    "run_single_mode_checkpoint_eval.sh",
-    "run_phase1_eval_after_training.sh",
-    "run_final_50_trial_comparison.sh",
+    "evaluate_fastwam_baseline.sh",
+    "evaluate_checkpoint.sh",
+    "evaluate_causal_modes.sh",
 )
 EXPECTED_FINGERPRINT = {"schema_version": 3, "identity": "expected"}
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+def test_eval_launchers_are_portable_and_disable_rollout_video(launcher):
+    source = (REPO_ROOT / "scripts" / launcher).read_text()
+    assert 'LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"' in source
+    assert 'PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero"' in source
+    assert source.count("EVALUATION.save_rollout_video=false") == 2
 
 
 @pytest.mark.parametrize(
     "launcher",
     (
-        "run_single_mode_checkpoint_eval.sh",
-        "run_phase1_eval_after_training.sh",
-        "run_final_50_trial_comparison.sh",
+        "evaluate_checkpoint.sh",
+        "evaluate_causal_modes.sh",
     ),
 )
 def test_memory_eval_rejects_non_runtime_isomorphic_history_vae_chunk(launcher):
@@ -135,7 +141,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
         }
     )
 
-    if launcher == "run_single_mode_checkpoint_eval.sh":
+    if launcher == "evaluate_checkpoint.sh":
         train_root = tmp_path / "single-train"
         _write_checkpoint(
             train_root / "action_aggregator/checkpoints/weights/step_000001.pt"
@@ -147,7 +153,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
                 "MODE": "action_aggregator",
             }
         )
-    elif launcher == "run_phase1_eval_after_training.sh":
+    elif launcher == "evaluate_causal_modes.sh":
         train_root = tmp_path / "phase1-train"
         for mode in ("interleaved", "vision_causal", "action_aggregator"):
             _write_checkpoint(train_root / mode / "checkpoints/weights/step_000001.pt")
@@ -159,42 +165,22 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
                 "INCLUDE_BASELINE": "true",
             }
         )
-    elif launcher == "run_final_50_trial_comparison.sh":
-        action_root = tmp_path / "action-train"
-        remaining_root = tmp_path / "remaining-train"
-        _write_checkpoint(
-            action_root / "action_aggregator/checkpoints/weights/step_000001.pt"
-        )
-        _write_run_contract(action_root / "action_aggregator/run_contract.txt")
-        for mode in ("interleaved", "vision_causal"):
-            _write_checkpoint(
-                remaining_root / mode / "checkpoints/weights/step_000001.pt"
-            )
-            _write_run_contract(remaining_root / mode / "run_contract.txt")
-        env.update(
-            {
-                "ACTION_TRAIN_ROOT": str(action_root),
-                "REMAINING_TRAIN_ROOT": str(remaining_root),
-            }
-        )
-
     return env, eval_root
 
 
 def _launcher_modes(launcher: str) -> tuple[str, ...]:
-    if launcher == "run_fastwam_baseline_dev.sh":
+    if launcher == "evaluate_fastwam_baseline.sh":
         return ("fastwam_release",)
-    if launcher == "run_single_mode_checkpoint_eval.sh":
+    if launcher == "evaluate_checkpoint.sh":
         return ("action_aggregator",)
     return ("fastwam_release", "interleaved", "vision_causal", "action_aggregator")
 
 
 def _stale_result_path(eval_root: Path, launcher: str) -> Path:
     mode = {
-        "run_fastwam_baseline_dev.sh": "fastwam_release",
-        "run_single_mode_checkpoint_eval.sh": "action_aggregator",
-        "run_phase1_eval_after_training.sh": "action_aggregator",
-        "run_final_50_trial_comparison.sh": "vision_causal",
+        "evaluate_fastwam_baseline.sh": "fastwam_release",
+        "evaluate_checkpoint.sh": "action_aggregator",
+        "evaluate_causal_modes.sh": "action_aggregator",
     }[launcher]
     return eval_root / mode / "libero_10/gpu0_task9_results.json"
 
@@ -326,7 +312,7 @@ def test_evaluator_model_and_egl_use_same_physical_gpu(tmp_path, launcher):
 
 
 def test_depth_history_launcher_covers_full_grid_with_isolated_result_roots():
-    source = (REPO_ROOT / "scripts" / "run_depth_history_pareto.sh").read_text()
+    source = (REPO_ROOT / "scripts" / "evaluate_pareto.sh").read_text()
     assert 'DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"' in source
     assert 'HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"' in source
     assert 'KV_RETENTION_CAPS_CSV="${KV_RETENTION_CAPS_CSV:-$HISTORY_CAPS_CSV}"' in source

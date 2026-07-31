@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Two strictly controlled action_aggregator screens.  Both runs use the same
+# Canonical paired learning-rate screen. Both runs use the same
 # seeded initialization/data order/noise order and differ only in action/LoRA LR.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
@@ -55,8 +55,9 @@ for index in "${!LEARNING_RATES[@]}"; do
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     WANDB_GROUP="paired-lr-incremental-v6-mb10-ga2-s${MAX_STEPS}-bs80-seed42" \
+    REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
     MAIN_PROCESS_PORT="$port" \
-        bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh" &
+        bash "$ROOT_DIR/scripts/train_leapbot.sh" &
     pids+=("$!")
 done
 

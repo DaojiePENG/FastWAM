@@ -44,7 +44,5 @@ resume: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
 
 # Reproducible phase presets (Hydra CLI examples):
 # causal comparison: model.causal_mode={interleaved,vision_causal,action_aggregator}
-# A short-history incremental window is retained only as an explicit ablation:
-# data.train.full_episode_history=false data.train.max_history_blocks=8
 # model.history_training_mode=incremental_full_bptt
 # phase 3: model.training_exit_depths=[8,16,24,30]

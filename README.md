@@ -2,7 +2,9 @@
 
 > This branch is the LeapBot-VA implementation derived from FastWAM. See
 > [LEAPBOT.md](./LEAPBOT.md) for the real-history causal-KV architecture,
-> training phases, action-only evaluation, and H800 verification commands.
+> and the [training and reproduction runbook](./docs/TRAINING_AND_REPRODUCTION.md)
+> for canonical launchers, assets, DeepSpeed topology, recovery, evaluation,
+> and cluster handoff.
 
 Official codebase for **Fast-WAM: Do World Action Models Need Test-time Future Imagination?**
 
@@ -39,7 +41,7 @@ FastWAM/
 │   └── task/                 # Task-level configs (training task names)
 ├── scripts/
 │   ├── train.py
-│   ├── train_zero1.sh        # Deepspeed zero1 training entrypoint
+│   ├── fastwam_legacy/       # Upstream FastWAM compatibility launchers
 │   ├── preprocess_action_dit_backbone.py  # Preprocess ActionDiT backbone before training
 │   └── precompute_text_embeds.py  # Precompute T5 text embedding cache before training
 ├── experiments/
@@ -254,13 +256,16 @@ You can then update `pretrained_norm_stats` to that file path for subsequent run
 
 ```bash
 # LIBERO
-bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
+bash scripts/fastwam_legacy/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
 
 # RoboTwin
-bash scripts/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
+bash scripts/fastwam_legacy/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
 ```
 
-For LIBERO, we train on a single node with 8 GPUs. For RoboTwin, we use 64 GPUs to accelerate training. You can try reducing the GPU count or training epochs.
+The compatibility wrapper above supports one machine only. The paper trained
+LIBERO on one node with 8 GPUs and used 64 GPUs for RoboTwin; reproducing the
+64-GPU setup requires an external multi-node launcher that supplies the full
+Accelerate/DeepSpeed topology. You can reduce the GPU count or training epochs.
 
 ## Inference with Your Trained Checkpoints
 

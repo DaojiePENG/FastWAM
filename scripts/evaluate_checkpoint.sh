@@ -2,7 +2,10 @@
 
 set -euo pipefail
 
+# Evaluate one validated LeapBot checkpoint over all LIBERO-Long tasks.
+
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 EVAL_ROOT="${EVAL_ROOT:?EVAL_ROOT is required}"
 MODE="${MODE:-action_aggregator}"
@@ -98,7 +101,7 @@ build_task_fingerprint() {
     fingerprint_file="$(fingerprint_path "$task_id")"
 
     mkdir -p "$(dirname "$fingerprint_file")"
-    PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+    PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
         --config-name sim_leapbot_libero \
         --output "$fingerprint_file" \
@@ -173,7 +176,7 @@ run_task() {
         MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
-        PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+        PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
         "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \

@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 import torch
 
@@ -14,6 +16,12 @@ from leapbot_va.data import (
     full_episode_sparse_offsets,
     oversample_episode_starts,
 )
+
+
+def test_causal_dataset_defaults_to_complete_episode_history():
+    signature = inspect.signature(LeapRobotVideoDataset)
+    assert signature.parameters["full_episode_history"].default is True
+    assert signature.parameters["max_history_blocks"].default == 70
 
 
 def _indices():

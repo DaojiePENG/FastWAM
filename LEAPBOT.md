@@ -93,28 +93,30 @@ and all packed-attention runs are invalidated and are not used as results.
 ```bash
 # Paired screens are followed by fixed-observation, fixed-timestep, fixed-noise
 # audits with correct, masked, and cross-episode shuffled histories.
-bash scripts/run_paired_lr_screen.sh
-bash scripts/run_paired_lr_audit.sh
+bash scripts/screen_learning_rate.sh
+bash scripts/audit_learning_rate.sh
 LR_SELECTION_MANIFEST=<lr-selection.json> \
-  bash scripts/run_paired_h0_retention_screen.sh
+  bash scripts/screen_h0_retention.sh
 LR_SELECTION_MANIFEST=<lr-selection.json> \
-  bash scripts/run_paired_h0_audit.sh
+  bash scripts/audit_h0_retention.sh
 
 # Phase 1: after the paired LR audit selects a learning rate, train all three
 # modes sequentially with the complete episode prefix, D30, BF16, the same
 # 8-GPU topology/global batch, and a 5% warmup + cosine schedule.
 LR_SELECTION_MANIFEST=<lr-selection.json> \
   H0_SELECTION_MANIFEST=<h0-selection.json> \
-  bash scripts/run_causal_full_bptt_comparison.sh
+  bash scripts/train_causal_modes.sh
 
 # Phase 2: initialize from the winning D30 history checkpoint and train exits.
 SOURCE_TRAIN_ROOT=/path/to/d30_root MODE=<winner> SOURCE_STEP=<step> \
   MAX_STEPS=<steps> \
-  bash scripts/run_multi_exit_training.sh
+  bash scripts/train_multi_exit.sh
 ```
 
-Short 0-8 or 0-16 windows are optional controlled ablations, not the main
-recipe and not substitutes for complete-prefix training.
+Short 0-8 or 0-16 windows are code-supported controlled ablations, not the main
+recipe and not substitutes for complete-prefix training. The canonical
+production pipeline has no short-window launcher, and the current formal
+results do not run or report those ablations.
 The released LIBERO training episodes provide real prefixes through H=50. The
 70-block setting is a capacity and inference extrapolation bound; H=51..69 is
 not represented as observed training history and must be reported as such.
@@ -148,7 +150,7 @@ python experiments/leapbot/pareto.py evaluate_results/leapbot
 # After training the winning four-exit checkpoint, run the complete
 # D={8,16,24,30} x H={0,8,16,32,full} grid with isolated result trees.
 TRAIN_ROOT=/path/to/multi_exit_run MODE=<winner> FINAL_STEP=<step> \
-  bash scripts/run_depth_history_pareto.sh
+  bash scripts/evaluate_pareto.sh
 ```
 
 Run all 10 `libero_10` tasks with 10 trials for development, then 50 trials per
@@ -170,16 +172,15 @@ LeapBot default.
 
 ```bash
 PYTHONPATH=src python -m pytest tests -q
-
-# With the release checkpoint present:
-python scripts/smoke_leapbot_train_h800.py \
-  --checkpoint checkpoints/fastwam_release/libero_uncond_2cam224.pt \
-  --device cuda:0
-python scripts/smoke_leapbot_h800.py \
-  --checkpoint checkpoints/fastwam_release/libero_uncond_2cam224.pt \
-  --dataset-stats checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json \
-  --device cuda:0 --blocks 70
 ```
+
+The optional real-6B acceptance tools are
+`scripts/validate_real_6b_runtime_training_equivalence.py` (training/runtime KV
+and fixed-noise loss equivalence) and `scripts/full_prefix_smoke.py` (real-prefix
+optimizer topology and capacity protection). They are cluster preflight tools,
+not alternate training entrypoints; their exact invocations and resource scope
+are documented in the
+[training and reproduction runbook](./docs/TRAINING_AND_REPRODUCTION.md).
 
 Unit coverage includes causal leakage, action/observation state transitions,
 rollback/reset/capacity, exact context fingerprints, hierarchical positions,

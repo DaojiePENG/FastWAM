@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Controlled comparison. Every selected mode uses the same eight-rank topology,
+# Canonical controlled causal-mode training. Every mode uses the same eight-rank topology,
 # sampler sharding, global batches, RNG streams, and optimizer updates.  The
 # optional MODES_CSV subset permits an effect audit between expensive stages;
 # invoking the remaining modes later with the same TRAIN_ROOT preserves the
@@ -179,7 +179,7 @@ for mode in "${MODES[@]}"; do
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \
-        bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh"
+        bash "$ROOT_DIR/scripts/train_leapbot.sh"
     validate_existing_contract_group
     log "complete controlled full-BPTT mode=$mode"
 done

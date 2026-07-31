@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+# Evaluate the trained exit-depth x retained-KV grid and select the Pareto set.
+
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
@@ -83,7 +85,7 @@ for depth in "${DEPTHS[@]}"; do
         RETAINED_HISTORY_BLOCKS="$kv_retention_cap" \
         EXIT_DEPTH="$depth" \
         EXPECTED_TRAINED_EXIT_DEPTHS=8,16,24,30 \
-        bash "$ROOT_DIR/scripts/run_single_mode_checkpoint_eval.sh"
+        bash "$ROOT_DIR/scripts/evaluate_checkpoint.sh"
     done
 done
 

@@ -2,8 +2,11 @@
 
 set -euo pipefail
 
+# Evaluate the pinned FastWAM release baseline over all LIBERO-Long tasks.
+
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/phase1_h8_d30_s1000_dev10}"
+LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
+EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/fastwam_release_dev10}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 NUM_TRIALS="${NUM_TRIALS:-10}"
@@ -34,7 +37,7 @@ build_task_fingerprint() {
     local expected
     expected="$(fingerprint_path "$task_id")"
     mkdir -p "$(dirname "$expected")"
-    PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+    PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
         --config-name sim_libero \
         --output "$expected" \
@@ -47,6 +50,7 @@ build_task_fingerprint() {
         "EVALUATION.num_trials=$NUM_TRIALS" \
         EVALUATION.num_inference_steps=10 \
         EVALUATION.replan_steps=10 \
+        EVALUATION.save_rollout_video=false \
         EVALUATION.binarize_gripper=true \
         EVALUATION.visualize_future_video=false \
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \
@@ -96,7 +100,7 @@ run_task() {
         MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
         MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
-        PYTHONPATH="/home/sheng/workspace/LIBERO:$ROOT_DIR/experiments/libero" \
+        PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
         "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
@@ -110,6 +114,7 @@ run_task() {
         "EVALUATION.num_trials=$NUM_TRIALS" \
         EVALUATION.num_inference_steps=10 \
         EVALUATION.replan_steps=10 \
+        EVALUATION.save_rollout_video=false \
         EVALUATION.binarize_gripper=true \
         EVALUATION.visualize_future_video=false \
         "EVALUATION.dataset_stats_path=$DATASET_STATS" \

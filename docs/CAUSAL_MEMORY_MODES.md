@@ -201,7 +201,7 @@ LeapBot 是从该权重做历史适配，不能把很短的 LR screen 当作最�
 | 层级时间位置 | `src/leapbot_va/positions.py` |
 | LIBERO 实际动作回写 | `src/leapbot_va/libero.py` |
 | LIBERO rollout | `experiments/libero/eval_libero_single.py` |
-| 单模式训练入口 | `scripts/run_hierarchical_raw_v1_peft_5k.sh` |
-| 三模式受控比较 | `scripts/run_causal_full_bptt_comparison.sh` |
+| 单模式训练入口 | `scripts/train_leapbot.sh` |
+| 三模式受控比较 | `scripts/train_causal_modes.sh` |
 | 固定噪声诊断 | `scripts/history_stratified_loss.py` |
 | checkpoint 验证 | `scripts/validate_leapbot_checkpoint.py` |

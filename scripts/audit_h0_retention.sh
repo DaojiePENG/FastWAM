@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Compare native H0 retention and long-history behavior for the two episode-
+# Audit native H0 retention and long-history behavior for the two episode-
 # start sampling factors using the exact fixed-noise protocol used for LR choice.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"

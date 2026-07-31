@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Correct-architecture phase-A v5 recipe:
+# Canonical single-mode LeapBot training recipe:
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)

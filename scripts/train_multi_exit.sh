@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+# Train D8/D16/D24 exits from the selected, validated D30 causal checkpoint.
+
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 SOURCE_TRAIN_ROOT="${SOURCE_TRAIN_ROOT:?SOURCE_TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
@@ -128,4 +130,4 @@ RUN_NAME="multi-exit-incremental-full-bptt-${MODE//_/-}-s${MAX_STEPS}-seed42" \
 WANDB_ENABLED="$WANDB_ENABLED" \
 WANDB_MODE="$WANDB_MODE" \
 MAIN_PROCESS_PORT=29972 \
-    bash "$ROOT_DIR/scripts/run_hierarchical_raw_v1_peft_5k.sh"
+    bash "$ROOT_DIR/scripts/train_leapbot.sh"

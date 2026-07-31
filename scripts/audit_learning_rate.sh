@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Evaluate the release and both paired LR candidates on exactly the same
+# Audit the release and both paired LR candidates on exactly the same
 # observations, flow timesteps, Gaussian noise, and causal-history controls.
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
