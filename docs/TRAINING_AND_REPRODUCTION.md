@@ -512,6 +512,20 @@ update 之间重复，历史张量本身绝不复制延长。探针禁用 W&B，
 weights 或 DeepSpeed state；结果只写 `capacity_probe.json`、小型 config/contract
 和日志。
 
+探针和正式训练一样，对 T5 cache 持有整个进程生命周期的 shared `flock`，并在
+启动 GPU 进程前生成 `training_asset_manifest.json`。完整数据、T5 cache/provenance、
+VAE 和 pinned download manifest 的 hash 由该文件覆盖，其 `manifest_sha256` 同时
+写入 `probe_contract.txt` 及成功/失败报告。optimizer 报告分别注明
+`action_and_aux: weight_decay=0.01` 与 `video_lora: weight_decay=0`，不能笼统描述成
+所有参数都使用 wd0.01。
+
+默认 `PROBE_TIMEOUT_SECONDS=7200`，只允许正整数；超时会终止整个 Accelerate
+进程组并写 `status=timeout`。每次 update 都检查 DeepSpeedEngine 的
+`global_steps` 恰好增加 1、`_step_applied=true`、`skipped_steps` 不增加且
+Accelerate 未报告 skipped；最终还断言 `global_steps` 总 delta 恰好为 2。报告会
+扫描 `checkpoints/` 的实际文件列表，任何文件都会把结果升级为
+`status=contract_violation`，即使训练计算本身成功也不能作为容量验收。
+
 `MODE` 默认是 `action_aggregator`，且只接受三种正式值：
 `action_aggregator`、`interleaved`、`vision_causal`。首个策略先按默认模式测 B20；
 在另外两种模式正式开跑前，可用独立输出目录重复同一探针，尤其建议复验已有

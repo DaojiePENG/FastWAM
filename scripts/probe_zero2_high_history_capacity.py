@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,103 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     temporary.replace(path)
+
+
+def find_checkpoint_files(output_dir: Path) -> list[str]:
+    checkpoint_root = output_dir / "checkpoints"
+    return sorted(
+        str(path.relative_to(output_dir))
+        for path in checkpoint_root.rglob("*")
+        if path.is_file()
+    )
+
+
+def read_formal_optimizer_parameter_groups(optimizer: Any) -> dict[str, Any]:
+    """Verify the two formal AdamW groups after DeepSpeed preparation."""
+
+    resolved: dict[str, Any] = {}
+    for group in getattr(optimizer, "param_groups", []):
+        name = str(group.get("group_name", ""))
+        if name in resolved:
+            raise RuntimeError(f"duplicate optimizer parameter group: {name!r}")
+        if name not in {"action_and_aux", "video_lora"}:
+            raise RuntimeError(f"unexpected optimizer parameter group: {name!r}")
+        resolved[name] = {
+            "weight_decay": float(group["weight_decay"]),
+            "parameters": int(
+                sum(parameter.numel() for parameter in group["params"])
+            ),
+        }
+    expected_weight_decay = {"action_and_aux": 1.0e-2, "video_lora": 0.0}
+    if set(resolved) != set(expected_weight_decay):
+        raise RuntimeError(
+            "formal optimizer groups are incomplete after DeepSpeed preparation: "
+            f"{sorted(resolved)}"
+        )
+    for name, expected in expected_weight_decay.items():
+        if resolved[name]["weight_decay"] != expected:
+            raise RuntimeError(
+                f"optimizer group {name} weight_decay mismatch: "
+                f"expected={expected} actual={resolved[name]['weight_decay']}"
+            )
+    return resolved
+
+
+def read_deepspeed_engine_step_state(engine: Any) -> dict[str, int | bool]:
+    """Read the concrete DeepSpeedEngine counters used by DS 0.18.5."""
+
+    values: dict[str, int | bool] = {}
+    for name in ("global_steps", "skipped_steps"):
+        value = getattr(engine, name, None)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(
+                f"prepared DeepSpeed engine is missing integer {name}: {value!r}"
+            )
+        values[name] = int(value)
+    step_applied = getattr(engine, "_step_applied", None)
+    if not isinstance(step_applied, bool):
+        raise RuntimeError(
+            "prepared DeepSpeed engine is missing boolean _step_applied evidence"
+        )
+    values["_step_applied"] = step_applied
+    return values
+
+
+def validate_deepspeed_engine_step_transition(
+    before: dict[str, int | bool],
+    after: dict[str, int | bool],
+    *,
+    optimizer_step_was_skipped: bool,
+) -> dict[str, int | bool]:
+    """Require one applied, non-skipped DeepSpeed update on every probe step."""
+
+    global_step_delta = int(after["global_steps"]) - int(before["global_steps"])
+    skipped_step_delta = int(after["skipped_steps"]) - int(before["skipped_steps"])
+    step_applied = bool(after["_step_applied"])
+    if global_step_delta != 1:
+        raise RuntimeError(
+            "DeepSpeed engine global_steps did not advance exactly once: "
+            f"before={before['global_steps']} after={after['global_steps']}"
+        )
+    if optimizer_step_was_skipped or skipped_step_delta != 0 or not step_applied:
+        raise RuntimeError(
+            "capacity-probe optimizer update was skipped or not applied: "
+            f"accelerator_skipped={optimizer_step_was_skipped} "
+            f"skipped_step_delta={skipped_step_delta} "
+            f"engine_step_applied={step_applied}"
+        )
+    return {
+        "engine_global_steps_before": int(before["global_steps"]),
+        "engine_global_steps_after": int(after["global_steps"]),
+        "engine_global_steps_delta": global_step_delta,
+        "engine_skipped_steps_before": int(before["skipped_steps"]),
+        "engine_skipped_steps_after": int(after["skipped_steps"]),
+        "engine_skipped_steps_delta": skipped_step_delta,
+        "engine_step_applied": step_applied,
+        "accelerator_optimizer_step_was_skipped": bool(
+            optimizer_step_was_skipped
+        ),
+    }
 
 
 def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
@@ -168,7 +266,11 @@ def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
             "learning_rate_multiplier": 1.0,
         },
         "training_exit_depths": [30],
-        "optimizer": "adamw_beta0.9_0.95_wd0.01_clip1.0",
+        "optimizer": "adamw_beta0.9_0.95_clip1.0",
+        "optimizer_parameter_groups": {
+            "action_and_aux": {"weight_decay": 1.0e-2},
+            "video_lora": {"weight_decay": 0.0},
+        },
         "checkpoints_forbidden": True,
         "wandb_forbidden": True,
     }
@@ -292,6 +394,12 @@ class CapacityProbeTrainer(Wan22Trainer):
 
     def _write_rank_oom(self, *, update: int, phase: str, error: BaseException) -> None:
         device = self.accelerator.device
+        try:
+            engine_step_state: dict[str, int | bool] | None = (
+                read_deepspeed_engine_step_state(self.model)
+            )
+        except RuntimeError:
+            engine_step_state = None
         payload = {
             "kind": "zero2_real_high_history_capacity_probe_rank_failure",
             "status": "oom",
@@ -308,6 +416,10 @@ class CapacityProbeTrainer(Wan22Trainer):
             "peak_reserved_gib": float(
                 torch.cuda.max_memory_reserved(device) / 2**30
             ),
+            "training_asset_manifest_sha256": os.environ.get(
+                "LEAPBOT_TRAINING_ASSET_MANIFEST_SHA256"
+            ),
+            "engine_step_state": engine_step_state,
         }
         _atomic_json(
             Path(self.output_dir)
@@ -331,6 +443,13 @@ class CapacityProbeTrainer(Wan22Trainer):
                 "capacity probe requires exactly eight ranks, got "
                 f"{self.accelerator.num_processes}"
             )
+        deepspeed_engine = self.model
+        initial_engine_step_state = read_deepspeed_engine_step_state(
+            deepspeed_engine
+        )
+        optimizer_parameter_groups = read_formal_optimizer_parameter_groups(
+            self.optimizer
+        )
 
         self._set_dit_only_train_mode()
         model = (
@@ -396,6 +515,9 @@ class CapacityProbeTrainer(Wan22Trainer):
                     dtype=torch.float64,
                 )
                 start = time.perf_counter()
+                engine_step_before = read_deepspeed_engine_step_state(
+                    deepspeed_engine
+                )
                 with self.accelerator.accumulate(self.model):
                     phase = "forward"
                     with self.accelerator.autocast():
@@ -417,9 +539,20 @@ class CapacityProbeTrainer(Wan22Trainer):
                         raise FloatingPointError(
                             "non-finite capacity-probe gradient norm"
                         )
-                    if not self.accelerator.optimizer_step_was_skipped:
+                    optimizer_step_was_skipped = bool(
+                        self.accelerator.optimizer_step_was_skipped
+                    )
+                    if not optimizer_step_was_skipped:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                engine_step_after = read_deepspeed_engine_step_state(
+                    deepspeed_engine
+                )
+                engine_step_evidence = validate_deepspeed_engine_step_transition(
+                    engine_step_before,
+                    engine_step_after,
+                    optimizer_step_was_skipped=optimizer_step_was_skipped,
+                )
                 torch.cuda.synchronize(device)
                 elapsed = time.perf_counter() - start
 
@@ -462,6 +595,34 @@ class CapacityProbeTrainer(Wan22Trainer):
                 gathered_elapsed = self.accelerator.gather(
                     torch.tensor([elapsed], device=device, dtype=torch.float64)
                 ).reshape(-1)
+                local_engine_evidence = torch.tensor(
+                    [
+                        engine_step_evidence["engine_global_steps_before"],
+                        engine_step_evidence["engine_global_steps_after"],
+                        engine_step_evidence["engine_global_steps_delta"],
+                        engine_step_evidence["engine_skipped_steps_before"],
+                        engine_step_evidence["engine_skipped_steps_after"],
+                        engine_step_evidence["engine_skipped_steps_delta"],
+                        int(engine_step_evidence["engine_step_applied"]),
+                        int(
+                            engine_step_evidence[
+                                "accelerator_optimizer_step_was_skipped"
+                            ]
+                        ),
+                    ],
+                    device=device,
+                    dtype=torch.int64,
+                ).reshape(1, 8)
+                gathered_engine_evidence = self.accelerator.gather(
+                    local_engine_evidence
+                ).reshape(self.accelerator.num_processes, 8)
+                if not bool(
+                    (gathered_engine_evidence == gathered_engine_evidence[0]).all().item()
+                ):
+                    raise RuntimeError(
+                        "DeepSpeed engine step evidence differs across ranks: "
+                        f"{gathered_engine_evidence.cpu().tolist()}"
+                    )
                 all_losses_finite = all_losses_finite and bool(
                     torch.isfinite(gathered_losses).all().item()
                 )
@@ -495,6 +656,7 @@ class CapacityProbeTrainer(Wan22Trainer):
                             "rank0_loss_metrics": {
                                 key: float(value) for key, value in metrics.items()
                             },
+                            "engine_step_evidence": engine_step_evidence,
                             "global_peak_allocated_gib": max(
                                 row["peak_allocated_gib"] for row in per_rank
                             ),
@@ -508,18 +670,46 @@ class CapacityProbeTrainer(Wan22Trainer):
                 self._write_rank_oom(update=update, phase=phase, error=error)
                 raise
 
+        final_engine_step_state = read_deepspeed_engine_step_state(
+            deepspeed_engine
+        )
+        engine_global_steps_delta = int(
+            final_engine_step_state["global_steps"]
+        ) - int(initial_engine_step_state["global_steps"])
+        engine_skipped_steps_delta = int(
+            final_engine_step_state["skipped_steps"]
+        ) - int(initial_engine_step_state["skipped_steps"])
+        if engine_global_steps_delta != FORMAL_OPTIMIZER_UPDATES:
+            raise RuntimeError(
+                "capacity probe did not execute exactly two DeepSpeed global steps: "
+                f"start={initial_engine_step_state['global_steps']} "
+                f"end={final_engine_step_state['global_steps']}"
+            )
+        if engine_skipped_steps_delta != 0:
+            raise RuntimeError(
+                "DeepSpeed recorded skipped optimizer steps during capacity probe"
+            )
+
         if not self.accelerator.is_main_process:
             return None
-        checkpoint_files = [
-            str(path)
-            for path in Path(self.checkpoint_root).rglob("*")
-            if path.is_file()
-        ]
+        checkpoint_files = find_checkpoint_files(Path(self.output_dir))
         if checkpoint_files:
             raise RuntimeError(
                 "capacity probe unexpectedly wrote checkpoint files: "
                 f"{checkpoint_files}"
             )
+        training_asset_manifest_sha256 = os.environ.get(
+            "LEAPBOT_TRAINING_ASSET_MANIFEST_SHA256", ""
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", training_asset_manifest_sha256) is None:
+            raise RuntimeError(
+                "capacity probe is missing a valid training asset manifest identity"
+            )
+        timeout_seconds_raw = os.environ.get(
+            "LEAPBOT_CAPACITY_PROBE_TIMEOUT_SECONDS", ""
+        )
+        if not timeout_seconds_raw.isdigit() or int(timeout_seconds_raw) <= 0:
+            raise RuntimeError("capacity probe is missing its wall-clock timeout contract")
         result = {
             "kind": "zero2_real_high_history_capacity_probe",
             "status": "passed",
@@ -532,6 +722,16 @@ class CapacityProbeTrainer(Wan22Trainer):
             ),
             "history_tensors_synthesized_or_extended": False,
             "engine_topology": topology,
+            "engine_global_steps": {
+                "start": int(initial_engine_step_state["global_steps"]),
+                "end": int(final_engine_step_state["global_steps"]),
+                "delta": engine_global_steps_delta,
+            },
+            "engine_skipped_steps": {
+                "start": int(initial_engine_step_state["skipped_steps"]),
+                "end": int(final_engine_step_state["skipped_steps"]),
+                "delta": engine_skipped_steps_delta,
+            },
             "trainable_parameters": int(
                 sum(
                     parameter.numel()
@@ -539,7 +739,12 @@ class CapacityProbeTrainer(Wan22Trainer):
                     if parameter.requires_grad
                 )
             ),
-            "optimizer": "adamw_beta0.9_0.95_wd0.01_clip1.0",
+            "optimizer": {
+                "name": "AdamW",
+                "betas": [0.9, 0.95],
+                "max_grad_norm": 1.0,
+                "parameter_groups": optimizer_parameter_groups,
+            },
             "updates": update_records,
             "all_losses_finite": all_losses_finite,
             "all_gradients_finite": all_gradients_finite,
@@ -551,6 +756,8 @@ class CapacityProbeTrainer(Wan22Trainer):
             ),
             "wandb_used": False,
             "checkpoint_files_written": [],
+            "training_asset_manifest_sha256": training_asset_manifest_sha256,
+            "timeout_seconds": int(timeout_seconds_raw),
         }
         _atomic_json(Path(self.output_dir) / "capacity_probe.json", result)
         return result

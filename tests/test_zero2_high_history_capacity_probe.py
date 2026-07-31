@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 from torch.utils.data import Dataset
 
@@ -12,7 +14,11 @@ from scripts.probe_zero2_high_history_capacity import (
     FORMAL_OPTIMIZER_UPDATES,
     FORMAL_WORLD_SIZE,
     FixedRealPrefixProbeDataset,
+    find_checkpoint_files,
+    read_deepspeed_engine_step_state,
+    read_formal_optimizer_parameter_groups,
     select_real_high_history_prefixes,
+    validate_deepspeed_engine_step_transition,
     validate_capacity_probe_contract,
 )
 
@@ -91,7 +97,11 @@ def test_capacity_contract_is_formal_checkpoint_free_zero2(causal_mode):
             "learning_rate_multiplier": 1.0,
         },
         "training_exit_depths": [30],
-        "optimizer": "adamw_beta0.9_0.95_wd0.01_clip1.0",
+        "optimizer": "adamw_beta0.9_0.95_clip1.0",
+        "optimizer_parameter_groups": {
+            "action_and_aux": {"weight_decay": 1.0e-2},
+            "video_lora": {"weight_decay": 0.0},
+        },
         "checkpoints_forbidden": True,
         "wandb_forbidden": True,
     }
@@ -170,6 +180,96 @@ def test_probe_dataset_repeats_only_the_fixed_distinct_real_schedule():
     ] == [item.history_blocks for item in selected]
 
 
+def test_deepspeed_engine_step_evidence_requires_one_applied_update():
+    before = read_deepspeed_engine_step_state(
+        SimpleNamespace(global_steps=7, skipped_steps=2, _step_applied=False)
+    )
+    after = read_deepspeed_engine_step_state(
+        SimpleNamespace(global_steps=8, skipped_steps=2, _step_applied=True)
+    )
+
+    evidence = validate_deepspeed_engine_step_transition(
+        before, after, optimizer_step_was_skipped=False
+    )
+    assert evidence["engine_global_steps_delta"] == 1
+    assert evidence["engine_skipped_steps_delta"] == 0
+    assert evidence["engine_step_applied"] is True
+    assert evidence["accelerator_optimizer_step_was_skipped"] is False
+
+
+@pytest.mark.parametrize(
+    ("after", "accelerator_skipped", "message"),
+    [
+        (
+            {"global_steps": 7, "skipped_steps": 2, "_step_applied": True},
+            False,
+            "did not advance exactly once",
+        ),
+        (
+            {"global_steps": 8, "skipped_steps": 3, "_step_applied": False},
+            True,
+            "was skipped or not applied",
+        ),
+        (
+            {"global_steps": 8, "skipped_steps": 2, "_step_applied": False},
+            False,
+            "was skipped or not applied",
+        ),
+    ],
+)
+def test_deepspeed_engine_step_evidence_rejects_missing_update(
+    after, accelerator_skipped, message
+):
+    before = {"global_steps": 7, "skipped_steps": 2, "_step_applied": False}
+    with pytest.raises(RuntimeError, match=message):
+        validate_deepspeed_engine_step_transition(
+            before, after, optimizer_step_was_skipped=accelerator_skipped
+        )
+
+
+def test_deepspeed_engine_state_reader_fails_closed_on_missing_api():
+    with pytest.raises(RuntimeError, match="integer global_steps"):
+        read_deepspeed_engine_step_state(
+            SimpleNamespace(skipped_steps=0, _step_applied=False)
+        )
+    with pytest.raises(RuntimeError, match="boolean _step_applied"):
+        read_deepspeed_engine_step_state(
+            SimpleNamespace(global_steps=0, skipped_steps=0)
+        )
+
+
+def test_formal_optimizer_groups_preserve_distinct_weight_decay():
+    action = torch.nn.Parameter(torch.zeros(3))
+    lora = torch.nn.Parameter(torch.zeros(5))
+    optimizer = SimpleNamespace(
+        param_groups=[
+            {
+                "group_name": "action_and_aux",
+                "weight_decay": 0.01,
+                "params": [action],
+            },
+            {
+                "group_name": "video_lora",
+                "weight_decay": 0.0,
+                "params": [lora],
+            },
+        ]
+    )
+    assert read_formal_optimizer_parameter_groups(optimizer) == {
+        "action_and_aux": {"weight_decay": 0.01, "parameters": 3},
+        "video_lora": {"weight_decay": 0.0, "parameters": 5},
+    }
+
+
+def test_checkpoint_scan_reports_actual_files(tmp_path):
+    checkpoint = tmp_path / "checkpoints/state/step_000001/rank0.bin"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"state")
+    assert find_checkpoint_files(tmp_path) == [
+        "checkpoints/state/step_000001/rank0.bin"
+    ]
+
+
 def test_capacity_launcher_has_valid_bash_syntax():
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -196,3 +296,32 @@ def test_capacity_launcher_rejects_invalid_mode_before_hardware_access():
     assert "MODE must be action_aggregator, interleaved or vision_causal" in (
         result.stdout + result.stderr
     )
+
+
+def test_capacity_launcher_rejects_invalid_timeout_before_hardware_access():
+    root = Path(__file__).resolve().parents[1]
+    environment = dict(os.environ)
+    environment["PROBE_TIMEOUT_SECONDS"] = "0"
+    result = subprocess.run(
+        ["bash", str(root / "scripts/probe_zero2_high_history_capacity.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 2
+    assert "PROBE_TIMEOUT_SECONDS must be a positive integer" in (
+        result.stdout + result.stderr
+    )
+
+
+def test_capacity_launcher_binds_assets_lock_timeout_and_checkpoint_scan():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "scripts/probe_zero2_high_history_capacity.sh").read_text()
+    assert 'PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-7200}"' in source
+    assert 'flock -s "$TEXT_CACHE_LOCK_FD"' in source
+    assert "training_asset_manifest.py" in source
+    assert 'training_asset_manifest_sha256=%s' in source
+    assert 'timeout --signal=TERM --kill-after=60s "$PROBE_TIMEOUT_SECONDS"' in source
+    assert 'checkpoint_files_written": checkpoint_files' in source
+    assert 'status = "contract_violation"' in source
