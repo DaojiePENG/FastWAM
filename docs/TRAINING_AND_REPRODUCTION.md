@@ -497,19 +497,26 @@ DeepSpeed engine，因此只能用作保守趋势证据，不能代替最终 8 �
 ```bash
 su sheng -c '
   cd /home/sheng/workspace/leapbot-va &&
+  MODE=action_aggregator \
   BATCH_SIZE=20 \
-  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_b20 \
+  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_action_aggregator_b20 \
   bash scripts/probe_zero2_high_history_capacity.sh
 '
 ```
 
-该入口固定为 8 卡、ZeRO-2、BF16、`action_aggregator`、D30、chunk1、
+该入口固定为 8 卡、ZeRO-2、BF16、D30、chunk1、
 `incremental_full_bptt`、正式 ActionDiT/VideoLoRA optimizer，并执行恰好两次
 optimizer update。每个 rank 的一个 micro-batch 包含 B 个不同的真实数据行；每行
 都是同一 episode 内未截断、未合成的 H41–H50 完整前缀。固定批次只在 rank 和
 update 之间重复，历史张量本身绝不复制延长。探针禁用 W&B，且不得写 portable
 weights 或 DeepSpeed state；结果只写 `capacity_probe.json`、小型 config/contract
 和日志。
+
+`MODE` 默认是 `action_aggregator`，且只接受三种正式值：
+`action_aggregator`、`interleaved`、`vision_causal`。首个策略先按默认模式测 B20；
+在另外两种模式正式开跑前，可用独立输出目录重复同一探针，尤其建议复验已有
+单卡压力结果中峰值略高的 `vision_causal`。报告、输出目录默认名和
+`probe_contract.txt` 都绑定实际 `MODE`，不同模式的结果不得覆盖或混用。
 
 当前 release 数据对 B20 的确定性选择为 H44×8、H45×6、H46×2、
 H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择和每 rank
@@ -522,8 +529,9 @@ H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择�
 ```bash
 su sheng -c '
   cd /home/sheng/workspace/leapbot-va &&
+  MODE=action_aggregator \
   BATCH_SIZE=18 \
-  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_b18 \
+  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_action_aggregator_b18 \
   bash scripts/probe_zero2_high_history_capacity.sh
 '
 ```

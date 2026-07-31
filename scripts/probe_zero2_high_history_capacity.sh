@@ -9,13 +9,14 @@ ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 BATCH_SIZE="${BATCH_SIZE:-20}"
+MODE="${MODE:-action_aggregator}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29969}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-5}"
 MAX_PREFLIGHT_USED_MIB="${MAX_PREFLIGHT_USED_MIB:-2048}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 TEXT_EMBEDDING_CACHE="${TEXT_EMBEDDING_CACHE:-$ROOT_DIR/data/text_embeds_cache/libero}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/acceptance/zero2_real_h41_h50_action_aggregator_b${BATCH_SIZE}}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/acceptance/zero2_real_h41_h50_${MODE}_b${BATCH_SIZE}}"
 LOG_FILE="$OUTPUT_DIR/probe.log"
 REPORT_FILE="$OUTPUT_DIR/capacity_probe.json"
 
@@ -27,6 +28,13 @@ case "$BATCH_SIZE" in
     16|18|20|22) ;;
     *)
         log "BATCH_SIZE must be one of 16,18,20,22; use B20 first and B18 after OOM"
+        exit 2
+        ;;
+esac
+case "$MODE" in
+    action_aggregator|interleaved|vision_causal) ;;
+    *)
+        log "MODE must be action_aggregator, interleaved or vision_causal"
         exit 2
         ;;
 esac
@@ -77,7 +85,7 @@ GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE))
     printf 'code_commit=%s\n' "$CODE_COMMIT"
     printf 'release_checkpoint_sha256=%s\n' "$RELEASE_CHECKPOINT_SHA256"
     printf 'dataset_stats_sha256=%s\n' "$DATASET_STATS_SHA256"
-    printf 'mode=action_aggregator\n'
+    printf 'mode=%s\n' "$MODE"
     printf 'num_processes=8\n'
     printf 'batch_size=%s\n' "$BATCH_SIZE"
     printf 'gradient_accumulation_steps=1\n'
@@ -95,7 +103,7 @@ GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE))
     printf 'checkpoint_writes=false\n'
 } >"$OUTPUT_DIR/probe_contract.txt"
 
-log "start ZeRO-2 real H41-H50 capacity probe: B${BATCH_SIZE}/GA1/global${GLOBAL_BATCH}"
+log "start ZeRO-2 real H41-H50 capacity probe: mode=${MODE} B${BATCH_SIZE}/GA1/global${GLOBAL_BATCH}"
 set +e
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
 PYTHONHASHSEED=42 \
@@ -113,7 +121,7 @@ TORCH_NCCL_ASYNC_ERROR_HANDLING=1 \
     "$ROOT_DIR/scripts/probe_zero2_high_history_capacity.py" \
     task=libero_leapbot_2cam224 \
     "output_dir=$OUTPUT_DIR" \
-    model.causal_mode=action_aggregator \
+    "model.causal_mode=$MODE" \
     model.history_training_mode=incremental_full_bptt \
     model.history_vae_batch_chunk_size=1 \
     model.training_strategy=video_lora_action_full \
@@ -173,7 +181,7 @@ fi
 
 "$ROOT_DIR/.venv/bin/python" - \
     "$REPORT_FILE" "$OUTPUT_DIR" "$launcher_status" "$oom_detected" \
-    "$BATCH_SIZE" "$GLOBAL_BATCH" "$CODE_COMMIT" <<'PY'
+    "$BATCH_SIZE" "$GLOBAL_BATCH" "$CODE_COMMIT" "$MODE" <<'PY'
 import glob
 import json
 import pathlib
@@ -199,6 +207,7 @@ payload = {
     "history_tensors_synthesized_or_extended": False,
     "launcher_exit_code": launcher_status,
     "code_commit": sys.argv[7],
+    "causal_mode": sys.argv[8],
     "rank_oom_reports": rank_reports,
     "checkpoint_files_written": [],
     "fallback": (

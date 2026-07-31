@@ -23,7 +23,8 @@
 - `evaluate_fastwam_baseline.sh`：评测 FastWAM release baseline。
 - `precompute_text_embeds.py`：正式训练前生成 T5 prompt cache。
 - `probe_zero2_high_history_capacity.sh`：在正式训练前，用真实 H41–H50
-  前缀做两次无 checkpoint 的 8 卡 ZeRO-2 显存验收；默认先测 B20，OOM
+  前缀做两次无 checkpoint 的 8 卡 ZeRO-2 显存验收；`MODE` 默认
+  `action_aggregator`，也可在另外两种正式模式开跑前复验；默认先测 B20，OOM
   时用新输出目录改测 B18。
 
 这些入口都应从仓库根目录执行，并由实际拥有数据与 checkpoint 的用户运行。

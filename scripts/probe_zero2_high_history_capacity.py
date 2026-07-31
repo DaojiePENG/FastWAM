@@ -45,6 +45,11 @@ FORMAL_HISTORY_MAX = 50
 FORMAL_REPLAN_STEPS = 10
 FORMAL_ACTION_HORIZON = 32
 SUPPORTED_BATCH_SIZES = (16, 18, 20, 22)
+SUPPORTED_CAUSAL_MODES = (
+    "action_aggregator",
+    "interleaved",
+    "vision_causal",
+)
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -95,8 +100,12 @@ def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
     model = cfg.get("model")
     if model is None:
         raise ValueError("capacity probe is missing model configuration")
-    if str(model.get("causal_mode", "")) != "action_aggregator":
-        raise ValueError("capacity probe is fixed to action_aggregator")
+    causal_mode = str(model.get("causal_mode", ""))
+    if causal_mode not in SUPPORTED_CAUSAL_MODES:
+        raise ValueError(
+            "capacity probe causal_mode must be one of "
+            f"{SUPPORTED_CAUSAL_MODES}, got {causal_mode!r}"
+        )
     if str(model.get("history_training_mode", "")) != "incremental_full_bptt":
         raise ValueError("capacity probe requires incremental_full_bptt")
     if int(model.get("history_vae_batch_chunk_size", -1)) != 1:
@@ -148,7 +157,7 @@ def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
         "history_max": history_max,
         "mixed_precision": "bf16",
         "zero_stage": 2,
-        "causal_mode": "action_aggregator",
+        "causal_mode": causal_mode,
         "history_training_mode": "incremental_full_bptt",
         "history_vae_batch_chunk_size": 1,
         "training_strategy": "video_lora_action_full",

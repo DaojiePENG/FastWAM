@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from scripts.probe_zero2_high_history_capacity import (
 )
 
 
-def _cfg(*, batch_size: int = 20):
+def _cfg(*, batch_size: int = 20, causal_mode: str = "action_aggregator"):
     return OmegaConf.create(
         {
             "batch_size": batch_size,
@@ -30,7 +31,7 @@ def _cfg(*, batch_size: int = 20):
             "eval_every": 0,
             "wandb": {"enabled": False},
             "model": {
-                "causal_mode": "action_aggregator",
+                "causal_mode": causal_mode,
                 "history_training_mode": "incremental_full_bptt",
                 "history_vae_batch_chunk_size": 1,
                 "training_strategy": "video_lora_action_full",
@@ -63,8 +64,11 @@ def _cfg(*, batch_size: int = 20):
     )
 
 
-def test_capacity_contract_is_formal_checkpoint_free_zero2():
-    contract = validate_capacity_probe_contract(_cfg())
+@pytest.mark.parametrize(
+    "causal_mode", ["action_aggregator", "interleaved", "vision_causal"]
+)
+def test_capacity_contract_is_formal_checkpoint_free_zero2(causal_mode):
+    contract = validate_capacity_probe_contract(_cfg(causal_mode=causal_mode))
 
     assert contract == {
         "batch_size_per_rank": 20,
@@ -76,7 +80,7 @@ def test_capacity_contract_is_formal_checkpoint_free_zero2():
         "history_max": 50,
         "mixed_precision": "bf16",
         "zero_stage": 2,
-        "causal_mode": "action_aggregator",
+        "causal_mode": causal_mode,
         "history_training_mode": "incremental_full_bptt",
         "history_vae_batch_chunk_size": 1,
         "training_strategy": "video_lora_action_full",
@@ -100,7 +104,7 @@ def test_capacity_contract_is_formal_checkpoint_free_zero2():
         ("gradient_accumulation_steps", 2, "gradient_accumulation_steps=1"),
         ("wandb.enabled", True, "forbids W&B"),
         ("save_every", 2, "forbids checkpoint"),
-        ("model.causal_mode", "interleaved", "fixed to action_aggregator"),
+        ("model.causal_mode", "invalid_mode", "causal_mode must be one of"),
         ("model.history_vae_batch_chunk_size", 2, "chunk1"),
         ("model.training_exit_depths", [8, 16, 24, 30], "D30 exit only"),
         ("data.train.full_episode_history", False, "full_episode_history=true"),
@@ -175,3 +179,20 @@ def test_capacity_launcher_has_valid_bash_syntax():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_capacity_launcher_rejects_invalid_mode_before_hardware_access():
+    root = Path(__file__).resolve().parents[1]
+    environment = dict(os.environ)
+    environment["MODE"] = "not_a_causal_mode"
+    result = subprocess.run(
+        ["bash", str(root / "scripts/probe_zero2_high_history_capacity.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 2
+    assert "MODE must be action_aggregator, interleaved or vision_causal" in (
+        result.stdout + result.stderr
+    )
