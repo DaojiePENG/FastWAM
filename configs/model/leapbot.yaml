@@ -22,6 +22,18 @@ history_vae_batch_chunk_size: 1
 # in every LeapBot checkpoint. Evaluation is rejected if either value changes.
 replan_steps: 10
 action_horizon: 32
+# 32 controls at a 4:1 action/video ratio correspond to 9 physical frames,
+# which the Wan VAE compresses to one real plus two future latent frames.
+num_video_frames: 9
+
+# LingBot-VA teacher forcing: ActionDiT reads a separate future-video condition
+# branch. Half the conditions are clean GT and half use high-noise GT. At
+# rollout, -1 fully denoises the future video before caching its transient K/V.
+future_video_conditioning: lingbot_teacher_forced_v1
+future_video_condition_noise_probability: 0.5
+future_video_condition_min_u: 0.5
+future_video_condition_max_u: 1.0
+future_video_denoise_steps: -1
 
 # The formal post-training run overrides this to video_lora_action_full.
 training_strategy: full_dit

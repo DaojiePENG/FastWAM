@@ -39,7 +39,7 @@ WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 SEED="${SEED:-42}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_incremental_full_bptt_v5_b20_ga1_d30_s${MAX_STEPS}_bs160_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_lingbot_video_kv_v6_b20_ga1_d30_s${MAX_STEPS}_bs160_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
 CANONICAL_MODES=(action_aggregator interleaved vision_causal)
@@ -184,7 +184,7 @@ for mode in "${MODES[@]}"; do
     DATASET_STATS="$DATASET_STATS" \
     SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-incremental-full-bptt-v5-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
+    RUN_NAME="causal-lingbot-video-kv-v6-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \

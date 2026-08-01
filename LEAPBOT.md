@@ -2,9 +2,11 @@
 
 LeapBot-VA is a FastWAM-derived world-action model whose persistent memory is
 made exclusively from real observations and commands actually sent to the
-controller. It keeps FastWAM's joint video/action flow-matching objective for
-training, but its online action path does not create future-video latents, run
-the video output head, or decode VAE video.
+controller. It keeps FastWAM's joint video/action flow-matching objective and
+adds LingBot-VA-style inverse-dynamics conditioning: ActionDiT reads the
+layer-wise K/V of an imagined future-video latent block. Online inference runs
+the video DiT/output projection to denoise those latents, but never VAE-decodes
+them and never writes their K/V into persistent episode memory.
 
 ## Runtime contract
 
@@ -21,6 +23,9 @@ prediction = model.infer_action(
     input_image=current_real_image,
     proprio=current_proprio,
     action_horizon=32,
+    num_video_frames=9,
+    # -1 means: use every configured scheduler step for video denoising.
+    future_video_denoise_steps=-1,
     memory=memory,
 )
 
@@ -50,8 +55,16 @@ The causal modes are:
   aggregates the complete history.
 
 In all modes, current action queries read historical observations/actions, the
-current real observation, and the bidirectional current action block. They can
-never read future-video supervision tokens.
+current real observation, a same-block future-video condition, and the
+bidirectional current action block. The independently noised video
+flow-matching target remains invisible to ActionDiT.
+
+The canonical 9-frame LIBERO clip becomes three VAE latent frames: the first is
+the already committed real observation and the remaining two form the future
+condition. During training that condition is clean/noised-GT teacher forcing;
+during rollout it is generated from noise. This train/runtime difference is
+intentional and is regularized by the 50% high-noise condition. The generated
+block is an ephemeral inverse-dynamics condition, not episode memory.
 
 ## Environment and assets
 
@@ -75,7 +88,11 @@ The downloader uses the official FastWAM Hugging Face repositories
 The production training path is runtime-isomorphic causal attention with
 `incremental_full_bptt`: every real observation/action block before the current
 replan is executed chronologically and remains in the graph. There is no
-history gate and no detached prefix.
+history gate and no detached prefix. For the current block, a separate future
+condition is clean ground-truth video with probability 0.5 and high-noise
+ground-truth video with probability 0.5 (`u in [0.5,1.0]` before scheduler
+shift), matching LingBot-VA's noisy-condition teacher forcing. Action loss
+backpropagates through this condition's K/V; video flow target noise does not.
 Native block-local RoPE is preserved, while a learned episode clock is expressed
 relative to those local coordinates; block zero is therefore an exact position
 no-op even after the clock parameters train. This does not freeze the shared
@@ -156,9 +173,11 @@ TRAIN_ROOT=/path/to/multi_exit_run MODE=<winner> FINAL_STEP=<step> \
 Run all 10 `libero_10` tasks with 10 trials for development, then 50 trials per
 task for the final table. Replan latency is a closed raw-observation-to-command
 measurement: input preprocessing, context conditioning, real-observation
-prefill, action-history materialization/setup, action denoising, command
-postprocessing, and executed-action KV commit are retained separately. Cache
-peaks include the temporary post-observation/pre-commit state. The result
+prefill, imagined-video setup/denoising/final-KV prefill, action-history
+materialization/setup, action denoising, command postprocessing, and
+executed-action KV commit are retained separately. Persistent cache peaks
+include the temporary post-observation/pre-commit state; persistent KV,
+transient future-video KV, and total CUDA peak are reported separately. The result
 fingerprint hashes the LeapBot worktree, LIBERO revision, simulator package
 versions, task BDDL, initial states, runtime configuration, and checkpoint.
 
@@ -182,7 +201,9 @@ not alternate training entrypoints; their exact invocations and resource scope
 are documented in the
 [training and reproduction runbook](./docs/TRAINING_AND_REPRODUCTION.md).
 
-Unit coverage includes causal leakage, action/observation state transitions,
+Unit coverage includes separation of future-video target and action condition,
+action-gradient flow through the condition, transient-KV lifecycle,
+action/observation state transitions,
 rollback/reset/capacity, exact context fingerprints, hierarchical positions,
 three-mode H=8 FP32/BF16 incremental-vs-one-shot KV equivalence, executed
 gripper re-normalization, deterministic pre-instantiation seeding, resume-run
@@ -190,5 +211,7 @@ contracts, trained-exit enforcement, multi-depth outputs, and Pareto selection. 
 H800 training and 500-episode benchmark runs require the release assets and
 trained LeapBot checkpoints; unit tests do not fabricate those results.
 
-The completed 6B single-step and 70-block H800 measurements are recorded in
-[reports/SMOKE_H800.md](./reports/SMOKE_H800.md).
+Pre-future-condition 6B measurements are retained only as a superseded
+historical report in [reports/SMOKE_H800.md](./reports/SMOKE_H800.md). They are
+not capacity, latency, or loss evidence for this architecture; the receiving
+cluster must rerun the documented probes from the committed code.

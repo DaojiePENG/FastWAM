@@ -321,6 +321,9 @@ def result_matches_fingerprint(
                     component_fields=(
                         "conditioning_s",
                         "observation_prefill_s",
+                        "future_video_setup_s",
+                        "future_video_denoise_s",
+                        "future_video_cache_s",
                         "action_setup_s",
                         "action_denoise_s",
                         "causal_model_residual_s",

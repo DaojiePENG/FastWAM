@@ -45,6 +45,11 @@ _REQUIRED_FIELDS = (
     "lr_scheduler_type",
     "video_lora_multiplier",
     "history_vae_batch_chunk_size",
+    "world_model_conditioning",
+    "num_video_frames",
+    "future_video_condition_noise_probability",
+    "future_video_condition_min_u",
+    "future_video_condition_max_u",
     "initial_block_oversample",
     "h0_anchor_mixing",
     "save_every",
@@ -128,6 +133,7 @@ def _validate_semantics(contract: RunContract) -> None:
         "text_embedding_cache_file_count",
         "text_cache_verified_file_count",
         "history_vae_batch_chunk_size",
+        "num_video_frames",
         "initial_block_oversample",
         "save_every",
         "max_history_blocks",
@@ -157,6 +163,23 @@ def _validate_semantics(contract: RunContract) -> None:
         raise ValueError(f"seed must be an integer, got {values['seed']!r}") from error
     _positive_float(values, "learning_rate")
     _positive_float(values, "video_lora_multiplier")
+    _positive_float(values, "future_video_condition_noise_probability")
+    _positive_float(values, "future_video_condition_min_u")
+    _positive_float(values, "future_video_condition_max_u")
+    if values["world_model_conditioning"] != "lingbot_teacher_forced_v1":
+        raise ValueError(
+            "world_model_conditioning must be lingbot_teacher_forced_v1"
+        )
+    if int(values["num_video_frames"]) != 9:
+        raise ValueError("formal LIBERO contract requires num_video_frames=9")
+    if not (
+        float(values["future_video_condition_noise_probability"]) == 0.5
+        and float(values["future_video_condition_min_u"]) == 0.5
+        and float(values["future_video_condition_max_u"]) == 1.0
+    ):
+        raise ValueError(
+            "formal future-video condition contract requires prob=0.5 and u=[0.5,1.0]"
+        )
     if values["padding_attention_mask"] != "true":
         raise ValueError(
             "padding_attention_mask must be exactly 'true', got "

@@ -1,5 +1,12 @@
 # LeapBot-VA H800 smoke report
 
+> **Superseded architecture report.** These measurements predate the
+> LingBot-style future-video K/V condition. They remain only as historical
+> evidence for the real-only cache implementation and must not be quoted as
+> latency, memory, loss, or capacity results for the current model. The current
+> path intentionally runs VideoDiT/video output projection before ActionDiT and
+> requires a new H800 smoke after the code contract is committed.
+
 Date: 2026-07-30
 GPU: NVIDIA H800 80 GB
 Checkpoint: FastWAM `libero_uncond_2cam224.pt`

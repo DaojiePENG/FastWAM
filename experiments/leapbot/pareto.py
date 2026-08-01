@@ -165,11 +165,15 @@ def _new_group() -> dict:
         "action_postprocess": [],
         "conditioning": [],
         "observation_prefill": [],
+        "future_video_setup": [],
+        "future_video_denoise": [],
+        "future_video_cache": [],
         "action_setup": [],
         "action_denoise": [],
         "causal_model": [],
         "action_commit": [],
         "cache": [],
+        "transient_future_video_cache": [],
         "gpu": [],
     }
 
@@ -208,6 +212,10 @@ def aggregate(paths: list[Path]) -> list[dict]:
         )
         for episode in payload.get("memory_metrics", []):
             group["cache"].append(float(episode.get("peak_cache_bytes", 0)))
+            if "peak_transient_future_video_cache_bytes" in episode:
+                group["transient_future_video_cache"].append(
+                    float(episode["peak_transient_future_video_cache_bytes"])
+                )
             if "peak_gpu_bytes" in episode:
                 group["gpu"].append(float(episode["peak_gpu_bytes"]))
             for replan in episode.get("replans", []):
@@ -217,6 +225,9 @@ def aggregate(paths: list[Path]) -> list[dict]:
                     ("model_inference_s", "model_inference"),
                     ("action_postprocess_s", "action_postprocess"),
                     ("conditioning_s", "conditioning"),
+                    ("future_video_setup_s", "future_video_setup"),
+                    ("future_video_denoise_s", "future_video_denoise"),
+                    ("future_video_cache_s", "future_video_cache"),
                     ("action_setup_s", "action_setup"),
                     ("causal_model_s", "causal_model"),
                 ):
@@ -231,8 +242,18 @@ def aggregate(paths: list[Path]) -> list[dict]:
                     group["action_denoise"].append(denoise)
                 if "commit_s" in replan.get("commit", {}):
                     group["action_commit"].append(commit)
+                future_video = sum(
+                    float(timing.get(field, 0))
+                    for field in (
+                        "future_video_setup_s",
+                        "future_video_denoise_s",
+                        "future_video_cache_s",
+                    )
+                )
                 total = float(
-                    timing.get("total_inference_s", observation + denoise)
+                    timing.get(
+                        "total_inference_s", observation + future_video + denoise
+                    )
                 ) + commit
                 group["latency"].append(total)
 
@@ -273,6 +294,12 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 "p95_conditioning_s": optional_percentile(values["conditioning"], 0.95),
                 "p50_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.50),
                 "p95_observation_prefill_s": optional_percentile(values["observation_prefill"], 0.95),
+                "p50_future_video_setup_s": optional_percentile(values["future_video_setup"], 0.50),
+                "p95_future_video_setup_s": optional_percentile(values["future_video_setup"], 0.95),
+                "p50_future_video_denoise_s": optional_percentile(values["future_video_denoise"], 0.50),
+                "p95_future_video_denoise_s": optional_percentile(values["future_video_denoise"], 0.95),
+                "p50_future_video_cache_s": optional_percentile(values["future_video_cache"], 0.50),
+                "p95_future_video_cache_s": optional_percentile(values["future_video_cache"], 0.95),
                 "p50_action_setup_s": optional_percentile(values["action_setup"], 0.50),
                 "p95_action_setup_s": optional_percentile(values["action_setup"], 0.95),
                 "p50_action_denoise_s": optional_percentile(values["action_denoise"], 0.50),
@@ -282,6 +309,10 @@ def aggregate(paths: list[Path]) -> list[dict]:
                 "p50_action_commit_s": optional_percentile(values["action_commit"], 0.50),
                 "p95_action_commit_s": optional_percentile(values["action_commit"], 0.95),
                 "peak_cache_gib": max(values["cache"], default=0) / 2**30,
+                "peak_transient_future_video_cache_gib": max(
+                    values["transient_future_video_cache"], default=0
+                )
+                / 2**30,
                 "peak_gpu_gib": max(values["gpu"], default=0) / 2**30,
             }
         )
@@ -337,11 +368,15 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
             "samples": 0,
             "cache_after_observation": [],
             "cache_after_commit": [],
+            "transient_future_video_cache": [],
             "input_preprocess": [],
             "model_inference": [],
             "action_postprocess": [],
             "conditioning": [],
             "observation_prefill": [],
+            "future_video_setup": [],
+            "future_video_denoise": [],
+            "future_video_cache": [],
             "action_setup": [],
             "action_denoise": [],
             "causal_model": [],
@@ -393,6 +428,10 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
                 group["episode_blocks"].append(float(episode_blocks))
                 if "cache_bytes" in memory:
                     group["cache_after_observation"].append(float(memory["cache_bytes"]))
+                if "transient_future_video_cache_bytes" in memory:
+                    group["transient_future_video_cache"].append(
+                        float(memory["transient_future_video_cache_bytes"])
+                    )
 
                 timing = replan.get("timing", {})
                 commit = replan.get("commit", {})
@@ -401,6 +440,9 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
                     ("model_inference_s", "model_inference"),
                     ("action_postprocess_s", "action_postprocess"),
                     ("conditioning_s", "conditioning"),
+                    ("future_video_setup_s", "future_video_setup"),
+                    ("future_video_denoise_s", "future_video_denoise"),
+                    ("future_video_cache_s", "future_video_cache"),
                     ("action_setup_s", "action_setup"),
                     ("causal_model_s", "causal_model"),
                 ):
@@ -420,6 +462,9 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
                     timing.get(
                         "total_inference_s",
                         float(timing.get("observation_prefill_s", 0))
+                        + float(timing.get("future_video_setup_s", 0))
+                        + float(timing.get("future_video_denoise_s", 0))
+                        + float(timing.get("future_video_cache_s", 0))
                         + float(timing.get("action_denoise_s", 0)),
                     )
                 ) + float(commit.get("commit_s", 0))
@@ -463,6 +508,12 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
                 "p95_cache_after_commit_gib": cache_percentile(
                     values["cache_after_commit"], 0.95
                 ),
+                "p50_transient_future_video_cache_gib": cache_percentile(
+                    values["transient_future_video_cache"], 0.50
+                ),
+                "p95_transient_future_video_cache_gib": cache_percentile(
+                    values["transient_future_video_cache"], 0.95
+                ),
                 "p50_input_preprocess_s": optional_percentile(
                     values["input_preprocess"], 0.50
                 ),
@@ -492,6 +543,24 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
                 ),
                 "p95_observation_prefill_s": optional_percentile(
                     values["observation_prefill"], 0.95
+                ),
+                "p50_future_video_setup_s": optional_percentile(
+                    values["future_video_setup"], 0.50
+                ),
+                "p95_future_video_setup_s": optional_percentile(
+                    values["future_video_setup"], 0.95
+                ),
+                "p50_future_video_denoise_s": optional_percentile(
+                    values["future_video_denoise"], 0.50
+                ),
+                "p95_future_video_denoise_s": optional_percentile(
+                    values["future_video_denoise"], 0.95
+                ),
+                "p50_future_video_cache_s": optional_percentile(
+                    values["future_video_cache"], 0.50
+                ),
+                "p95_future_video_cache_s": optional_percentile(
+                    values["future_video_cache"], 0.95
                 ),
                 "p50_action_setup_s": optional_percentile(
                     values["action_setup"], 0.50
@@ -710,6 +779,9 @@ def validate_inputs(
                         )
                     for timing_field in (
                         "conditioning_s",
+                        "future_video_setup_s",
+                        "future_video_denoise_s",
+                        "future_video_cache_s",
                         "action_setup_s",
                         "causal_model_s",
                         "causal_model_residual_s",
@@ -729,6 +801,9 @@ def validate_inputs(
                             "causal_model_s",
                             "conditioning_s",
                             "observation_prefill_s",
+                            "future_video_setup_s",
+                            "future_video_denoise_s",
+                            "future_video_cache_s",
                             "action_setup_s",
                             "action_denoise_s",
                             "causal_model_residual_s",
@@ -771,6 +846,11 @@ def validate_inputs(
                 if "peak_cache_bytes" not in episode:
                     errors.append(
                         f"{key}/task{task_id}/episode{episode_index}: peak cache metric missing"
+                    )
+                if "peak_transient_future_video_cache_bytes" not in episode:
+                    errors.append(
+                        f"{key}/task{task_id}/episode{episode_index}: "
+                        "peak transient future-video cache metric missing"
                     )
 
     if expected_tasks is not None:

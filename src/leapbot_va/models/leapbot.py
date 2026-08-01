@@ -33,11 +33,13 @@ from leapbot_va.positions import (
 
 
 class LeapBotVA(FastWAM):
-    """FastWAM inference with explicit persistent real-data-only memory.
+    """FastWAM with real-data memory and transient world-model planning.
 
-    Future video latents are never instantiated by the memory path.  A call to
-    :meth:`infer_action` commits one real observation segment transactionally;
-    the caller must later commit only the commands actually sent to the robot.
+    A call to :meth:`infer_action` commits one real observation segment
+    transactionally, imagines the current block's future video, and lets
+    ActionDiT attend to that video's layer-wise K/V.  Imagined-video K/V is
+    local to the call and is never written to :class:`LeapMemoryState`; the
+    caller later commits only commands actually sent to the robot.
     """
 
     def __init__(self, *args, exit_depths: Sequence[int] = (8, 16, 24, 30), **kwargs):
@@ -87,6 +89,17 @@ class LeapBotVA(FastWAM):
         self.video_lora_merged = False
         self.training_replan_steps: int | None = None
         self.training_action_horizon: int | None = None
+        # LingBot-VA-style inverse-dynamics conditioning.  The persistent
+        # episode memory remains real-data-only; this contract governs the
+        # transient same-block video condition seen by ActionDiT.
+        self.future_video_conditioning = "lingbot_teacher_forced_v1"
+        self.future_video_condition_noise_probability = 0.5
+        self.future_video_condition_min_u = 0.5
+        self.future_video_condition_max_u = 1.0
+        self.training_num_video_frames: int | None = None
+        # -1 means fully denoise on the schedule supplied to infer_action.
+        # Positive values are an explicit speed/quality inference ablation.
+        self.future_video_denoise_steps = -1
         self.history_vae_batch_chunk_size = 1
         # The outer segment checkpoint rematerializes full-prefix concatenations
         # during backward.  Keep its default aligned with the existing MoT
@@ -184,6 +197,11 @@ class LeapBotVA(FastWAM):
         history_training_mode: str = "incremental_full_bptt",
         replan_steps: int | None = None,
         action_horizon: int | None = None,
+        num_video_frames: int | None = None,
+        future_video_condition_noise_probability: float = 0.5,
+        future_video_condition_min_u: float = 0.5,
+        future_video_condition_max_u: float = 1.0,
+        future_video_denoise_steps: int = -1,
     ) -> None:
         if causal_mode not in VALID_CAUSAL_MODES:
             raise ValueError(f"unsupported causal mode: {causal_mode}")
@@ -203,6 +221,25 @@ class LeapBotVA(FastWAM):
                 f"{history_training_mode}"
             )
         self.history_training_mode = history_training_mode
+        noise_probability = float(future_video_condition_noise_probability)
+        min_u = float(future_video_condition_min_u)
+        max_u = float(future_video_condition_max_u)
+        if not 0.0 <= noise_probability <= 1.0:
+            raise ValueError(
+                "future-video condition noise probability must be in [0,1]"
+            )
+        if not 0.0 <= min_u <= max_u <= 1.0:
+            raise ValueError(
+                "future-video condition noise bounds must satisfy "
+                "0 <= min_u <= max_u <= 1"
+            )
+        denoise_steps = int(future_video_denoise_steps)
+        if denoise_steps == 0 or denoise_steps < -1:
+            raise ValueError("future_video_denoise_steps must be -1 or positive")
+        self.future_video_condition_noise_probability = noise_probability
+        self.future_video_condition_min_u = min_u
+        self.future_video_condition_max_u = max_u
+        self.future_video_denoise_steps = denoise_steps
         if (replan_steps is None) != (action_horizon is None):
             raise ValueError(
                 "replan_steps and action_horizon must be configured together"
@@ -218,6 +255,25 @@ class LeapBotVA(FastWAM):
                 )
             self.training_replan_steps = resolved_replan_steps
             self.training_action_horizon = resolved_action_horizon
+        if num_video_frames is not None:
+            resolved_video_frames = int(num_video_frames)
+            temporal_factor = int(
+                getattr(self.vae, "temporal_downsample_factor", 1)
+            )
+            if resolved_video_frames <= 1:
+                raise ValueError("num_video_frames must be greater than one")
+            if (resolved_video_frames - 1) % temporal_factor:
+                raise ValueError(
+                    "num_video_frames-1 must be divisible by the VAE temporal "
+                    f"downsample factor {temporal_factor}"
+                )
+            if action_horizon is not None and int(action_horizon) % (
+                resolved_video_frames - 1
+            ):
+                raise ValueError(
+                    "action_horizon must be divisible by num_video_frames-1"
+                )
+            self.training_num_video_frames = resolved_video_frames
 
     def validate_temporal_contract(
         self, *, replan_steps: int, action_horizon: int
@@ -507,12 +563,75 @@ class LeapBotVA(FastWAM):
             ),
         )
 
+    def _prepare_future_video_pre_dit(
+        self,
+        *,
+        latents: torch.Tensor,
+        frame_timesteps: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        block_index: int,
+    ) -> dict[str, Any]:
+        """Build one transient imagined-video segment after the real frame."""
+
+        if latents.ndim != 5 or int(latents.shape[0]) != 1:
+            raise ValueError("future video latents must be [1,C,F,H,W]")
+        num_frames = int(latents.shape[2])
+        if num_frames <= 0:
+            raise ValueError("future video must contain at least one latent frame")
+        if tuple(frame_timesteps.shape) != (1, num_frames):
+            raise ValueError(
+                "future video frame_timesteps must have shape "
+                f"(1,{num_frames}), got {tuple(frame_timesteps.shape)}"
+            )
+        pre_state = self.video_expert.pre_dit(
+            x=latents,
+            timestep=frame_timesteps[:, 0],
+            context=context,
+            context_mask=context_mask,
+            action=None,
+            fuse_vae_embedding_in_latents=bool(
+                getattr(self.video_expert, "fuse_vae_embedding_in_latents", False)
+            ),
+            frame_position_ids=torch.arange(
+                1,
+                num_frames + 1,
+                device=self.device,
+                dtype=torch.long,
+            ),
+            frame_timesteps=frame_timesteps,
+        )
+        return self.temporal_positions.apply_video_pre_dit(
+            pre_state,
+            torch.full(
+                (num_frames,),
+                int(block_index),
+                dtype=torch.long,
+                device=self.device,
+            ),
+        )
+
+    def _video_head_at_depth(
+        self,
+        *,
+        depth: int,
+        hidden: torch.Tensor,
+        pre_state: dict[str, Any],
+    ) -> torch.Tensor:
+        if depth == self.mot.num_layers:
+            return self.video_expert.post_dit(hidden, pre_state)
+        pred_tokens = self.video_exit_heads[str(depth)](hidden, pre_state["t"])
+        return self.video_expert.unpatchify(
+            pred_tokens, pre_state["meta"]["grid_size"]
+        )
+
     @torch.no_grad()
     def infer_action(
         self,
         prompt: Optional[str],
         input_image: torch.Tensor,
         action_horizon: int,
+        num_video_frames: Optional[int] = None,
         proprio: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
         context_mask: Optional[torch.Tensor] = None,
@@ -525,6 +644,7 @@ class LeapBotVA(FastWAM):
         tiled: bool = False,
         memory: Optional[LeapMemoryState] = None,
         profile: bool = False,
+        future_video_denoise_steps: Optional[int] = None,
     ) -> dict[str, Any]:
         if memory is None:
             return super().infer_action(
@@ -624,6 +744,182 @@ class LeapBotVA(FastWAM):
                 torch.cuda.synchronize(self.device)
             timings["observation_prefill_s"] = time.perf_counter() - t0
 
+            future_setup_start = time.perf_counter()
+            resolved_num_video_frames = (
+                (
+                    action_horizon + 1
+                    if self.training_num_video_frames is None
+                    else self.training_num_video_frames
+                )
+                if num_video_frames is None
+                else int(num_video_frames)
+            )
+            if (
+                self.training_num_video_frames is not None
+                and resolved_num_video_frames != self.training_num_video_frames
+            ):
+                raise ValueError(
+                    "num_video_frames differs from the training contract: "
+                    f"expected={self.training_num_video_frames} "
+                    f"got={resolved_num_video_frames}"
+                )
+            temporal_factor = int(
+                getattr(self.vae, "temporal_downsample_factor", 1)
+            )
+            if resolved_num_video_frames <= 1 or (
+                resolved_num_video_frames - 1
+            ) % temporal_factor:
+                raise ValueError(
+                    "num_video_frames-1 must be positive and divisible by the "
+                    f"VAE temporal factor {temporal_factor}"
+                )
+            if action_horizon % (resolved_num_video_frames - 1):
+                raise ValueError(
+                    "action_horizon must be divisible by num_video_frames-1"
+                )
+            num_future_latent_frames = (
+                resolved_num_video_frames - 1
+            ) // temporal_factor
+            video_generator = (
+                None
+                if seed is None
+                else torch.Generator(device=rand_device).manual_seed(seed)
+            )
+            future_video_latents = torch.randn(
+                (
+                    1,
+                    int(first_frame_latents.shape[1]),
+                    num_future_latent_frames,
+                    int(first_frame_latents.shape[3]),
+                    int(first_frame_latents.shape[4]),
+                ),
+                generator=video_generator,
+                device=rand_device,
+                dtype=torch.float32,
+            ).to(device=self.device, dtype=self.torch_dtype)
+            future_history_kv = memory.materialize(
+                memory.selected_segments_for_future_video()
+            )
+            if future_history_kv is None:
+                raise RuntimeError("imagined video has no current real observation")
+            infer_timesteps_video, infer_deltas_video = (
+                self.infer_video_scheduler.build_inference_schedule(
+                    num_inference_steps=num_inference_steps,
+                    device=self.device,
+                    dtype=future_video_latents.dtype,
+                    shift_override=sigma_shift,
+                )
+            )
+            configured_video_steps = (
+                self.future_video_denoise_steps
+                if future_video_denoise_steps is None
+                else int(future_video_denoise_steps)
+            )
+            video_steps = (
+                num_inference_steps
+                if configured_video_steps == -1
+                else configured_video_steps
+            )
+            if video_steps <= 0 or video_steps > num_inference_steps:
+                raise ValueError(
+                    "future video denoise steps must be -1 or in "
+                    f"[1,{num_inference_steps}], got {configured_video_steps}"
+                )
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            timings["future_video_setup_s"] = (
+                time.perf_counter() - future_setup_start
+            )
+
+            video_denoise_start = time.perf_counter()
+            for step_index in range(video_steps):
+                step_t_video = infer_timesteps_video[step_index]
+                step_delta_video = infer_deltas_video[step_index]
+                frame_timesteps = step_t_video.reshape(1, 1).expand(
+                    -1, num_future_latent_frames
+                )
+                future_video_pre = self._prepare_future_video_pre_dit(
+                    latents=future_video_latents,
+                    frame_timesteps=frame_timesteps,
+                    context=context,
+                    context_mask=context_mask,
+                    block_index=block_index,
+                )
+                video_hidden_by_depth, _ = self.mot.prefill_expert_segment(
+                    expert_name="video",
+                    tokens=future_video_pre["tokens"],
+                    freqs=future_video_pre["freqs"],
+                    t_mod=future_video_pre["t_mod"],
+                    context_payload={
+                        "context": future_video_pre["context"],
+                        "mask": future_video_pre["context_mask"],
+                    },
+                    history_kv=future_history_kv,
+                    max_layers=memory.config.exit_depth,
+                    exit_depths=(memory.config.exit_depth,),
+                )
+                if not isinstance(video_hidden_by_depth, dict):
+                    raise RuntimeError("video denoising did not return depth output")
+                pred_video = self._video_head_at_depth(
+                    depth=memory.config.exit_depth,
+                    hidden=video_hidden_by_depth[memory.config.exit_depth],
+                    pre_state=future_video_pre,
+                )
+                future_video_latents = self.infer_video_scheduler.step(
+                    pred_video,
+                    step_delta_video,
+                    future_video_latents,
+                )
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            timings["future_video_denoise_s"] = (
+                time.perf_counter() - video_denoise_start
+            )
+
+            # LingBot performs one final video forward at the attained sigma
+            # and caches that representation for the action denoiser.  This KV
+            # stays local to the current call.
+            future_cache_start = time.perf_counter()
+            attained_timestep = (
+                infer_timesteps_video[video_steps]
+                if video_steps < num_inference_steps
+                else torch.zeros(
+                    (), device=self.device, dtype=future_video_latents.dtype
+                )
+            )
+            attained_frame_timesteps = attained_timestep.reshape(1, 1).expand(
+                -1, num_future_latent_frames
+            )
+            future_condition_pre = self._prepare_future_video_pre_dit(
+                latents=future_video_latents,
+                frame_timesteps=attained_frame_timesteps,
+                context=context,
+                context_mask=context_mask,
+                block_index=block_index,
+            )
+            _, future_condition_kv = self.mot.prefill_expert_segment(
+                expert_name="video",
+                tokens=future_condition_pre["tokens"],
+                freqs=future_condition_pre["freqs"],
+                t_mod=future_condition_pre["t_mod"],
+                context_payload={
+                    "context": future_condition_pre["context"],
+                    "mask": future_condition_pre["context_mask"],
+                },
+                history_kv=future_history_kv,
+                max_layers=memory.config.exit_depth,
+            )
+            transient_future_cache_bytes = sum(
+                tensor.numel() * tensor.element_size()
+                for layer in future_condition_kv
+                for tensor in (layer["k"], layer["v"])
+            )
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            timings["future_video_cache_s"] = (
+                time.perf_counter() - future_cache_start
+            )
+
             action_setup_start = time.perf_counter()
             generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
             latents_action = torch.randn(
@@ -635,6 +931,19 @@ class LeapBotVA(FastWAM):
             history_kv = memory.materialize(memory.selected_segments_for_action())
             if history_kv is None:
                 raise RuntimeError("current real observation was not committed to memory")
+            history_kv = [
+                {
+                    "k": torch.cat(
+                        [persistent["k"], transient["k"]], dim=1
+                    ),
+                    "v": torch.cat(
+                        [persistent["v"], transient["v"]], dim=1
+                    ),
+                }
+                for persistent, transient in zip(
+                    history_kv, future_condition_kv
+                )
+            ]
             if profile and self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             timings["action_setup_s"] = time.perf_counter() - action_setup_start
@@ -691,6 +1000,9 @@ class LeapBotVA(FastWAM):
                 for name in (
                     "conditioning_s",
                     "observation_prefill_s",
+                    "future_video_setup_s",
+                    "future_video_denoise_s",
+                    "future_video_cache_s",
                     "action_setup_s",
                     "action_denoise_s",
                 )
@@ -703,10 +1015,18 @@ class LeapBotVA(FastWAM):
                 "completed_blocks": memory.completed_blocks,
                 "retained_history_blocks": memory.retained_completed_blocks,
                 "cache_bytes": memory.cache_nbytes,
+                "transient_future_video_cache_bytes": transient_future_cache_bytes,
                 "token_counts": memory.token_counts,
                 "phase": memory.phase.value,
             },
             "timing": timings,
+            "future_video_condition": {
+                "physical_frames": resolved_num_video_frames,
+                "latent_frames": num_future_latent_frames,
+                "denoise_steps": video_steps,
+                "schedule_steps": num_inference_steps,
+                "attained_timestep": float(attained_timestep.float().item()),
+            },
         }
 
     @torch.no_grad()
@@ -815,6 +1135,13 @@ class LeapBotVA(FastWAM):
             "history_training_mode": self.history_training_mode,
             "training_replan_steps": self.training_replan_steps,
             "training_action_horizon": self.training_action_horizon,
+            "training_num_video_frames": self.training_num_video_frames,
+            "future_video_conditioning": self.future_video_conditioning,
+            "future_video_condition_noise_probability": (
+                self.future_video_condition_noise_probability
+            ),
+            "future_video_condition_min_u": self.future_video_condition_min_u,
+            "future_video_condition_max_u": self.future_video_condition_max_u,
             "history_vae_batch_chunk_size": self.history_vae_batch_chunk_size,
             "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
@@ -926,6 +1253,11 @@ class LeapBotVA(FastWAM):
             "history_training_mode",
             "training_replan_steps",
             "training_action_horizon",
+            "training_num_video_frames",
+            "future_video_conditioning",
+            "future_video_condition_noise_probability",
+            "future_video_condition_min_u",
+            "future_video_condition_max_u",
             "history_vae_batch_chunk_size",
             "video_lora_config",
         }
@@ -945,6 +1277,11 @@ class LeapBotVA(FastWAM):
                 "history_training_mode",
                 "training_replan_steps",
                 "training_action_horizon",
+                "training_num_video_frames",
+                "future_video_conditioning",
+                "future_video_condition_noise_probability",
+                "future_video_condition_min_u",
+                "future_video_condition_max_u",
                 "history_vae_batch_chunk_size",
                 "video_lora_config",
             }
@@ -1078,6 +1415,47 @@ class LeapBotVA(FastWAM):
                     "action_horizon differs from the model temporal contract: "
                     f"expected={self.training_action_horizon} "
                     f"got={resolved_checkpoint_action_horizon}"
+                )
+        checkpoint_video_frames = payload.get("training_num_video_frames")
+        if checkpoint_video_frames is not None:
+            resolved_checkpoint_video_frames = int(checkpoint_video_frames)
+            if resolved_checkpoint_video_frames <= 1:
+                raise ValueError("checkpoint num_video_frames must be greater than one")
+            if (
+                self.training_num_video_frames is not None
+                and resolved_checkpoint_video_frames
+                != int(self.training_num_video_frames)
+            ):
+                raise ValueError(
+                    "num_video_frames differs from the model contract: "
+                    f"expected={self.training_num_video_frames} "
+                    f"got={resolved_checkpoint_video_frames}"
+                )
+        checkpoint_conditioning = payload.get("future_video_conditioning")
+        if (
+            checkpoint_conditioning is not None
+            and str(checkpoint_conditioning) != self.future_video_conditioning
+        ):
+            raise ValueError(
+                "future-video conditioning contract mismatch: "
+                f"checkpoint={checkpoint_conditioning} "
+                f"model={self.future_video_conditioning}"
+            )
+        for field, configured in (
+            (
+                "future_video_condition_noise_probability",
+                self.future_video_condition_noise_probability,
+            ),
+            ("future_video_condition_min_u", self.future_video_condition_min_u),
+            ("future_video_condition_max_u", self.future_video_condition_max_u),
+        ):
+            checkpoint_value = payload.get(field)
+            if checkpoint_value is not None and float(checkpoint_value) != float(
+                configured
+            ):
+                raise ValueError(
+                    f"{field} differs from the model contract: "
+                    f"checkpoint={checkpoint_value} model={configured}"
                 )
         checkpoint_vae_chunk = payload.get("history_vae_batch_chunk_size")
         if (
@@ -1232,4 +1610,9 @@ class LeapBotVA(FastWAM):
         ):
             self.training_replan_steps = resolved_checkpoint_replan_steps
             self.training_action_horizon = resolved_checkpoint_action_horizon
+        if (
+            checkpoint_video_frames is not None
+            and self.training_num_video_frames is None
+        ):
+            self.training_num_video_frames = int(checkpoint_video_frames)
         return payload

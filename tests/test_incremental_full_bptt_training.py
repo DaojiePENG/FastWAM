@@ -13,6 +13,7 @@ from leapbot_va.models.leapbot import LeapBotVA
 from leapbot_va.training import (
     _packed_causal_history_reference_loss,
     _use_segment_activation_checkpointing,
+    sample_lingbot_future_video_condition,
 )
 from scripts.validate_real_6b_runtime_training_equivalence import (
     validate_incremental_action_equivalence,
@@ -96,6 +97,7 @@ def _model(
         training_exit_depths=training_exit_depths or (layers,),
         replan_steps=REPLAN_STEPS,
         action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
     )
     return model.train()
 
@@ -163,6 +165,47 @@ def _has_nonzero_gradient(tensor: torch.Tensor) -> bool:
     return tensor.grad is not None and bool(torch.count_nonzero(tensor.grad).item())
 
 
+def test_lingbot_teacher_forcing_clean_and_high_noise_branches():
+    model = _model("interleaved")
+    clean = torch.linspace(-1.0, 1.0, 32).view(1, 4, 2, 2, 2)
+
+    model.future_video_condition_noise_probability = 0.0
+    condition, timesteps, was_noised = sample_lingbot_future_video_condition(
+        model, clean
+    )
+    assert not was_noised
+    assert torch.equal(condition, clean)
+    assert torch.count_nonzero(timesteps) == 0
+
+    model.future_video_condition_noise_probability = 1.0
+    model.future_video_condition_min_u = 0.5
+    model.future_video_condition_max_u = 0.5
+    torch.manual_seed(77)
+    condition, timesteps, was_noised = sample_lingbot_future_video_condition(
+        model, clean
+    )
+    expected_sigma = model.train_video_scheduler._phi(
+        torch.tensor(0.5), model.train_video_scheduler.shift
+    )
+    assert was_noised
+    torch.testing.assert_close(
+        timesteps,
+        torch.full_like(
+            timesteps,
+            expected_sigma * model.train_video_scheduler.num_train_timesteps,
+        ),
+    )
+    assert not torch.equal(condition, clean)
+
+
+def test_training_rejects_video_length_outside_checkpoint_contract():
+    model = _model("interleaved")
+    sample = _sample((0,))
+    model.training_num_video_frames = 9
+    with pytest.raises(ValueError, match="video length differs"):
+        model.training_loss(sample)
+
+
 def test_segment_checkpoint_uses_fastwam_dit_only_training_state():
     model = _model("interleaved")
     model.history_segment_activation_checkpointing = True
@@ -208,11 +251,11 @@ def test_outer_segment_checkpoint_disables_all_nested_mot_checkpoints(monkeypatc
 
 
 @pytest.mark.parametrize("causal_mode", CAUSAL_MODES)
-def test_action_loss_reaches_every_real_history_segment_and_not_future_video(
+def test_action_loss_reaches_real_history_and_future_video_condition_only(
     causal_mode,
     monkeypatch,
 ):
-    """ActionDiT uses every real V/A block while future supervision is transient."""
+    """ActionDiT reads the condition branch, never the video flow target."""
 
     model = _model(causal_mode)
     model.history_segment_activation_checkpointing = True
@@ -232,19 +275,27 @@ def test_action_loss_reaches_every_real_history_segment_and_not_future_video(
     torch.manual_seed(4401)
     total, _ = model.training_loss(_sample((2,)))
 
-    # Calls are history V0, history V1, current real V, then future-video V.
-    # The Action prediction was completed before the future token existed, so
-    # the latter must not be an ancestor in its autograd graph.
-    assert len(records["video"]) == 4
+    # Calls are history V0, history V1, current real V, teacher-forced future
+    # condition V, then the independently noised video flow target V.
+    assert len(records["video"]) == 5
     assert len(records["action"]) == 3
-    future_video_tokens = records["video"][-1]
-    future_to_action = torch.autograd.grad(
+    future_condition_tokens = records["video"][-2]
+    future_target_tokens = records["video"][-1]
+    condition_to_action = torch.autograd.grad(
         action_predictions[-1].sum(),
-        future_video_tokens,
+        future_condition_tokens,
         allow_unused=True,
         retain_graph=True,
     )[0]
-    assert future_to_action is None
+    target_to_action = torch.autograd.grad(
+        action_predictions[-1].sum(),
+        future_target_tokens,
+        allow_unused=True,
+        retain_graph=True,
+    )[0]
+    assert condition_to_action is not None
+    assert torch.count_nonzero(condition_to_action) > 0
+    assert target_to_action is None
 
     total.backward()
     for block, token in enumerate(records["video"][:2]):
@@ -259,7 +310,8 @@ def test_action_loss_reaches_every_real_history_segment_and_not_future_video(
             "history_action",
             block,
         )
-    assert not _has_nonzero_gradient(future_video_tokens)
+    assert _has_nonzero_gradient(future_condition_tokens)
+    assert not _has_nonzero_gradient(future_target_tokens)
 
 
 @pytest.mark.parametrize(
@@ -353,11 +405,12 @@ def test_mixed_history_batch_runs_each_episode_separately_and_never_reads_paddin
         metrics["loss_action_d2"]
     )
     # Each valid history contributes V+A; each episode also contributes current
-    # real V and transient future V. The invalid second slot of episode 1 adds 0.
+    # real V, teacher-forced condition V, and video-flow target V. The invalid
+    # second slot of episode 1 adds 0.
     # Video and Action experts apply different context projections, so the
     # numeric marker differs by expert. Counts still identify both episodes:
-    # H=2 emits 4 video + 2 committed-action prefills; H=1 emits 3 + 1.
-    assert sorted(prefill_by_expert_and_episode["video"].values()) == [3, 4]
+    # H=2 emits 5 video + 2 committed-action prefills; H=1 emits 4 + 1.
+    assert sorted(prefill_by_expert_and_episode["video"].values()) == [4, 5]
     assert sorted(prefill_by_expert_and_episode["action"].values()) == [1, 2]
     assert sorted(action_by_episode.values()) == [1, 1]
 
@@ -496,15 +549,20 @@ def test_segment_checkpoint_loss_and_parameter_gradients_match_reference(
 
 @pytest.mark.parametrize("history_blocks", (0, 1, 2))
 @pytest.mark.parametrize("causal_mode", CAUSAL_MODES)
-def test_incremental_full_bptt_matches_one_shot_packed_causal_reference(
+def test_incremental_video_flow_matches_one_shot_packed_causal_reference(
     causal_mode,
     history_blocks,
     monkeypatch,
 ):
-    """Incremental V/A segments must implement the packed causal objective."""
+    """The separate video-flow target keeps the packed causal objective."""
 
     reference = _model(causal_mode)
     incremental = _model(causal_mode)
+    # The action factorization intentionally changed: it now includes a second
+    # teacher-forced future-video branch that this legacy packed reference does
+    # not contain. Isolate the still-identical video flow objective here.
+    reference.loss_lambda_action = 0.0
+    incremental.loss_lambda_action = 0.0
     sample = _sample((history_blocks,))
 
     # Use distinct, explicit diffusion times for the two modalities. Resetting
@@ -534,13 +592,12 @@ def test_incremental_full_bptt_matches_one_shot_packed_causal_reference(
     incremental_loss, incremental_metrics = incremental.training_loss(sample)
 
     final_depth = reference.mot.num_layers
-    for modality in ("video", "action"):
-        metric = f"loss_{modality}_d{final_depth}"
-        assert incremental_metrics[metric] == pytest.approx(
-            reference_metrics[metric],
-            rel=1e-6,
-            abs=1e-6,
-        )
+    metric = f"loss_video_d{final_depth}"
+    assert incremental_metrics[metric] == pytest.approx(
+        reference_metrics[metric],
+        rel=1e-6,
+        abs=1e-6,
+    )
     assert incremental_metrics["history_blocks_mean"] == history_blocks
     assert incremental_metrics["history_blocks_max"] == history_blocks
     torch.testing.assert_close(
@@ -578,8 +635,8 @@ def test_incremental_full_bptt_matches_one_shot_packed_causal_reference(
 
 
 @pytest.mark.parametrize("causal_mode", CAUSAL_MODES)
-def test_incremental_training_action_is_bitwise_public_runtime(causal_mode):
-    """The validator must compare the real training and public runtime paths."""
+def test_training_and_runtime_share_persistent_prefix_and_condition_shape(causal_mode):
+    """GT and generated conditions differ, but their causal contracts match."""
 
     # LeapMemoryConfig exposes the production exit depths, so D=8 is the
     # smallest inexpensive model that can exercise the public memory API.
@@ -593,10 +650,11 @@ def test_incremental_training_action_is_bitwise_public_runtime(causal_mode):
     )
 
     assert model.training
-    assert result["sequence"]["action_path_isomorphic"]
+    assert result["sequence"]["runtime_conditioning_valid"]
     assert result["prefix_kv"]["bitwise_equal"]
-    assert result["hidden"]["bitwise_equal"]
-    assert result["head"]["bitwise_equal"]
+    assert result["transient_future_video"]["shape_match"]
+    assert result["transient_future_video"]["finite"]
+    assert not result["transient_future_video"]["numeric_equality_expected"]
     assert result["bitwise_pass"]
 
 

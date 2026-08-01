@@ -125,8 +125,11 @@ def _complete_result(fingerprint, *, memory_enabled: bool = True):
                 {
                     "conditioning_s": 0.002,
                     "observation_prefill_s": 0.01,
+                    "future_video_setup_s": 0.001,
+                    "future_video_denoise_s": 0.02,
+                    "future_video_cache_s": 0.004,
                     "action_setup_s": 0.003,
-                    "action_denoise_s": 0.1,
+                    "action_denoise_s": 0.075,
                     "causal_model_residual_s": 0.002,
                     "causal_model_s": 0.117,
                 }
@@ -401,6 +404,7 @@ def test_exact_complete_memory_result_matches():
         "no_replans",
         "missing_total",
         "missing_observation",
+        "missing_future_video",
         "missing_action",
         "missing_commit",
     ],
@@ -422,6 +426,8 @@ def test_incomplete_results_never_match(mutation):
         del result["memory_metrics"][0]["replans"][0]["timing"]["total_inference_s"]
     elif mutation == "missing_observation":
         del result["memory_metrics"][0]["replans"][0]["timing"]["observation_prefill_s"]
+    elif mutation == "missing_future_video":
+        del result["memory_metrics"][0]["replans"][0]["timing"]["future_video_denoise_s"]
     elif mutation == "missing_action":
         del result["memory_metrics"][0]["replans"][0]["timing"]["action_denoise_s"]
     elif mutation == "missing_commit":

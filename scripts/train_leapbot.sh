@@ -6,7 +6,8 @@ set -euo pipefail
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
-#   * runtime-isomorphic chronological prefix with full BPTT
+#   * chronological real-data prefix with full BPTT
+#   * LingBot-style GT/noised-GT future-video K/V for ActionDiT
 #   * ActionDiT full fine-tuning + conservative VideoDiT LoRA
 
 ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
@@ -26,6 +27,11 @@ LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
+NUM_VIDEO_FRAMES="${NUM_VIDEO_FRAMES:-9}"
+FUTURE_VIDEO_CONDITIONING="${FUTURE_VIDEO_CONDITIONING:-lingbot_teacher_forced_v1}"
+FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY="${FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY:-0.5}"
+FUTURE_VIDEO_CONDITION_MIN_U="${FUTURE_VIDEO_CONDITION_MIN_U:-0.5}"
+FUTURE_VIDEO_CONDITION_MAX_U="${FUTURE_VIDEO_CONDITION_MAX_U:-1.0}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"
 TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
@@ -48,9 +54,9 @@ GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_incremental_full_bptt_v5_${TOPOLOGY_TAG}_${MODE}_peft_${MAX_STEPS}steps_${LR_SCHEDULER_TYPE}_lr${LR_TAG}_seed${SEED}}"
-WANDB_GROUP="${WANDB_GROUP:-final-incremental-full-bptt-v5-${TOPOLOGY_TAG}-seed${SEED}}"
-RUN_NAME="${RUN_NAME:-final-incremental-full-bptt-v5-${TOPOLOGY_TAG//_/-}-${MODE//_/-}-peft-${MAX_STEPS}steps-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed${SEED}}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_lingbot_video_kv_v6_${TOPOLOGY_TAG}_${MODE}_peft_${MAX_STEPS}steps_${LR_SCHEDULER_TYPE}_lr${LR_TAG}_seed${SEED}}"
+WANDB_GROUP="${WANDB_GROUP:-final-lingbot-video-kv-v6-${TOPOLOGY_TAG}-seed${SEED}}"
+RUN_NAME="${RUN_NAME:-final-lingbot-video-kv-v6-${TOPOLOGY_TAG//_/-}-${MODE//_/-}-peft-${MAX_STEPS}steps-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed${SEED}}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -132,6 +138,14 @@ if [[ ! -s "$ASSET_DOWNLOAD_MANIFEST" || ! -d "$TEXT_EMBEDDING_CACHE" \
 fi
 if [[ "$HISTORY_VAE_BATCH_CHUNK_SIZE" != "1" ]]; then
     log "runtime-isomorphic training requires history VAE chunk 1; got $HISTORY_VAE_BATCH_CHUNK_SIZE"
+    exit 1
+fi
+if [[ "$NUM_VIDEO_FRAMES" != "9" ]] \
+    || [[ "$FUTURE_VIDEO_CONDITIONING" != "lingbot_teacher_forced_v1" ]] \
+    || [[ "$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" != "0.5" ]] \
+    || [[ "$FUTURE_VIDEO_CONDITION_MIN_U" != "0.5" ]] \
+    || [[ "$FUTURE_VIDEO_CONDITION_MAX_U" != "1.0" ]]; then
+    log "formal LingBot conditioning contract requires frames=9 prob=0.5 u=[0.5,1.0]"
     exit 1
 fi
 if ! [[ "$INITIAL_BLOCK_OVERSAMPLE" =~ ^[1-9][0-9]*$ ]]; then
@@ -255,6 +269,11 @@ contract_fields+=( \
     "lr_scheduler_type=$LR_SCHEDULER_TYPE" \
     "video_lora_multiplier=$VIDEO_LORA_MULTIPLIER" \
     "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    "world_model_conditioning=$FUTURE_VIDEO_CONDITIONING" \
+    "num_video_frames=$NUM_VIDEO_FRAMES" \
+    "future_video_condition_noise_probability=$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" \
+    "future_video_condition_min_u=$FUTURE_VIDEO_CONDITION_MIN_U" \
+    "future_video_condition_max_u=$FUTURE_VIDEO_CONDITION_MAX_U" \
     "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     "h0_anchor_mixing=per_global_micro_batch" \
     "save_every=$SAVE_EVERY" \
@@ -343,6 +362,11 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "model.causal_mode=$MODE" \
     model.history_training_mode=incremental_full_bptt \
     "model.history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    "model.future_video_conditioning=$FUTURE_VIDEO_CONDITIONING" \
+    "model.num_video_frames=$NUM_VIDEO_FRAMES" \
+    "model.future_video_condition_noise_probability=$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" \
+    "model.future_video_condition_min_u=$FUTURE_VIDEO_CONDITION_MIN_U" \
+    "model.future_video_condition_max_u=$FUTURE_VIDEO_CONDITION_MAX_U" \
     model.training_strategy=video_lora_action_full \
     model.video_lora.enabled=true \
     model.video_lora.rank=16 \

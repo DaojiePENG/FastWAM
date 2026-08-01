@@ -81,6 +81,7 @@ def _tiny_model(causal_mode: str, dtype: torch.dtype) -> LeapBotVA:
         training_exit_depths=(LAYERS,),
         replan_steps=REPLAN_STEPS,
         action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
     )
 
     # Non-zero episode positions ensure equivalence is not obtained merely
@@ -182,6 +183,7 @@ def test_long_real_prefix_packed_matches_runtime_kv_and_prediction_is_transient(
     )
 
     video_records = []
+    future_video_records = []
     committed_action_records = []
     transient_action_records = []
     original_prefill = model.mot.prefill_expert_segment
@@ -191,7 +193,10 @@ def test_long_real_prefix_packed_matches_runtime_kv_and_prediction_is_transient(
         result = original_prefill(*args, **kwargs)
         record = _clone_runtime_call(kwargs)
         if kwargs["expert_name"] == "video":
-            video_records.append(record)
+            if int(kwargs["tokens"].shape[1]) == 1:
+                video_records.append(record)
+            else:
+                future_video_records.append(record)
         else:
             committed_action_records.append(record)
         return result
@@ -260,6 +265,7 @@ def test_long_real_prefix_packed_matches_runtime_kv_and_prediction_is_transient(
 
     assert prediction["action"].shape == (ACTION_HORIZON, 3)
     assert len(video_records) == HISTORY_BLOCKS + 1
+    assert len(future_video_records) == 2 * (HISTORY_BLOCKS + 1)
     assert len(committed_action_records) == HISTORY_BLOCKS
     assert len(transient_action_records) == HISTORY_BLOCKS + 1
     assert len(memory.segments) == segment_count_before_prediction + 1
@@ -276,20 +282,25 @@ def test_long_real_prefix_packed_matches_runtime_kv_and_prediction_is_transient(
 
     current_action = transient_action_records[-1]
     packed_action_records = [*committed_action_records, current_action]
+    # One runtime video step performs a denoising prefill followed by the final
+    # attained-sigma cache prefill. Only the latter conditions ActionDiT.
+    current_future_condition = future_video_records[-1]
+    packed_video_records = [*video_records, current_future_condition]
     packed_mask = build_packed_history_attention_mask(
         torch.ones(1, HISTORY_BLOCKS, dtype=torch.bool),
         video_tokens_per_frame=1,
-        current_video_frames=1,
+        current_video_frames=1 + ACTION_HORIZON,
         replan_steps=REPLAN_STEPS,
         action_horizon=ACTION_HORIZON,
         causal_mode=causal_mode,
+        action_reads_future_video=True,
     )[0]
 
     with torch.no_grad():
         packed_hidden = model.mot(
             embeds_all={
                 "video": torch.cat(
-                    [record["tokens"] for record in video_records], dim=1
+                    [record["tokens"] for record in packed_video_records], dim=1
                 ),
                 "action": torch.cat(
                     [record["tokens"] for record in packed_action_records], dim=1
@@ -298,18 +309,18 @@ def test_long_real_prefix_packed_matches_runtime_kv_and_prediction_is_transient(
             attention_mask=packed_mask,
             freqs_all={
                 "video": torch.cat(
-                    [record["freqs"] for record in video_records], dim=0
+                    [record["freqs"] for record in packed_video_records], dim=0
                 ),
                 "action": torch.cat(
                     [record["freqs"] for record in packed_action_records], dim=0
                 ),
             },
             context_all={
-                "video": _packed_context(video_records),
+                "video": _packed_context(packed_video_records),
                 "action": _packed_context(packed_action_records),
             },
             t_mod_all={
-                "video": _packed_t_mod(video_records),
+                "video": _packed_t_mod(packed_video_records),
                 "action": _packed_t_mod(packed_action_records),
             },
         )["action"][:, -ACTION_HORIZON:]

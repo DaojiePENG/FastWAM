@@ -1,7 +1,7 @@
 # LeapBot-VA 因果 KV 记忆训练与推理契约
 
 本文档描述当前唯一正式实现。它不包含门控历史分支、离线 KV、
-detached prefix 或预测视频回灌。任何实验结论都必须来自对应 checkpoint
+detached prefix 或跨轮预测视频回灌。任何实验结论都必须来自对应 checkpoint
 和真实 LIBERO rollout，不能由本文档推断。
 
 ## 1. 闭环定义
@@ -21,8 +21,28 @@ detached prefix 或预测视频回灌。任何实验结论都必须来自对应 
  real_obs_1 KV, executed_action_1 KV, ...]
 ```
 
-动作扩散中的 noisy token、预测但未执行的后 22 个动作、未来视频
-latent、视频输出头结果和 VAE decode 结果都不会进入内存。
+动作扩散中的 noisy token、预测但未执行的后 22 个动作、本轮未来视频
+latent/KV、视频输出头结果和 VAE decode 结果都不会进入持久内存。
+
+### 1.1 两类 KV 必须分开理解
+
+对第 `b` 个重规划块，定义：
+
+```text
+P_b = [V_0, A_0, ..., V_{b-1}, A_{b-1}, V_b]   # 持久、真实 prefix
+C_b = [future-video latent KV at block b]       # 本轮临时条件
+Q_b = [noisy action tokens at block b]          # 本轮动作查询
+```
+
+动作网络实际计算 `Q_b <- attend(P_b, C_b, Q_b)`。`P_b` 在 episode 内增长；
+`C_b` 只在一次 `infer_action` 调用中存在；`Q_b` 中只有环境真正执行的前缀在
+重新归一化后变成下一轮的 `A_b`。因此“ActionDiT 看未来视频”和“历史内存只含
+真实数据”并不冲突。
+
+这一版借鉴 LingBot-VA 的是“先形成未来视频逐层 KV，再把它作为动作条件”的
+inverse-dynamics 因子分解；LeapBot 特有约束是跨轮不保存预测画面，而保存真实
+边界观测与已执行动作的 KV。与 FastWAM 的无记忆联合建模相比，新增的是显式
+causal prefix 和 ActionDiT 的未来视频条件。
 
 ## 2. 在线事务状态机
 
@@ -31,11 +51,13 @@ latent、视频输出头结果和 VAE decode 结果都不会进入内存。
 1. `infer_action(..., memory)` 检查 prompt、clock、深度和容量；
 2. 当前真实图像只做一次 VAE encode 和 VideoDiT prefill；
 3. 逐层提交当前真实图像的 K/V；
-4. ActionDiT 对不可变历史做动作去噪，返回 32 步预测；
-5. 环境后处理并执行最多 10 步；
-6. 将实际下发命令反归一化/再归一化到模型空间；
-7. `commit_executed_actions` 只编码并提交这批真实执行动作；
-8. episode 结束时 `reset_memory` 释放所有 K/V。
+4. VideoDiT 从噪声生成本轮 2 个未来 latent，并在达到的 sigma 再前向一次；
+5. ActionDiT 读取真实 prefix 加上述临时逐层 K/V，返回 32 步预测；
+6. 立即丢弃未来视频 latent/KV，不做 VAE decode；
+7. 环境后处理并执行最多 10 步；
+8. 将实际下发命令反归一化/再归一化到模型空间；
+9. `commit_executed_actions` 只编码并提交这批真实执行动作；
+10. episode 结束时 `reset_memory` 释放所有 K/V。
 
 在动作提交前重复观测、漏提交后进入下一块、episode 内切换 prompt、
 切换 causal mode、切换时间契约或超出容量都会失败。手工构造的 memory
@@ -44,10 +66,16 @@ latent、视频输出头结果和 VAE decode 结果都不会进入内存。
 `max_history_blocks=70` 表示一个 episode 总共允许 70 个重规划块：
 block 0 到 69，共覆盖 700 个控制步；第 71 次观测被拒绝。
 
+默认 `future_video_denoise_steps=-1`，即视频分支使用与动作分支相同配置的
+完整 scheduler 步数。正整数只用于显式速度—效果消融；最后一次 future-video
+forward 使用去噪实际到达的 timestep 生成动作可读 K/V，不能把中途 latent
+伪装成 timestep 0。视频分支会调用所选深度的 video head，但不会调用 VAE
+decoder。
+
 ## 3. 三种可控信息流
 
 三种模式只改变视频 query 对更早 segment 的可见性。当前动作始终读取
-全部已经提交的真实历史和当前真实观测。
+全部已提交真实历史、当前真实观测和本轮临时未来视频条件。
 
 | query | `interleaved` | `vision_causal` | `action_aggregator` |
 |---|---|---|---|
@@ -55,7 +83,8 @@ block 0 到 69，共覆盖 700 个控制步；第 71 次观测被拒绝。
 | 新视频读取更早动作 | 是 | 否 | 否 |
 | 当前动作读取全部历史 | 是 | 是 | 是 |
 | 当前动作读取当前真实帧 | 是 | 是 | 是 |
-| 当前动作读取未来视频监督 | 否 | 否 | 否 |
+| 当前动作读取未来视频条件 KV | 是 | 是 | 是 |
+| 当前动作读取视频 flow target | 否 | 否 | 否 |
 
 同一 action block 内部为双向 attention。旧历史不能读取当前或未来 token。
 `action_aggregator` 不是无历史模型；它是“独立观测编码、历史条件动作聚合”。
@@ -85,22 +114,29 @@ block 0 到 69，共覆盖 700 个控制步；第 71 次观测被拒绝。
 ## 5. Incremental full-BPTT
 
 主训练模式固定为 `incremental_full_bptt`。每个样本使用与 rollout 相同的
-矩形 attention 调用，按 `V0,A0,V1,A1,...,Vcurrent,Acurrent` 重建完整真实
-prefix。segment K/V 只保存在本次 forward 的普通张量列表中，且始终连接
+矩形 attention 调用，按 `V0,A0,V1,A1,...,Vcurrent,Cfuture,Acurrent` 重建
+动作图；独立的 `Tfuture` 只计算视频 flow loss。segment K/V 只保存在本次 forward 的普通张量列表中，且始终连接
 autograd：
 
 - 历史和当前真实观测均使用 batch-one、T=1 VAE；
 - 历史动作是对应块真正执行的 10 步动作，timestep 为 0；
-- 当前 noisy action 只读取真实历史和当前真实观测；
+- `Cfuture` 使用 GT 未来 latent；50% 保持干净，50% 按 LingBot-VA 在
+  scheduler shift 前的 `u∈[0.5,1.0]` 逐 latent frame 加噪；
+- 当前 noisy action 读取真实 prefix 与 `Cfuture`，action loss 可沿其 K/V
+  反传；
 - 不 detach、不淘汰、不读取离线 cache，也不使用 `LeapMemoryState`；
 - 当前 action/video loss 可沿允许的 K/V 路径反传到全部历史表征。
 
-未来视频是动作前向之后建立的独立 transient segment。它使用 latent frame
-位置 `1...F_latent-1`（当前 9 帧监督经 VAE 后为 `1,2`）和非零 flow
-timestep，读取按 causal mode 选择的历史及当前真实观测，内部双向
-attention；其 K/V 从不进入动作 prefix 或持久 cache。
-因此这里不是依赖 mask 的“逻辑隔离”，而是 action 计算图中根本不存在
-未来视频 token。
+`Cfuture` 和 `Tfuture` 是两个不同的 transient segment，均使用 latent
+位置 `1,2` 并按 causal mode 读取真实 prefix。`Cfuture` 进入动作 prefix；
+`Tfuture` 使用独立随机 flow timestep，只进入视频 head/loss。这样动作不会
+偷看视频监督噪声，但确实利用世界模型对未来的表征。
+
+具体采样为：若选择 clean condition，则 `C=x, t=0`；否则对每个未来 latent
+frame 独立采样 `u~Uniform(0.5,1.0)`，先经过与视频 flow scheduler 相同的 shift
+得到 `sigma`，再构造 `C=(1-sigma)x+sigma*epsilon`。视频 loss 的 noisy target
+使用另一份独立 `epsilon/timestep`。因此 action loss 可以对 condition VideoDiT
+路径产生梯度，但不能通过张量别名或共享噪声读取视频监督答案。
 
 固定容量张量只用于 collation。训练逐样本执行真实长度，padding block
 不会进入任何 attention。分布式 sampler 的排列不改变样本内容。
@@ -133,13 +169,15 @@ episode 进度由单独的解析正弦特征和零初始化投影注入：
 - 动作同时使用绝对 block id 和真实控制步 id；
 - 当前预测动作位置从 `b*10` 开始；只有实际执行的前缀会成为下一轮历史。
 
-零初始化时，D30/H0 增量路径与 FastWAM 原路径在 BF16 容差内一致。
+零初始化时，真实 prefix 的 K/V 路径保持 FastWAM 兼容；ActionDiT 因新增
+未来视频条件而有意不再等同于原 FastWAM H0 动作因子分解。
 
 ## 8. 训练目标与出口
 
 视频和动作继续使用 FastWAM release 代码的 scheduler、FM target、timestep
-weight、padding normalization 及 `lambda_video=lambda_action=1`。未来视频
-只提供训练监督；在线 memory 推理不创建未来视频 latent。
+weight、padding normalization 及 `lambda_video=lambda_action=1`。在线
+memory 推理创建并去噪未来 latent、调用对应深度的视频输出投影，但不调用
+VAE decode；临时 K/V 在动作去噪结束后释放。
 
 正式三模式比较先只训练 D30。选定模式后再训练
 `D={8,16,24,30}`，目标为：
@@ -148,8 +186,10 @@ weight、padding normalization 及 `lambda_video=lambda_action=1`。未来视频
 L30 + (L8 + L16 + L24) / 3
 ```
 
-每个 `Ld` 都含原视频和动作 FM loss。浅层视频 head 仅在训练时计算视频
-监督，在线动作推理不会调用视频 head。
+每个 `Ld` 都含原视频和动作 FM loss。D30 使用原 FastWAM 视频/动作 head；
+D8/16/24 使用各自训练过的轻量 video/action exit head。在线 memory 推理在
+选定深度调用对应 video head 完成未来 latent 去噪，再调用同深度 ActionDiT 与
+action head；它不会为了可视化而做 VAE decode。
 
 ## 9. 优化与公平比较
 
@@ -175,20 +215,27 @@ LeapBot 是从该权重做历史适配，不能把很短的 LR screen 当作最�
 
 代码级验收包括：
 
-- 三种 mask 的允许关系和 future-video 零梯度；
-- H0 增量路径与原 FastWAM 目标在约定 BF16 容差内一致；
-- 三模式真实 6B/BF16/H=8 的增量训练前缀与 public runtime 路径逐层
-  K/V、action hidden 和 flow head bitwise 一致；
+- 三种 mask 的允许关系、action 到 condition 的非零梯度以及 action 到
+  独立 flow target 的零梯度；
+- 训练与 runtime 的真实 persistent prefix 逐层 bitwise 一致，GT/加噪 GT
+  条件与生成条件具有相同 token/层合同；二者数值不应伪装成相同；
 - 预测但未 commit 的动作不增加 action cache；
 - 70 块/700 动作边界与第 71 次拒绝；
 - prompt、clock、reset、rollback、checkpoint 和 resume 契约；
 - LIBERO gripper 后处理的精确逆映射和重新归一化；
 - 6B H50 真实 prefix、H70 合成容量的 forward/backward/OOM smoke；
-- profiler 中 memory inference 无未来视频去噪、视频 head 或 VAE decode。
+- profiler 中 memory inference 有视频 latent 去噪和视频 head，但无 VAE
+  decode，且未来视频 K/V 不增加 `LeapMemoryState.cache_nbytes`。
 
 效果验收必须使用固定初始状态的 LIBERO-Long rollout，并分别报告成功率、
-完成步数、P50/P95 observation/action/commit 延迟、峰值显存与 cache 大小。
+完成步数、P50/P95 observation/future-video/action/commit 延迟、峰值显存、
+持久 cache 大小与临时 future-video cache 大小。
 冻结 loss 诊断只用于定位问题，不能替代 rollout 成功率。
+
+旧 LeapBot checkpoint 如果没有 `training_num_video_frames` 和
+`future_video_conditioning=lingbot_teacher_forced_v1` 等元数据，会被正式验证器
+拒绝，因为它训练的是不同的动作条件分解。FastWAM release checkpoint 仍然是
+合法初始化来源，但不是可直接当作新 LeapBot checkpoint 恢复的训练状态。
 
 ## 11. 实现索引
 

@@ -78,15 +78,10 @@ def _model(
     "causal_mode",
     ["interleaved", "vision_causal", "action_aggregator"],
 )
-def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
+def test_h0_preserves_video_flow_but_uses_future_conditioned_action(
     causal_mode,
 ):
-    """A trained temporal extension must be a strict H0 no-op.
-
-    This compares two execution paths through the same model weights. It does
-    not claim that causal fine-tuning leaves the original release weights
-    unchanged.
-    """
+    """H0 changes only the intended ActionDiT factorization."""
 
     torch.manual_seed(321)
     model = _model(
@@ -100,6 +95,7 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
         training_exit_depths=(8,),
         replan_steps=2,
         action_horizon=4,
+        num_video_frames=5,
     )
     with torch.no_grad():
         for parameter in model.temporal_positions.parameters():
@@ -134,15 +130,12 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
     torch.manual_seed(999)
     causal_total, causal_metrics = model.training_loss(causal_sample)
 
-    # The incremental path decomposes the same H0 graph into rectangular
-    # attention calls. CPU FP32 reductions may differ by one ULP.
-    torch.testing.assert_close(causal_total, fastwam_total, atol=5e-7, rtol=0)
+    assert torch.isfinite(causal_total)
+    assert torch.isfinite(fastwam_total)
     assert causal_metrics["loss_video_d8"] == pytest.approx(
         fastwam_metrics["loss_video"], abs=5e-7, rel=0
     )
-    assert causal_metrics["loss_action_d8"] == pytest.approx(
-        fastwam_metrics["loss_action"], abs=5e-7, rel=0
-    )
+    assert causal_metrics["future_video_condition_noised_fraction"] in (0.0, 1.0)
 
     model.eval()
     model._encode_input_image_latents_tensor = types.MethodType(
@@ -167,17 +160,17 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
         memory=None,
     )["action"]
 
-    def forbidden_video_path(*args, **kwargs):
-        raise AssertionError("memory action inference entered a future-video path")
+    def forbidden_decode(*args, **kwargs):
+        raise AssertionError("memory action inference decoded imagined video")
 
-    model.infer_joint = types.MethodType(forbidden_video_path, model)
-    model._decode_latents = types.MethodType(forbidden_video_path, model)
-    model._video_head_at_depth = types.MethodType(forbidden_video_path, model)
+    model.infer_joint = types.MethodType(forbidden_decode, model)
+    model._decode_latents = types.MethodType(forbidden_decode, model)
     memory = model.create_memory(exit_depth=8, max_history_blocks=2)
     memory_result = model.infer_action(
         prompt=None,
         input_image=image,
         action_horizon=4,
+        num_video_frames=5,
         proprio=proprio,
         context=context,
         context_mask=context_mask,
@@ -187,11 +180,19 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
         profile=True,
     )
     memory_action = memory_result["action"]
-    assert torch.equal(memory_action, memoryless_action)
+    assert memory_action.shape == memoryless_action.shape
+    assert torch.isfinite(memory_action).all()
+    assert not torch.equal(memory_action, memoryless_action)
+    assert memory.token_counts == {"video": 1, "action": 0}
+    assert len(memory.segments) == 1
+    assert memory_result["memory"]["transient_future_video_cache_bytes"] > 0
     timing = memory_result["timing"]
     assert set(timing) == {
         "conditioning_s",
         "observation_prefill_s",
+        "future_video_setup_s",
+        "future_video_denoise_s",
+        "future_video_cache_s",
         "action_setup_s",
         "action_denoise_s",
         "causal_model_s",
@@ -201,6 +202,9 @@ def test_h0_matches_same_weight_fastwam_training_and_memoryless_inference(
     assert timing["causal_model_s"] == pytest.approx(
         timing["conditioning_s"]
         + timing["observation_prefill_s"]
+        + timing["future_video_setup_s"]
+        + timing["future_video_denoise_s"]
+        + timing["future_video_cache_s"]
         + timing["action_setup_s"]
         + timing["action_denoise_s"]
         + timing["causal_model_residual_s"],
@@ -518,7 +522,10 @@ def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
             }
             for _ in range(kwargs["max_layers"])
         ]
-        return kwargs["tokens"], kv
+        hidden = kwargs["tokens"]
+        if kwargs.get("exit_depths") is not None:
+            hidden = {int(depth): kwargs["tokens"] for depth in kwargs["exit_depths"]}
+        return hidden, kv
 
     def fake_action_forward(_self, **kwargs):
         calls["raw_history_kwargs"].append(set(kwargs))
@@ -558,7 +565,14 @@ def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
         memory=memory,
     )
 
-    assert [ids.tolist() for ids in calls["video_local"]] == [[0], [0]]
+    assert [ids.tolist() for ids in calls["video_local"]] == [
+        [0],
+        [1, 2],
+        [1, 2],
+        [0],
+        [1, 2],
+        [1, 2],
+    ]
     assert [ids.tolist() for ids in calls["action_local"]] == [[0, 1], [0], [0, 1]]
     assert [ids.tolist() for ids in calls["action_absolute_controls"]] == [
         [0, 1],
@@ -573,8 +587,9 @@ def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
     # The relative-position extension contributes exactly zero at the first
     # replan. This compares token inputs, not trained weights with a release.
     assert torch.equal(calls["video_positioned"][0], calls["video_base"][0])
-    assert not torch.equal(calls["video_positioned"][1], calls["video_base"][1])
-    assert not torch.equal(calls["video_positioned"][0], calls["video_positioned"][1])
+    assert torch.equal(calls["video_positioned"][1], calls["video_base"][1])
+    assert not torch.equal(calls["video_positioned"][3], calls["video_base"][3])
+    assert not torch.equal(calls["video_positioned"][0], calls["video_positioned"][3])
     assert torch.equal(calls["action_positioned"][0], calls["action_base"][0])
     assert torch.equal(calls["action_positioned"][1], calls["action_base"][1])
     assert not torch.equal(calls["action_positioned"][2], calls["action_base"][2])

@@ -232,6 +232,18 @@ def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
         FORMAL_ACTION_HORIZON,
     ):
         raise ValueError("capacity probe requires replan_steps=10/action_horizon=32")
+    if (
+        str(model.get("future_video_conditioning", ""))
+        != "lingbot_teacher_forced_v1"
+        or int(model.get("num_video_frames", -1)) != 9
+        or float(model.get("future_video_condition_noise_probability", -1.0)) != 0.5
+        or float(model.get("future_video_condition_min_u", -1.0)) != 0.5
+        or float(model.get("future_video_condition_max_u", -1.0)) != 1.0
+    ):
+        raise ValueError(
+            "capacity probe requires LingBot future-video frames=9, "
+            "probability=0.5, u=[0.5,1.0]"
+        )
 
     data = cfg.get("data", {}).get("train")
     if data is None:
@@ -258,6 +270,11 @@ def validate_capacity_probe_contract(cfg: DictConfig) -> dict[str, Any]:
         "causal_mode": causal_mode,
         "history_training_mode": "incremental_full_bptt",
         "history_vae_batch_chunk_size": 1,
+        "world_model_conditioning": "lingbot_teacher_forced_v1",
+        "num_video_frames": 9,
+        "future_video_condition_noise_probability": 0.5,
+        "future_video_condition_min_u": 0.5,
+        "future_video_condition_max_u": 1.0,
         "training_strategy": "video_lora_action_full",
         "video_lora": {
             "rank": 16,

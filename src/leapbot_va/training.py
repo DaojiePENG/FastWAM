@@ -188,8 +188,14 @@ def build_packed_history_attention_mask(
     replan_steps: int,
     action_horizon: int,
     causal_mode: str,
+    action_reads_future_video: bool = False,
 ) -> torch.Tensor:
-    """Build [B,S,S] mask with no action-to-future-video leakage."""
+    """Build the packed causal mask for target or condition video tokens.
+
+    ``action_reads_future_video=False`` preserves the video-flow supervision
+    oracle: noisy target tokens cannot affect ActionDiT. Set it only when the
+    current future frames are the explicit teacher-forced condition branch.
+    """
 
     if causal_mode not in VALID_CAUSAL_MODES:
         raise ValueError(f"unsupported causal mode: {causal_mode}")
@@ -244,8 +250,13 @@ def build_packed_history_attention_mask(
     # Historical action blocks read their same-block real observation. Current
     # action reads only current real-frame keys (frame=max_history), excluding
     # every future-video supervision frame in the same block.
+    current_video_key = (
+        k_frame >= max_history
+        if action_reads_future_video
+        else k_frame == max_history
+    )
     same_action_block = same_block & (
-        k_action | (~k_action & ((q_block < max_history) | (k_frame == max_history)))
+        k_action | (~k_action & ((q_block < max_history) | current_video_key))
     )
     action_allowed = earlier | same_action_block
 
@@ -916,6 +927,62 @@ def future_video_token_valid_mask(
     return token_valid
 
 
+def sample_lingbot_future_video_condition(
+    model: "LeapBotVA",
+    clean_future_latents: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, bool]:
+    """Build the teacher-forced video condition consumed by ActionDiT.
+
+    LingBot-VA uses clean ground-truth video half of the time and independently
+    noised ground-truth frames for the other half.  Its timestep-index interval
+    [0.5, 1.0] is sampled before the flow scheduler's shift, so we preserve the
+    same convention here.  The returned timesteps are per latent frame and are
+    passed to Wan's separated-timestep embedding.
+    """
+
+    if clean_future_latents.ndim != 5 or int(clean_future_latents.shape[0]) != 1:
+        raise ValueError("future-video condition must be [1,C,F,H,W]")
+    num_frames = int(clean_future_latents.shape[2])
+    if num_frames <= 0:
+        raise ValueError("future-video condition must contain at least one frame")
+    probability = float(model.future_video_condition_noise_probability)
+    add_noise = bool(
+        torch.rand((), device=clean_future_latents.device).item() < probability
+    )
+    if not add_noise:
+        return (
+            clean_future_latents,
+            torch.zeros(
+                (1, num_frames),
+                device=clean_future_latents.device,
+                dtype=clean_future_latents.dtype,
+            ),
+            False,
+        )
+
+    u = torch.rand(
+        (1, num_frames),
+        device=clean_future_latents.device,
+        dtype=torch.float32,
+    )
+    min_u = float(model.future_video_condition_min_u)
+    max_u = float(model.future_video_condition_max_u)
+    u = u * (max_u - min_u) + min_u
+    sigma = model.train_video_scheduler._phi(
+        u, float(model.train_video_scheduler.shift)
+    )
+    sigma_latent = sigma.to(
+        device=clean_future_latents.device,
+        dtype=clean_future_latents.dtype,
+    ).view(1, 1, num_frames, 1, 1)
+    condition = (
+        (1.0 - sigma_latent) * clean_future_latents
+        + sigma_latent * torch.randn_like(clean_future_latents)
+    )
+    timesteps = sigma * float(model.train_video_scheduler.num_train_timesteps)
+    return condition, timesteps.to(dtype=clean_future_latents.dtype), True
+
+
 def _runtime_single_observation_latents(
     model: "LeapBotVA", image: torch.Tensor, *, tiled: bool
 ) -> torch.Tensor:
@@ -1269,13 +1336,14 @@ def _packed_causal_history_reference_loss(
 
 
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
-    """Full-gradient history training with the exact rollout attention decomposition.
+    """Full-gradient causal training with LingBot-style video conditioning.
 
     Completed blocks are encoded chronologically as clean ``V -> A`` segments.
-    The current real observation is then encoded exactly once with the runtime
-    batch-one/T=1 VAE and prefill path.  Current noisy actions read only those
-    persistent real-data K/V tensors.  Noisy future-video tokens execute later
-    in a separate transient branch and can therefore never affect ActionDiT.
+    The current real observation is encoded through the rollout-identical
+    batch-one/T=1 path.  A separate clean-or-noised ground-truth future-video
+    branch then supplies transient K/V to the current ActionDiT query.  Video
+    flow supervision uses another noisy target branch, so target noise cannot
+    leak into the action while action gradients do train the condition branch.
     """
 
     if int(model.video_expert.patch_size[0]) != 1:
@@ -1292,6 +1360,25 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     action = inputs["action"]
     batch = int(current_latents.shape[0])
     action_horizon = int(action.shape[1])
+    physical_video_frames = int(sample["video"].shape[2])
+    if (
+        model.training_num_video_frames is not None
+        and physical_video_frames != int(model.training_num_video_frames)
+    ):
+        raise ValueError(
+            "training sample video length differs from the model contract: "
+            f"expected={model.training_num_video_frames} "
+            f"got={physical_video_frames}"
+        )
+    temporal_factor = int(model.vae.temporal_downsample_factor)
+    expected_latent_frames = 1 + (
+        physical_video_frames - 1
+    ) // temporal_factor
+    if int(current_latents.shape[2]) != expected_latent_frames:
+        raise ValueError(
+            "VAE latent length differs from the physical video contract: "
+            f"expected={expected_latent_frames} got={current_latents.shape[2]}"
+        )
     replan_steps = int(sample["history_action"].shape[2])
     model.validate_temporal_contract(
         replan_steps=replan_steps,
@@ -1365,6 +1452,8 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     action_losses: dict[int, list[torch.Tensor]] = {
         depth: [] for depth in training_depths
     }
+    condition_noise_flags: list[bool] = []
+    condition_sigma_means: list[torch.Tensor] = []
 
     for sample_index in range(batch):
         base_context = inputs["context"][sample_index : sample_index + 1]
@@ -1508,8 +1597,107 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             "kv": current_real_kv,
         }
 
-        # This prefix is finalized before any future-video token is built.
-        action_prefix_segments = [*completed_segments, current_real_segment]
+        # Teacher-forced inverse-dynamics condition.  This is deliberately a
+        # different DiT execution from the noisy video flow target below.
+        # ActionDiT may read these K/V tensors, but they are never appended to
+        # persistent episode memory at rollout.
+        clean_future_latents = current_latents[
+            sample_index : sample_index + 1, :, 1:
+        ]
+        num_future_frames = int(clean_future_latents.shape[2])
+        if num_future_frames <= 0:
+            raise ValueError("causal training requires future latent frames")
+        (
+            future_condition_latents,
+            future_condition_frame_timesteps,
+            condition_was_noised,
+        ) = sample_lingbot_future_video_condition(
+            model,
+            clean_future_latents,
+        )
+        condition_noise_flags.append(condition_was_noised)
+        condition_sigma_means.append(
+            (
+                future_condition_frame_timesteps.float()
+                / float(model.train_video_scheduler.num_train_timesteps)
+            ).mean()
+        )
+        future_condition_pre = model.video_expert.pre_dit(
+            x=future_condition_latents,
+            timestep=future_condition_frame_timesteps[:, 0],
+            context=current_context,
+            context_mask=current_context_mask,
+            action=None,
+            fuse_vae_embedding_in_latents=inputs[
+                "fuse_vae_embedding_in_latents"
+            ],
+            frame_position_ids=torch.arange(
+                1,
+                num_future_frames + 1,
+                device=model.device,
+                dtype=torch.long,
+            ),
+            frame_timesteps=future_condition_frame_timesteps,
+        )
+        future_condition_pre = model.temporal_positions.apply_video_pre_dit(
+            future_condition_pre,
+            current_block[:, None].expand(-1, num_future_frames),
+        )
+        future_condition_valid_mask = future_video_token_valid_mask(
+            None
+            if inputs["image_is_pad"] is None
+            else inputs["image_is_pad"][sample_index : sample_index + 1],
+            temporal_downsample_factor=int(model.vae.temporal_downsample_factor),
+            num_future_latent_frames=num_future_frames,
+            tokens_per_frame=int(
+                future_condition_pre["meta"]["tokens_per_frame"]
+            ),
+            device=model.device,
+        )
+        _, future_condition_kv = _prefill_with_segment_history(
+            model,
+            expert_name="video",
+            tokens=future_condition_pre["tokens"],
+            freqs=future_condition_pre["freqs"],
+            t_mod=future_condition_pre["t_mod"],
+            context_payload={
+                "context": future_condition_pre["context"],
+                "mask": future_condition_pre["context_mask"],
+            },
+            history_segments=_future_video_history_segments_for_mode(
+                completed_segments,
+                current_real_segment,
+                model.causal_mode,
+            ),
+            max_layers=final_depth,
+            segment_valid_mask=future_condition_valid_mask,
+            return_segment_kv=True,
+        )
+        if future_condition_kv is None:
+            raise RuntimeError("future-video condition did not return K/V")
+        # The action prefix has no padded historical keys at rollout. Remove
+        # fully padded future-frame K/V here as well; merely masking them while
+        # encoding the video would still leave them in ActionDiT's softmax.
+        if future_condition_valid_mask is not None:
+            retained_condition_tokens = future_condition_valid_mask[0]
+            future_condition_kv = [
+                {
+                    "k": layer["k"][:, retained_condition_tokens],
+                    "v": layer["v"][:, retained_condition_tokens],
+                }
+                for layer in future_condition_kv
+            ]
+        future_condition_segment = {
+            "modality": "future_video",
+            "block_index": int(current_block.item()),
+            "kv": future_condition_kv,
+        }
+
+        action_prefix_segments = [
+            *completed_segments,
+            current_real_segment,
+            future_condition_segment,
+        ]
         current_action_pre = model._prepare_action_segment_pre_dit(
             actions=noisy_action[sample_index : sample_index + 1],
             timestep=timestep_action[sample_index : sample_index + 1],
@@ -1540,14 +1728,13 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             action_valid_mask=current_action_valid_mask,
         )
 
-        # The video loss is intentionally later and transient.  It sees the
-        # current real frame through attached K/V but can never enter action_prefix.
+        # The video flow target is transient and separate from the condition
+        # branch above. Its randomly noised tokens never enter action_prefix.
         future_latents = noisy_video[
             sample_index : sample_index + 1, :, 1:
         ]
-        num_future_frames = int(future_latents.shape[2])
-        if num_future_frames <= 0:
-            raise ValueError("causal video training requires future latent frames")
+        if int(future_latents.shape[2]) != num_future_frames:
+            raise RuntimeError("future condition/target latent length mismatch")
         future_video_timestep = timestep_video[
             sample_index : sample_index + 1
         ]
@@ -1719,6 +1906,12 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     metrics["history_blocks_max"] = float(history_counts.max().detach())
     metrics["history_h0_fraction"] = float(
         (history_counts == 0).float().mean().detach()
+    )
+    metrics["future_video_condition_noised_fraction"] = float(
+        sum(condition_noise_flags) / max(1, len(condition_noise_flags))
+    )
+    metrics["future_video_condition_sigma_mean"] = float(
+        torch.stack(condition_sigma_means).mean().detach()
     )
     # Wan22Trainer consumes these per-metric sample counts when combining
     # sparse H bins across ranks and gradient-accumulation micro-batches.  The

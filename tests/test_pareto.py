@@ -133,6 +133,7 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
         "memory_metrics": [
             {
                 "peak_cache_bytes": 2**30,
+                "peak_transient_future_video_cache_bytes": 2**28,
                 "peak_gpu_bytes": 3 * 2**30,
                 "replans": [
                     {
@@ -144,6 +145,9 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
                             "latency_residual_s": 0.0,
                             "conditioning_s": 0.0,
                             "observation_prefill_s": 0.1,
+                            "future_video_setup_s": 0.0,
+                            "future_video_denoise_s": 0.0,
+                            "future_video_cache_s": 0.0,
                             "action_setup_s": 0.0,
                             "action_denoise_s": 0.4,
                             "causal_model_s": 0.5,
@@ -152,6 +156,7 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
                         "memory": {
                             "completed_blocks": 4,
                             "cache_bytes": 2**29,
+                            "transient_future_video_cache_bytes": 2**28,
                         },
                         "commit": {
                             "commit_s": 0.05,
@@ -182,6 +187,7 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert row["p50_causal_model_s"] == 0.5
     assert row["p50_action_commit_s"] == 0.05
     assert row["peak_cache_gib"] == 1
+    assert row["peak_transient_future_video_cache_gib"] == 0.25
     assert row["peak_gpu_gib"] == 3
 
     task_row = pareto.aggregate_per_task([path])[0]
@@ -198,6 +204,7 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert history_row["samples"] == 1
     assert history_row["p50_cache_after_observation_gib"] == 0.5
     assert history_row["p50_cache_after_commit_gib"] == 0.75
+    assert history_row["p50_transient_future_video_cache_gib"] == 0.25
     assert history_row["p50_total_replan_s"] == 0.55
 
 

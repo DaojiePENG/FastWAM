@@ -141,8 +141,8 @@ def test_formal_causal_comparison_requires_self_identifying_checkpoints():
     assert "--expected-kind initial_block_oversample" in source
     assert "lr_selection_manifest_sha256" in source
     assert "h0_selection_manifest_sha256" in source
-    assert "causal_incremental_full_bptt_v5_b20_ga1" in source
-    assert "causal-incremental-full-bptt-v5-b20-ga1" in source
+    assert "causal_lingbot_video_kv_v6_b20_ga1" in source
+    assert "causal-lingbot-video-kv-v6-b20-ga1" in source
     assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
     assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
     assert 'MAX_STEPS="${MAX_STEPS:-895}"' in source

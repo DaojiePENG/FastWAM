@@ -40,6 +40,7 @@ class _Model:
                 "completed_blocks": 0,
                 "retained_history_blocks": 0,
                 "cache_bytes": 100,
+                "transient_future_video_cache_bytes": 24,
             },
             "timing": {
                 "conditioning_s": 0.01,
@@ -182,9 +183,11 @@ def test_memory_rollout_commits_only_executed_prefix_and_counts_observation_peak
     assert metrics["control_steps"] == 3
     assert metrics["completed_blocks"] == 1
     assert metrics["peak_cache_bytes"] == 100
+    assert metrics["peak_transient_future_video_cache_bytes"] == 24
     assert metrics["final_cache_bytes"] == 20
 
     replan = metrics["replans"][0]
+    assert replan["future_video_condition"] == {}
     assert replan["commit"]["executed_actions"] == 3
     timing = replan["timing"]
     assert timing["total_inference_s"] >= 0

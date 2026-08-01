@@ -38,6 +38,12 @@ def create_leapbot(
     history_vae_batch_chunk_size: int = 1,
     replan_steps: int = 10,
     action_horizon: int = 32,
+    num_video_frames: int = 9,
+    future_video_conditioning: str = "lingbot_teacher_forced_v1",
+    future_video_condition_noise_probability: float = 0.5,
+    future_video_condition_min_u: float = 0.5,
+    future_video_condition_max_u: float = 1.0,
+    future_video_denoise_steps: int = -1,
     training_strategy: str = "full_dit",
     video_lora=None,
     model_dtype: torch.dtype = torch.bfloat16,
@@ -105,7 +111,19 @@ def create_leapbot(
         history_training_mode=str(history_training_mode),
         replan_steps=int(replan_steps),
         action_horizon=int(action_horizon),
+        num_video_frames=int(num_video_frames),
+        future_video_condition_noise_probability=float(
+            future_video_condition_noise_probability
+        ),
+        future_video_condition_min_u=float(future_video_condition_min_u),
+        future_video_condition_max_u=float(future_video_condition_max_u),
+        future_video_denoise_steps=int(future_video_denoise_steps),
     )
+    if str(future_video_conditioning) != model.future_video_conditioning:
+        raise ValueError(
+            "unsupported future-video conditioning contract: "
+            f"{future_video_conditioning}"
+        )
     resolved_history_vae_chunk = int(history_vae_batch_chunk_size)
     if resolved_history_vae_chunk != 1:
         raise ValueError(

@@ -29,7 +29,9 @@ logger = get_logger(__name__)
 RUNTIME_OBSERVATION_VAE_CONTRACT = (
     "batch1_t1_via__encode_input_image_latents_tensor"
 )
-FUTURE_VIDEO_VAE_CONTRACT = "full_clip_encode_used_only_for_video_supervision"
+FUTURE_VIDEO_VAE_CONTRACT = (
+    "full_clip_encode_shared_by_video_target_and_teacher_forced_action_condition"
+)
 FORMAL_REAL_HISTORY_BLOCKS = 50
 FORMAL_CAPACITY_HISTORY_BLOCKS = 70
 FORMAL_REPLAN_STEPS = 10
@@ -116,6 +118,7 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
     )
     replan_steps = int(model_cfg.get("replan_steps", -1))
     action_horizon = int(model_cfg.get("action_horizon", -1))
+    num_video_frames = int(model_cfg.get("num_video_frames", -1))
     if (replan_steps, action_horizon) != (
         FORMAL_REPLAN_STEPS,
         FORMAL_ACTION_HORIZON,
@@ -123,6 +126,29 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
         raise ValueError(
             "formal LIBERO-Long smoke requires replan_steps/action_horizon=10/32, "
             f"got {replan_steps}/{action_horizon}"
+        )
+    conditioning_contract = str(
+        model_cfg.get("future_video_conditioning", "lingbot_teacher_forced_v1")
+    )
+    condition_noise_probability = float(
+        model_cfg.get("future_video_condition_noise_probability", -1.0)
+    )
+    condition_min_u = float(
+        model_cfg.get("future_video_condition_min_u", -1.0)
+    )
+    condition_max_u = float(
+        model_cfg.get("future_video_condition_max_u", -1.0)
+    )
+    if (
+        conditioning_contract != "lingbot_teacher_forced_v1"
+        or num_video_frames != 9
+        or condition_noise_probability != 0.5
+        or condition_min_u != 0.5
+        or condition_max_u != 1.0
+    ):
+        raise ValueError(
+            "formal smoke requires LingBot teacher forcing, 9 video frames, "
+            "noise probability 0.5, and u=[0.5,1.0]"
         )
 
     data_cfg = cfg.get("data")
@@ -249,6 +275,11 @@ def _validate_smoke_contract(cfg: DictConfig) -> dict[str, Any]:
         "video_lora_enabled": video_lora_enabled,
         "runtime_observation_vae_contract": RUNTIME_OBSERVATION_VAE_CONTRACT,
         "future_video_vae_contract": FUTURE_VIDEO_VAE_CONTRACT,
+        "future_video_conditioning": conditioning_contract,
+        "future_video_condition_noise_probability": condition_noise_probability,
+        "future_video_condition_min_u": condition_min_u,
+        "future_video_condition_max_u": condition_max_u,
+        "num_video_frames": num_video_frames,
         "replan_steps": replan_steps,
         "action_horizon": action_horizon,
         "mixed_precision": precision,
@@ -540,6 +571,10 @@ def run_smoke(cfg: DictConfig) -> dict:
         raise AssertionError("instantiated model history_training_mode mismatch")
     if int(model.history_vae_batch_chunk_size) != 1:
         raise AssertionError("instantiated model does not use batch-one observation VAE")
+    if model.future_video_conditioning != contract["future_video_conditioning"]:
+        raise AssertionError("instantiated model future-video contract mismatch")
+    if int(model.training_num_video_frames) != int(contract["num_video_frames"]):
+        raise AssertionError("instantiated model video-frame contract mismatch")
     model.validate_temporal_contract(
         replan_steps=int(contract["replan_steps"]),
         action_horizon=int(contract["action_horizon"]),
@@ -752,7 +787,7 @@ def run_smoke(cfg: DictConfig) -> dict:
     expected_future_video_calls = execution_updates * execution_microbatches
     if future_video_shapes != [expected_future_video_shape] * expected_future_video_calls:
         raise AssertionError(
-            "future-video supervision must use exactly one independent full-clip VAE "
+            "future-video target/condition must share exactly one full-clip VAE "
             "call per microbatch: "
             f"expected {expected_future_video_calls} calls with shape "
             f"{expected_future_video_shape}, got {future_video_shapes}"

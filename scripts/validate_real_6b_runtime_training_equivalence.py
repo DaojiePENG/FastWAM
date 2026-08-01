@@ -1,10 +1,11 @@
-"""Validate the incremental training action path against public KV runtime.
+"""Validate LeapBot's teacher-forced and public-runtime KV contracts.
 
 The formal invocation loads one real LIBERO prefix and the 6B checkpoint.  It
-captures the current ActionDiT call made by ``model.training_loss``, rebuilds
+captures the current ActionDiT call made by ``model.training_loss`` and rebuilds
 the same persistent real-data prefix through ``infer_action`` and
-``commit_executed_actions``, and replays the captured action query against the
-runtime cache.  No predicted or future-video K/V is used for the comparison.
+``commit_executed_actions``. Persistent K/V must be bitwise equal. The
+teacher-forced GT/noised-GT condition and generated runtime condition must have
+the same layer/token contract, but are intentionally not numerically equal.
 """
 
 from __future__ import annotations
@@ -204,7 +205,7 @@ def validate_incremental_action_equivalence(
     atol: float = 0.0,
     rtol: float = 0.0,
 ) -> dict[str, Any]:
-    """Compare a captured training action call with a public-runtime prefix."""
+    """Compare persistent K/V and transient conditioning contracts."""
 
     if sample["video"].shape[0] != 1:
         raise ValueError("equivalence validation requires batch size 1")
@@ -310,6 +311,7 @@ def validate_incremental_action_equivalence(
             raise RuntimeError("training loss never invoked current ActionDiT")
 
         runtime_events: list[dict[str, Any]] = []
+        runtime_action_records: list[dict[str, Any]] = []
 
         def capture_runtime_prefill(*args, **kwargs):
             runtime_events.append(
@@ -328,6 +330,15 @@ def validate_incremental_action_equivalence(
                     history_kv=kwargs.get("history_kv"),
                     tokens=kwargs["action_tokens"],
                 )
+            )
+            runtime_action_records.append(
+                {
+                    "history_kv": [
+                        {"k": value["k"].detach(), "v": value["v"].detach()}
+                        for value in kwargs["history_kv"]
+                    ],
+                    "tokens": kwargs["action_tokens"].detach(),
+                }
             )
             return original_action(*args, **kwargs)
 
@@ -354,6 +365,7 @@ def validate_incremental_action_equivalence(
                         0:1, :, history_index
                     ],
                     action_horizon=action_horizon,
+                    num_video_frames=int(sample["video"].shape[2]),
                     proprio=sample["history_proprio"][
                         0:1, history_index
                     ],
@@ -373,6 +385,7 @@ def validate_incremental_action_equivalence(
                 prompt=None,
                 input_image=sample["video"][0:1, :, 0],
                 action_horizon=action_horizon,
+                num_video_frames=int(sample["video"].shape[2]),
                 proprio=sample["proprio"][0:1, 0],
                 context=base_context,
                 context_mask=base_context_mask,
@@ -386,35 +399,56 @@ def validate_incremental_action_equivalence(
         runtime_prefix = memory.materialize(memory.selected_segments_for_action())
         if runtime_prefix is None:
             raise RuntimeError("public runtime did not retain the current observation")
+        if not runtime_action_records:
+            raise RuntimeError("public runtime never invoked ActionDiT")
+        runtime_action_prefix = runtime_action_records[-1]["history_kv"]
+        persistent_tokens = int(runtime_prefix[0]["k"].shape[1])
+        training_action_tokens = int(
+            training_record["history_kv"][0]["k"].shape[1]
+        )
+        runtime_action_tokens = int(runtime_action_prefix[0]["k"].shape[1])
+        if training_action_tokens <= persistent_tokens:
+            raise RuntimeError("training action prefix lacks future-video K/V")
+        if runtime_action_tokens <= persistent_tokens:
+            raise RuntimeError("runtime action prefix lacks future-video K/V")
+        training_persistent_prefix = [
+            {
+                "k": layer["k"][:, :persistent_tokens],
+                "v": layer["v"][:, :persistent_tokens],
+            }
+            for layer in training_record["history_kv"]
+        ]
         prefix_comparison = compare_layerwise_kv(
-            training_record["history_kv"],
+            training_persistent_prefix,
             runtime_prefix,
             atol=atol,
             rtol=rtol,
         )
-        with torch.no_grad():
-            runtime_hidden = original_action(
-                action_tokens=training_record["action_tokens"],
-                action_freqs=training_record["action_freqs"],
-                action_t_mod=training_record["action_t_mod"],
-                action_context_payload=training_record[
-                    "action_context_payload"
-                ],
-                history_kv=runtime_prefix,
-                max_layers=final_depth,
+        training_transient_tokens = training_action_tokens - persistent_tokens
+        runtime_transient_tokens = runtime_action_tokens - persistent_tokens
+        transient_shape_match = (
+            training_transient_tokens == runtime_transient_tokens
+            and all(
+                training_layer["k"][:, persistent_tokens:].shape
+                == runtime_layer["k"][:, persistent_tokens:].shape
+                and training_layer["v"][:, persistent_tokens:].shape
+                == runtime_layer["v"][:, persistent_tokens:].shape
+                for training_layer, runtime_layer in zip(
+                    training_record["history_kv"], runtime_action_prefix
+                )
             )
-            if isinstance(runtime_hidden, dict):
-                runtime_hidden = runtime_hidden[final_depth]
-            training_hidden = training_record["hidden"]
-            action_head = model._action_head_at_depth(final_depth)
-            training_head = action_head(training_hidden)
-            runtime_head = action_head(runtime_hidden)
-
-        hidden_comparison = compare_tensors(
-            training_hidden, runtime_hidden, atol=atol, rtol=rtol
         )
-        head_comparison = compare_tensors(
-            training_head, runtime_head, atol=atol, rtol=rtol
+        transient_finite = all(
+            torch.isfinite(value).all()
+            for prefix in (
+                training_record["history_kv"],
+                runtime_action_prefix,
+            )
+            for layer in prefix
+            for value in (
+                layer["k"][:, persistent_tokens:],
+                layer["v"][:, persistent_tokens:],
+            )
         )
 
         training_kinds = [event["kind"] for event in training_events]
@@ -424,34 +458,52 @@ def validate_incremental_action_equivalence(
         for _ in range(history_count):
             expected_training.extend(("video_prefill", "action_prefill"))
             expected_runtime.extend(
-                ("video_prefill", "action_forward", "action_prefill")
+                (
+                    "video_prefill",
+                    "video_prefill",
+                    "video_prefill",
+                    "action_forward",
+                    "action_prefill",
+                )
             )
         expected_training.extend(
-            ("video_prefill", "action_forward", "video_prefill")
+            (
+                "video_prefill",
+                "video_prefill",
+                "action_forward",
+                "video_prefill",
+            )
         )
-        expected_runtime.extend(("video_prefill", "action_forward"))
+        expected_runtime.extend(
+            (
+                "video_prefill",
+                "video_prefill",
+                "video_prefill",
+                "action_forward",
+            )
+        )
         training_sequence_valid = training_kinds == expected_training
         runtime_sequence_valid = runtime_kinds == expected_runtime
-        training_action_path = training_kinds[:-1]
-        runtime_action_path = [
-            kind for kind in runtime_kinds if kind != "action_forward"
-        ] + ["action_forward"]
-        sequence_isomorphic = (
+        # Training teacher-forces one condition prefill; rollout first denoises
+        # the imagined video and then performs the same final cache prefill.
+        # Their persistent prefix must be bitwise equal, while transient values
+        # are distribution-aligned rather than numerically identical.
+        conditioning_contract_pass = bool(
             training_sequence_valid
             and runtime_sequence_valid
-            and training_action_path == runtime_action_path
+            and prefix_comparison["bitwise_equal"]
+            and transient_shape_match
+            and transient_finite
         )
         bitwise_pass = bool(
-            sequence_isomorphic
-            and prefix_comparison["bitwise_equal"]
-            and hidden_comparison["bitwise_equal"]
-            and head_comparison["bitwise_equal"]
+            conditioning_contract_pass
         )
         tolerance_pass = bool(
-            sequence_isomorphic
+            training_sequence_valid
+            and runtime_sequence_valid
             and prefix_comparison["allclose"]
-            and hidden_comparison["allclose"]
-            and head_comparison["allclose"]
+            and transient_shape_match
+            and transient_finite
         )
         return {
             "history_blocks": history_count,
@@ -465,14 +517,22 @@ def validate_incremental_action_equivalence(
                 key: float(value) for key, value in training_metrics.items()
             },
             "prefix_kv": prefix_comparison,
-            "hidden": hidden_comparison,
-            "head": head_comparison,
+            "transient_future_video": {
+                "training_tokens": training_transient_tokens,
+                "runtime_tokens": runtime_transient_tokens,
+                "shape_match": transient_shape_match,
+                "finite": bool(transient_finite),
+                "numeric_equality_expected": False,
+            },
             "sequence": {
                 "training": training_events,
                 "runtime": runtime_events,
                 "training_valid": training_sequence_valid,
                 "runtime_valid": runtime_sequence_valid,
-                "action_path_isomorphic": sequence_isomorphic,
+                "persistent_path_bitwise_equal": prefix_comparison[
+                    "bitwise_equal"
+                ],
+                "runtime_conditioning_valid": conditioning_contract_pass,
             },
             "runtime_memory": {
                 "completed_blocks": int(memory.completed_blocks),
@@ -499,11 +559,12 @@ def validate_incremental_packed_loss_equivalence(
     atol: float = 1e-3,
     rtol: float = 1e-3,
 ) -> dict[str, Any]:
-    """Compare rollout-ordered training with the one-shot causal reference.
+    """Compare the video-flow branch with the one-shot causal reference.
 
     Resetting the RNG before each program makes the video/action noise and
-    sampled timesteps identical.  The one-shot implementation is deliberately
-    retained outside the production path as an independent causal-mask oracle.
+    sampled timesteps identical. ActionDiT now has a distinct teacher-forced
+    video condition that the legacy packed oracle does not model, so this audit
+    explicitly isolates the unchanged video flow objective.
     """
 
     from leapbot_va.training import _packed_causal_history_reference_loss
@@ -521,8 +582,10 @@ def validate_incremental_packed_loss_equivalence(
 
     device = torch.device(model.device)
     was_training = bool(model.training)
+    original_action_lambda = float(model.loss_lambda_action)
     model.eval()
     try:
+        model.loss_lambda_action = 0.0
         _set_seed(seed, device)
         with torch.no_grad():
             incremental_total, incremental_metrics = model.training_loss(
@@ -534,23 +597,26 @@ def validate_incremental_packed_loss_equivalence(
                 model, sample, tiled=tiled
             )
     finally:
+        model.loss_lambda_action = original_action_lambda
         if was_training:
             model.train()
 
-    if set(incremental_metrics) != set(packed_metrics):
-        raise ValueError(
-            "metric key mismatch between incremental and packed programs: "
-            f"incremental={sorted(incremental_metrics)} "
-            f"packed={sorted(packed_metrics)}"
-        )
     total = compare_tensors(
         incremental_total.detach().reshape(1),
         packed_total.detach().reshape(1),
         atol=atol,
         rtol=rtol,
     )
+    metric_names = sorted(
+        name
+        for name in set(incremental_metrics) & set(packed_metrics)
+        if name.startswith("loss_video_d")
+        or name in {"history_blocks_mean", "history_blocks_max"}
+    )
+    if not any(name.startswith("loss_video_d") for name in metric_names):
+        raise ValueError("packed video-flow audit found no common video metric")
     metrics: dict[str, Any] = {}
-    for name in sorted(incremental_metrics):
+    for name in metric_names:
         incremental_value = torch.as_tensor(
             incremental_metrics[name], dtype=torch.float64
         ).reshape(1)
@@ -580,6 +646,7 @@ def validate_incremental_packed_loss_equivalence(
         )
     )
     return {
+        "scope": "video_flow_only",
         "seed": int(seed),
         "atol": float(atol),
         "rtol": float(rtol),

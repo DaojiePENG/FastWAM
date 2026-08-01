@@ -292,6 +292,25 @@ class LeapMemoryState:
     def selected_segments_for_action(self) -> Sequence[KVSegment]:
         return self.segments
 
+    def selected_segments_for_future_video(self) -> Sequence[KVSegment]:
+        """Return the causal real prefix for a same-block imagined video.
+
+        This differs from ``selected_segments_for_video`` only for the
+        action-aggregator ablation: ordinary observations are independently
+        encoded, while the future-video query must still read its current real
+        observation.
+        """
+
+        if not self.segments or self.segments[-1].modality != "video":
+            raise RuntimeError(
+                "future-video conditioning requires a pending real observation"
+            )
+        if self.config.causal_mode == "interleaved":
+            return self.segments
+        if self.config.causal_mode == "vision_causal":
+            return [segment for segment in self.segments if segment.modality == "video"]
+        return [self.segments[-1]]
+
     def materialize(
         self,
         segments: Iterable[KVSegment],
@@ -408,11 +427,15 @@ def build_block_causal_mask(
         ):
             if k_block > q_block:
                 continue
-            # Future-video supervision is transient.  It is visible only to
-            # future-video queries in the same block and can never become
-            # historical information for a real observation or ActionDiT.
+            # Same-block future video is a transient world-model condition.
+            # It is visible to its own video queries and to ActionDiT, but
+            # never to real observations and never after the replanning call.
             if k_future and not (
-                q_modality == "video" and q_future and k_block == q_block
+                k_block == q_block
+                and (
+                    (q_modality == "video" and q_future)
+                    or q_modality == "action"
+                )
             ):
                 continue
             if q_modality == "action":

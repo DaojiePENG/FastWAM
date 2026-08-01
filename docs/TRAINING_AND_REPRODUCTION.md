@@ -4,6 +4,11 @@
 
 所有结果必须同时保留代码 commit、资产 manifest、run contract、完整训练状态和评测 fingerprint。仅有一个 `.pt` 权重文件不足以证明一次实验可复现。
 
+> 当前交接状态：代码已经切换到 LingBot 风格未来视频 KV 条件；本机 GPU
+> 当前不可用，因此旧 H800 数字全部只能作为被废弃架构的历史记录。集群接手者
+> 必须先在本 commit 上跑 CPU 测试、真实 6B 等价检查和 ZeRO-2 容量探针，再冻结
+> B/GA。旧 LeapBot checkpoint、LR/H0 选择 manifest 和旧容量报告不得跨架构复用。
+
 ## 1. 先明确 H、B、GA 和“全历史”
 
 ### 1.1 历史长度 H
@@ -64,10 +69,11 @@ model.history_vae_batch_chunk_size=1
 正式训练按时间顺序执行：
 
 ```text
-V0 -> A0 -> V1 -> A1 -> ... -> VH -> 当前 A -> 未来视频监督
+V0 -> A0 -> V1 -> A1 -> ... -> VH -> 未来视频条件 C -> 当前 A
+                                      \-> 独立视频 target T -> video loss
 ```
 
-其中所有历史 `V/A` 均来自同一条真实轨迹。历史 K/V 不 detach、不压缩、不加门控，梯度可沿完整历史前缀反传，这就是这里的 full BPTT。未来视频仅用于 video flow-matching loss，位于动作分支之后，不能被当前动作读取，也不会进入持久 KV。
+其中所有历史 `V/A` 均来自同一条真实轨迹。历史 K/V 不 detach、不压缩、不加门控，梯度可沿完整历史前缀反传，这就是这里的 full BPTT。`C` 是 LingBot 风格的 GT/高噪声 GT teacher-forced 视频条件，ActionDiT 读取其逐层 KV；`T` 是独立加噪的 flow-matching target，绝不进入动作 prefix。两者都不进入跨轮持久 KV。
 
 三种 causal 模式分别是：
 
@@ -75,9 +81,26 @@ V0 -> A0 -> V1 -> A1 -> ... -> VH -> 当前 A -> 未来视频监督
 - `interleaved`：新视觉读取历史视觉和历史动作；
 - `vision_causal`：新视觉只读取历史视觉。
 
-三种模式中，当前动作都能读取历史视觉、历史动作、当前真实视觉以及当前双向动作块。详细 mask 关系见 [CAUSAL_MEMORY_MODES.md](./CAUSAL_MEMORY_MODES.md)。
+三种模式中，当前动作都能读取历史视觉、历史动作、当前真实视觉、本轮未来视频条件以及当前双向动作块。详细 mask 关系见 [CAUSAL_MEMORY_MODES.md](./CAUSAL_MEMORY_MODES.md)。
 
-训练期保留 FastWAM 的视频与动作联合 flow-matching；推理期只编码当前真实观测、做动作去噪并提交实际下发的动作。推理不生成未来视频，不调用视频输出头，也不做 VAE decode。
+训练和推理对真实 prefix 使用相同逐 segment 程序，但本轮未来视频的来源不同：
+
+| 内容 | 训练 | 在线推理 | 是否跨轮持久化 |
+|---|---|---|---|
+| 历史视觉 | 同 episode 真实边界帧 | 已提交真实观测 KV | 是 |
+| 历史动作 | demonstration 已执行动作 | 环境实际下发动作 | 是 |
+| 当前真实视觉 | 当前 GT 边界帧 | 相机当前帧 | 是 |
+| 未来视频条件 | 50% clean GT，50% high-noise GT | 从噪声经 VideoDiT 去噪生成 | 否 |
+| 视频 flow target | 独立 timestep/noise 的 GT target | 不存在 | 否 |
+| 当前动作 | noisy GT 动作做 FM loss | ActionDiT 去噪后执行前 10 步 | 仅实际执行部分 |
+
+Action loss 会通过未来条件 K/V 回传到 VideoDiT；视频 target 的独立随机噪声
+不会进入 action prefix。这样既保留物理世界模型的“想象未来再反推动作”，又不
+污染下一轮的真实历史。训练中使用 GT/noised-GT、推理中使用生成视频会形成
+condition distribution gap；50% 高噪声 teacher forcing 是当前明确采用的缓解，
+最终是否足够必须由 LIBERO rollout 而不是训练 loss 判定。
+
+训练期保留 FastWAM 的视频与动作 flow-matching；推理期先在 latent 空间生成未来视频、保存其临时 KV，再做动作去噪。推理会调用 VideoDiT 和视频输出投影，但不做 VAE decode；跨轮仍只提交真实观测和实际下发动作。
 
 ## 3. 正式入口清单
 
@@ -220,11 +243,11 @@ data/text_embeds_cache/libero/.leapbot_text_cache_provenance.json
 | T5 prompt context 与 mask | 离线预计算 | 训练时 `load_text_encoder=false`，避免每步加载和前向 11.36 GB T5 权重 |
 | release dataset stats | 官方预计算并复用 | 保持动作/proprio 归一化与 FastWAM 一致 |
 | 当前及每个历史真实观测的 VAE latent | 每步在线 | 严格使用 rollout 同构的 batch-one、T=1 编码；不使用历史 latent 离线近似 |
-| 未来视频监督 latent | 每步在线 | 对当前 T9 clip 在线编码，只服务 video flow-matching loss，不进入动作历史/KV |
+| 未来视频 latent | 每步在线 | 同一次 T9 VAE encode 同时提供独立 video target 与 GT/加噪 GT 动作条件；只有条件 K/V 进入本轮动作 prefix |
 | MP4 解码、双相机拼接、resize 和 normalize | 每步在线 | 数据 loader 的实际训练输入变换 |
 | 历史动作归一化、proprio 处理 | 每步在线 | 必须与对应真实轨迹和 release stats 一致 |
 | 历史视觉/动作 K/V | 训练时在线且保留计算图 | ActionDiT/VideoDiT 会更新；预计算 K/V 会使其 stale，并破坏 full BPTT |
-| 推理期历史 K/V | episode 内在线增量缓存 | 只来自真实观测和实际下发动作，episode 结束 reset |
+| 推理期历史 K/V | episode 内在线增量缓存 | 持久部分只来自真实观测和实际下发动作；生成视频 KV 只活到本轮动作完成 |
 
 所以，当前没有预计算历史图像特征或动作特征。训练慢的主要代价正是对完整真实前缀做在线 VAE 编码和全梯度 causal 前向；这是模型语义的一部分，不应通过 detached cache 偷换。
 
@@ -293,6 +316,44 @@ export WANDB_PROJECT="leapbot-va"
 export WANDB_ENABLED=true
 export WANDB_MODE=online
 ```
+
+### 8.0 当前架构的集群接手顺序
+
+不要从旧输出目录 resume。合作者拿到新的干净 commit 后按以下顺序执行：
+
+```bash
+uv sync --dev
+uv run pytest -q
+
+# 三种 mode 均需在目标 GPU/驱动/依赖栈上验收；先 B20，OOM 或余量不足再 B18。
+MODE=action_aggregator BATCH_SIZE=20 \
+  OUTPUT_DIR="$ROOT_DIR/runs/acceptance/current_action_aggregator_b20" \
+  bash scripts/probe_zero2_high_history_capacity.sh
+```
+
+容量通过并冻结 B/GA 与 update 预算后，可先按用户已选的 `1e-4` 直接训练一个
+`action_aggregator` 基线；该入口会上传 W&B，并把新世界模型条件写入合同：
+
+```bash
+MODE=action_aggregator \
+BATCH_SIZE=20 \
+GRAD_ACCUM=1 \
+MAX_STEPS=895 \
+SAVE_EVERY=179 \
+LEARNING_RATE=1.0e-4 \
+OUTPUT_DIR="$ROOT_DIR/runs/current_action_aggregator_lr1e-4" \
+WANDB_ENABLED=true WANDB_MODE=online \
+bash scripts/train_leapbot.sh
+```
+
+上面是 B20 探针通过后的 reference 示例；若探针要求 B18 或实验协议选择不同
+update 预算，应先统一修改并冻结三种 mode 的这些值，再启动任何正式 run。
+
+若目标是论文级三模式公平比较，则三种 mode 必须使用同一个已验收拓扑、同一
+update 数、seed 和 release 初始化；可以在三台 8 卡节点并行，但输出目录、端口和
+W&B run ID 必须隔离。旧 `lr-selection.json`/`h0-selection.json` 的 architecture
+contract 不匹配时必须重新生成或在实验协议中明确记录“用户固定 LR=1e-4”的
+直接入口，不能篡改旧 manifest。
 
 ### 8.1 学习率配对筛选
 
@@ -526,13 +587,16 @@ grep 'max_steps reached' "$CAUSAL_TRAIN_ROOT/action_aggregator/train.log"
 
 canonical launcher 在结束时会运行 `validate_leapbot_checkpoint.py` 并生成 `checkpoint_validation.json`。缺少该文件、final state 或 `max_steps reached` 日志的 run 不应进入正式评测。
 
-## 10. H800 实测资源与时长
+## 10. H800 历史实测与当前架构待验收资源
 
-以下数据均为 2026-07-31 当前实现。表中明确区分“实测”和“估计”；历史长度对时间/显存影响很大，不能用两个低 H step 外推完整训练承诺。
+以下数据均来自 2026-07-31 的旧 action-only 条件实现。当前版本在每轮 ActionDiT
+前新增未来视频去噪、video head 和临时逐层 KV，因此这些数字已整体失效：不能
+用于承诺当前显存、时延、吞吐或 loss，也不能据此直接批准 B20。保留本节仅用于
+解释旧日志来源；当前数值必须由接手集群在新 commit 上重测。
 
 ### 10.1 GPU、RAM 与吞吐
 
-| 场景 | 状态 | 观测 |
+| 场景 | 状态 | 观测（仅旧架构历史） |
 |---|---|---|
 | 历史验收：8卡 ZeRO-2，B8/GA2/global128，两步 smoke | 实测 | step1 Hmean=5.7109/Hmax=8，113s，日志累计 1.13 samples/s；step2 Hmean=2.0938/Hmax=4，46s，累计 1.61 samples/s；该结果证明旧拓扑链路，不是 B20 容量证据 |
 | 同一历史 B8/GA2 两步 smoke | 实测 | 峰值每卡 allocated 21.00 GiB，reserved 22.07 GiB；含资产合同、模型加载和 checkpoint 保存的总墙钟 5m31s；保留用于回归审计，不作为当前正式配方 |
@@ -582,7 +646,8 @@ Accelerate 未报告 skipped；最终还断言 `global_steps` 总 delta 恰好�
 单卡压力结果中峰值略高的 `vision_causal`。报告、输出目录默认名和
 `probe_contract.txt` 都绑定实际 `MODE`，不同模式的结果不得覆盖或混用。
 
-当前 release 数据对 B20 的确定性选择为 H44×8、H45×6、H46×2、
+capacity probe 已更新为当前未来视频条件训练程序。当前 release 数据对 B20
+的确定性选择为 H44×8、H45×6、H46×2、
 H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择和每 rank
 收到的数据行/H 列表都会写入报告，不能只凭配置推断。
 
@@ -609,7 +674,7 @@ scheduler/save 间隔和 run contract，不能从 global128 的 optimizer state 
 
 ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 3 个 dataloader workers、视频解码/预取、Python/模型元数据和系统 page cache。迁移到较小 RAM 节点时应实测，不应把 1.8 TiB 机器上的 available 数字当作最低要求。
 
-### 10.2 时间规划
+### 10.2 旧时间规划（不得用于当前承诺）
 
 | 阶段 | 当前估计 |
 |---|---|
@@ -621,6 +686,10 @@ ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 
 | LIBERO 评测/Pareto | 强依赖 simulator reset、任务 episode 长度和 inference steps；以 episode 数规划，不给未经实测的小时数 |
 
 正式训练启动后，应在 step 50 用 `train.log` 的累计 step/s、Hmean/Hmax 和最近窗口墙钟重新给 ETA。首个 step 包含 kernel/allocator warmup，不能单独用于外推。
+
+当前架构首次集群运行应先记录：两步容量探针峰值、首 10/50 optimizer steps 的
+P50 step time、H 分布、allocated/reserved 显存与主机 RAM。只有这些新数据才能
+替换上表，并用于估算单模式总时长。
 
 ### 10.3 磁盘
 
@@ -689,7 +758,7 @@ ZeRO-2 仍会在每卡复制全部模型参数，增加 GPU 数主要缩小 opti
 | 实际执行动作的后处理/重归一化 | `src/leapbot_va/libero.py`、`tests/test_libero_action_commit.py` |
 | ZeRO-2 拓扑、sampler、resume、W&B | `src/fastwam/trainer.py`、`src/fastwam/utils/samplers.py`、对应 trainer/sampler tests |
 | T5/VAE/tokenizer/cache 身份 | `src/leapbot_va/conditioning_assets.py`、`tests/test_conditioning_assets.py` |
-| 评测 fingerprint 和 Pareto | `src/leapbot_va/eval_fingerprint.py`、`experiments/leapbot/pareto.py` |
+| 评测 fingerprint、future-video 分段计时和 Pareto | `src/leapbot_va/eval_fingerprint.py`、`experiments/libero/eval_libero_single.py`、`experiments/leapbot/pareto.py` |
 
 每个新 commit 的最低 CPU 验收是：
 

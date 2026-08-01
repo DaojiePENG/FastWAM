@@ -405,7 +405,10 @@ def _predict_action_chunk(
     predicted_future_frames = None
     if memory is not None:
         if visualize_future_video:
-            raise ValueError("LeapBot memory inference never predicts/decodes future video")
+            raise ValueError(
+                "LeapBot uses future-video latents internally but never VAE-decodes "
+                "them in memory mode"
+            )
         infer_kwargs["memory"] = memory
         infer_kwargs["profile"] = True
     if visualize_future_video:
@@ -455,6 +458,7 @@ def _predict_action_chunk(
     return action, imgs, predicted_future_frames, {
         "timing": timing,
         "memory": pred.get("memory", {}),
+        "future_video_condition": pred.get("future_video_condition", {}),
     }
 
 
@@ -536,6 +540,7 @@ def run_single_episode(
         "enabled": memory_enabled,
         "replans": [],
         "peak_cache_bytes": 0,
+        "peak_transient_future_video_cache_bytes": 0,
     }
     if str(model_device).startswith("cuda"):
         torch.cuda.reset_peak_memory_stats(torch.device(model_device))
@@ -570,6 +575,15 @@ def run_single_episode(
             )
             memory_metrics["peak_cache_bytes"] = max(
                 int(memory_metrics["peak_cache_bytes"]), observation_cache_bytes
+            )
+            transient_future_cache_bytes = int(
+                inference_metrics.get("memory", {}).get(
+                    "transient_future_video_cache_bytes", 0
+                )
+            )
+            memory_metrics["peak_transient_future_video_cache_bytes"] = max(
+                int(memory_metrics["peak_transient_future_video_cache_bytes"]),
+                transient_future_cache_bytes,
             )
             if predicted_future_frames is not None:
                 current_replan_idx += 1

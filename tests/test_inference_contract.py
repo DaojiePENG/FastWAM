@@ -3,13 +3,15 @@ import inspect
 from leapbot_va.models.leapbot import LeapBotVA
 
 
-def test_memory_inference_has_no_future_video_or_decode_calls():
+def test_memory_inference_uses_transient_future_video_without_vae_decode():
     source = inspect.getsource(LeapBotVA.infer_action)
-    assert "infer_video_scheduler" not in source
+    assert "infer_video_scheduler" in source
+    assert "future_condition_kv" in source
     assert "_decode_latents" not in source
-    assert "video_exit_heads" not in source
     assert "infer_joint" not in source
     assert "first_frame_latents" in source
+    assert "append_observation" in source
+    assert "append_actions" not in source
 
 
 def test_prediction_is_transient_until_explicit_commit():

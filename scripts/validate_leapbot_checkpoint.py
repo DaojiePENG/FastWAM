@@ -44,6 +44,7 @@ def validate_checkpoint(
     expected_video_lora_multiplier: float = 1.0,
     expected_replan_steps: int = 10,
     expected_action_horizon: int = 32,
+    expected_num_video_frames: int = 9,
     expected_history_vae_batch_chunk_size: int | None = None,
     expected_trained_exit_depths: tuple[int, ...] = (30,),
     expected_run_contract_sha256: str | None = None,
@@ -69,6 +70,11 @@ def validate_checkpoint(
         "training_strategy": expected_training_strategy,
         "training_replan_steps": int(expected_replan_steps),
         "training_action_horizon": int(expected_action_horizon),
+        "training_num_video_frames": int(expected_num_video_frames),
+        "future_video_conditioning": "lingbot_teacher_forced_v1",
+        "future_video_condition_noise_probability": 0.5,
+        "future_video_condition_min_u": 0.5,
+        "future_video_condition_max_u": 1.0,
         "temporal_position_scheme": TEMPORAL_POSITION_SCHEME,
     }
     for key, expected in expected_metadata.items():
@@ -203,6 +209,7 @@ def main() -> None:
     parser.add_argument("--expected-video-lora-multiplier", type=float, default=1.0)
     parser.add_argument("--expected-replan-steps", type=int, default=10)
     parser.add_argument("--expected-action-horizon", type=int, default=32)
+    parser.add_argument("--expected-num-video-frames", type=int, default=9)
     parser.add_argument("--expected-history-vae-batch-chunk-size", type=int)
     parser.add_argument("--expected-trained-exit-depths", default="30")
     parser.add_argument("--expected-run-contract-sha256")
@@ -224,6 +231,7 @@ def main() -> None:
         expected_video_lora_multiplier=args.expected_video_lora_multiplier,
         expected_replan_steps=args.expected_replan_steps,
         expected_action_horizon=args.expected_action_horizon,
+        expected_num_video_frames=args.expected_num_video_frames,
         expected_history_vae_batch_chunk_size=(
             args.expected_history_vae_batch_chunk_size
         ),
