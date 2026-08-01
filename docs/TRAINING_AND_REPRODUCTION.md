@@ -128,12 +128,41 @@ condition distribution gap；50% 高噪声 teacher forcing 是当前明确采用
 
 ```bash
 su - sheng
-cd /home/sheng/workspace/leapbot-va
+mkdir -p /home/sheng/workspace
+cd /home/sheng/workspace
+
+# LeapBot-VA 的正式开发源必须是该仓库的 leapbot-va 分支。
+git clone -b leapbot-va --single-branch \
+  https://github.com/DaojiePENG/FastWAM.git leapbot-va
+cd leapbot-va
+git branch --show-current
+git remote -v
 export ROOT_DIR="$(git rev-parse --show-toplevel)"
 
 uv venv --python /usr/bin/python3.10 .venv
 uv sync --dev
 ```
+
+上面两条检查中，当前分支必须是 `leapbot-va`，`origin` 必须指向
+`https://github.com/DaojiePENG/FastWAM.git`。GitHub 上游
+`yuantianyuan01/FastWAM` 只用于参考 FastWAM 原始实现；需要时另设为
+`upstream`，不得替换正式开发源：
+
+```bash
+git remote add upstream https://github.com/yuantianyuan01/FastWAM.git
+```
+
+如果目录已经存在，不要重复 clone；在确认没有未提交改动后更新指定分支：
+
+```bash
+cd /home/sheng/workspace/leapbot-va
+git fetch origin leapbot-va
+git switch leapbot-va
+git pull --ff-only origin leapbot-va
+```
+
+正式训练必须从干净的 `leapbot-va` commit 启动。仅下载默认分支、上游仓库或
+源码压缩包，都不满足 run contract 的代码来源要求。
 
 核心版本由 `pyproject.toml`/`uv.lock` 固定，包括 PyTorch 2.7.1+cu128、Accelerate 1.12.0、DeepSpeed 0.18.5 和 W&B 0.23.1。新机器还需要：
 

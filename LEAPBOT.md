@@ -66,7 +66,33 @@ during rollout it is generated from noise. This train/runtime difference is
 intentional and is regularized by the 50% high-noise condition. The generated
 block is an ephemeral inverse-dynamics condition, not episode memory.
 
-## Environment and assets
+## Repository, environment, and assets
+
+LeapBot-VA development lives on the `leapbot-va` branch of
+[`DaojiePENG/FastWAM`](https://github.com/DaojiePENG/FastWAM). A new machine
+must clone that branch explicitly; cloning the default FastWAM branch does not
+produce a LeapBot-VA checkout.
+
+```bash
+mkdir -p /home/sheng/workspace
+cd /home/sheng/workspace
+git clone -b leapbot-va --single-branch \
+  https://github.com/DaojiePENG/FastWAM.git leapbot-va
+cd leapbot-va
+git branch --show-current  # must print: leapbot-va
+git remote -v              # origin must be DaojiePENG/FastWAM.git
+```
+
+The original FastWAM repository may be registered separately for read-only
+comparison and upstream synchronization:
+
+```bash
+git remote add upstream https://github.com/yuantianyuan01/FastWAM.git
+```
+
+Do not replace `origin` with the upstream repository, and do not train from
+`main`. Every formal run records the exact `leapbot-va` commit in its run
+contract.
 
 Commands in this workspace are intended to run as user `sheng`:
 

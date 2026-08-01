@@ -4,6 +4,12 @@
 detached prefix 或跨轮预测视频回灌。任何实验结论都必须来自对应 checkpoint
 和真实 LIBERO rollout，不能由本文档推断。
 
+本文对应
+[`DaojiePENG/FastWAM`](https://github.com/DaojiePENG/FastWAM) 的
+`leapbot-va` 开发分支；`yuantianyuan01/FastWAM` 是原始 FastWAM 上游参考，
+不是本实现的 clone/训练入口。完整下载和环境命令见
+[TRAINING_AND_REPRODUCTION.md](./TRAINING_AND_REPRODUCTION.md#4-环境准备)。
+
 ## 1. 闭环定义
 
 将 episode 按固定的 10 个控制步划分为重规划块
