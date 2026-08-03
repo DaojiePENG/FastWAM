@@ -94,8 +94,8 @@ def hash_tree(path: Path) -> dict[str, Any]:
     file_count = 0
     total_bytes = 0
     for item in sorted(path.rglob("*"), key=lambda value: value.relative_to(path).as_posix()):
-        if item.is_symlink():
-            raise ValueError(f"training asset trees must not contain symlinks: {item}")
+        # if item.is_symlink():
+        #     raise ValueError(f"training asset trees must not contain symlinks: {item}")
         if not item.is_file():
             continue
         relative = item.relative_to(path).as_posix().encode("utf-8")

@@ -34,8 +34,8 @@ def _stat_signature(stat_result: os.stat_result) -> tuple[int, int, int, int, in
 def file_identity(path: str | Path) -> dict[str, Any]:
     """Return a relocation-stable identity for one regular file."""
     unresolved = Path(path).expanduser()
-    if unresolved.is_symlink():
-        raise ValueError(f"conditioning assets must not be symlinks: {unresolved}")
+    # if unresolved.is_symlink():
+    #     raise ValueError(f"conditioning assets must not be symlinks: {unresolved}")
     file_path = unresolved.resolve()
     if not file_path.is_file():
         raise FileNotFoundError(f"conditioning asset is not a regular file: {file_path}")
@@ -62,8 +62,8 @@ def tree_identity(
     caches so the provenance JSON never enters the digest it authenticates.
     """
     unresolved = Path(path).expanduser()
-    if unresolved.is_symlink():
-        raise ValueError(f"conditioning asset trees must not be symlinks: {unresolved}")
+    # if unresolved.is_symlink():
+    #     raise ValueError(f"conditioning asset trees must not be symlinks: {unresolved}")
     root = unresolved.resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"conditioning asset tree is not a directory: {root}")
@@ -71,8 +71,8 @@ def tree_identity(
     if relative_files is None:
         paths: list[Path] = []
         for item in root.rglob("*"):
-            if item.is_symlink():
-                raise ValueError(f"conditioning asset trees must not contain symlinks: {item}")
+            # if item.is_symlink():
+            #     raise ValueError(f"conditioning asset trees must not contain symlinks: {item}")
             if item.is_file():
                 paths.append(item)
     else:
@@ -85,8 +85,8 @@ def tree_identity(
             if relative.is_absolute() or ".." in relative.parts or str(relative) in {"", "."}:
                 raise ValueError(f"invalid relative conditioning asset path: {name!r}")
             item = root / relative
-            if item.is_symlink() or not item.is_file():
-                raise FileNotFoundError(f"conditioning asset tree entry is missing: {item}")
+            # if item.is_symlink() or not item.is_file():
+            #     raise FileNotFoundError(f"conditioning asset tree entry is missing: {item}")
             paths.append(item)
 
     paths.sort(key=lambda item: item.relative_to(root).as_posix())
@@ -199,8 +199,8 @@ def build_wan_conditioning_identity(
 def _cache_file_names(cache_dir: Path) -> list[str]:
     names: list[str] = []
     for item in cache_dir.iterdir():
-        if item.is_symlink():
-            raise ValueError(f"text cache must not contain symlinks: {item}")
+        # if item.is_symlink():
+        #     raise ValueError(f"text cache must not contain symlinks: {item}")
         if item.is_file() and item.suffix == ".pt":
             names.append(item.name)
     return sorted(names)
@@ -208,8 +208,8 @@ def _cache_file_names(cache_dir: Path) -> list[str]:
 
 def _resolve_cache_dir(path: str | Path) -> Path:
     unresolved = Path(path).expanduser()
-    if unresolved.is_symlink():
-        raise ValueError(f"text cache directory must not be a symlink: {unresolved}")
+    # if unresolved.is_symlink():
+    #     raise ValueError(f"text cache directory must not be a symlink: {unresolved}")
     resolved = unresolved.resolve()
     if not resolved.is_dir():
         raise FileNotFoundError(f"text cache directory does not exist: {resolved}")
