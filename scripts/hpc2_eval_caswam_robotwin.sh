@@ -53,6 +53,7 @@ echo "============================================"
 
 # ── Environment ──
 module load cuda/12.1
+module load ffmpeg
 module load anaconda3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate fastwam-robotwin

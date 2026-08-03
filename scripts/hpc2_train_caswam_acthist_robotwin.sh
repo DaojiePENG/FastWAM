@@ -12,6 +12,7 @@
 
 # ==================== 环境配置 ====================
 module load cuda/12.8
+module load ffmpeg
 module load anaconda3
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate fastwam

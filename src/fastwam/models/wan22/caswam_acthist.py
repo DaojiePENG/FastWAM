@@ -320,14 +320,12 @@ class CasWAMActHist(CasWAM):
                 history_kv_cache=history_kv,
                 return_action_kv=True,
             )
-            act_tokens, act_kv_grad = act_out
+            act_tokens, _act_kv_grad = act_out
             pred_a = self.action_expert.post_dit(act_tokens, action_pre)
             aw = self.train_action_scheduler.training_weight(timestep_action).to(
                 device=pred_a.device, dtype=pred_a.dtype)
             li = (_action_loss(pred_a, target_chunk, pad_chunk) * aw).mean()
 
-            # Per-step backward: free graph immediately to avoid OOM
-            act_kv_for_hist = [(k.detach(), v.detach()) for k, v in act_kv_grad]
             if _per_step_backward:
                 # [DIAGNOSTIC] Check for NaN before backward
                 if torch.isnan(li):
@@ -347,9 +345,38 @@ class CasWAMActHist(CasWAM):
                         logger.info(f"[NaN-DIAG] step_i=0: first_param.grad.norm={first_param.grad.norm().item():.6f}, grad_has_nan={torch.isnan(first_param.grad).any().item()}")
                 
                 loss_values.append(float(li.detach().item()))
-                del action_pre, act_out, act_tokens, act_kv_grad, pred_a, aw, li, attn_mask
             else:
                 loss_values.append(li)
+
+            # ── CLEAN action KV for history (matching inference t=1 semantics) ──
+            # During inference, action KV is collected at the LAST denoising step
+            # where the input is the fully-denoised CLEAN action.  Using noisy
+            # action KV during training creates a train-inference distribution
+            # mismatch that hurts HistoryAttention learning.
+            with torch.no_grad():
+                clean_action_chunk = action[:, a_start:a_end]
+                clean_t_act = torch.ones(batch_size, device=self.device, dtype=action.dtype)
+                action_pre_clean = self.action_expert.pre_dit(
+                    action_tokens=clean_action_chunk, timestep=clean_t_act,
+                    context=context, context_mask=context_mask,
+                )
+                _, clean_act_kv = self.mot.forward_action_with_history_cache(
+                    action_tokens=action_pre_clean["tokens"],
+                    action_freqs=action_pre_clean["freqs"],
+                    action_t_mod=action_pre_clean["t_mod"],
+                    action_context_payload={
+                        "context": action_pre_clean["context"],
+                        "mask": action_pre_clean["context_mask"],
+                    },
+                    video_kv_cache=full_video_kv,
+                    attention_mask=attn_mask,
+                    video_seq_len=video_svl,
+                    history_kv_cache=history_kv,
+                    return_action_kv=True,
+                )
+                act_kv_for_hist = clean_act_kv  # no-grad, no detach needed
+
+            del action_pre, act_out, act_tokens, _act_kv_grad, pred_a, aw, li, attn_mask
 
             # — Append frame i's joint (video + action) KV to history —
             with torch.no_grad():
