@@ -123,6 +123,7 @@ def _launcher_environment(tmp_path: Path, launcher: str) -> tuple[dict[str, str]
     )
 
     env = os.environ.copy()
+    env.pop("BASH_ENV", None)#假 nvidia-smi 和 BASH_ENV=/etc/bash.bashrc 形成 Bash 递归启动，导致pid爆掉bash: fork: retry: Resource temporarily unavailable
     env.update(
         {
             "ROOT_DIR": str(root),
