@@ -4,8 +4,9 @@ set -euo pipefail
 
 # Evaluate the pinned FastWAM release baseline over all LIBERO-Long tasks.
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
 EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/fastwam_release_dev10}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"

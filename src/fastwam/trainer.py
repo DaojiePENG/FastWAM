@@ -972,6 +972,9 @@ class Wan22Trainer:
 
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
+                step_aware_model = self.accelerator.unwrap_model(self.model)
+                if hasattr(step_aware_model, "set_training_step"):
+                    step_aware_model.set_training_step(self.global_step)
 
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)

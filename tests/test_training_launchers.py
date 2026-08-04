@@ -4,21 +4,15 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
-def test_canonical_shell_surface_is_executable_and_old_names_are_absent():
+def test_only_canonical_leapbot_shell_surface_remains():
     canonical = (
         "train_leapbot.sh",
-        "screen_learning_rate.sh",
-        "select_learning_rate.sh",
-        "audit_learning_rate.sh",
-        "screen_h0_retention.sh",
-        "audit_h0_retention.sh",
         "train_causal_modes.sh",
         "train_multi_exit.sh",
         "evaluate_causal_modes.sh",
         "evaluate_checkpoint.sh",
         "evaluate_fastwam_baseline.sh",
         "evaluate_pareto.sh",
-        "probe_zero2_high_history_capacity.sh",
     )
     for name in canonical:
         path = ROOT / "scripts" / name
@@ -26,18 +20,16 @@ def test_canonical_shell_surface_is_executable_and_old_names_are_absent():
         assert path.stat().st_mode & 0o111
 
     obsolete = (
-        "run_hierarchical_raw_v1_peft_5k.sh",
-        "run_paired_lr_screen.sh",
-        "run_paired_lr_audit.sh",
-        "run_paired_h0_retention_screen.sh",
-        "run_paired_h0_audit.sh",
-        "run_causal_full_bptt_comparison.sh",
-        "run_multi_exit_training.sh",
-        "run_phase1_eval_after_training.sh",
-        "run_single_mode_checkpoint_eval.sh",
-        "run_fastwam_baseline_dev.sh",
-        "run_depth_history_pareto.sh",
-        "run_final_50_trial_comparison.sh",
+        "screen_learning_rate.sh",
+        "select_learning_rate.sh",
+        "audit_learning_rate.sh",
+        "screen_h0_retention.sh",
+        "audit_h0_retention.sh",
+        "full_prefix_smoke.py",
+        "history_audit_selection.py",
+        "history_stratified_loss.py",
+        "probe_zero2_high_history_capacity.py",
+        "probe_zero2_high_history_capacity.sh",
     )
     assert not any((ROOT / "scripts" / name).exists() for name in obsolete)
 
@@ -59,211 +51,100 @@ def test_fastwam_legacy_wrappers_fail_closed_for_multi_node_topologies():
         assert "--num_machines" not in source
         assert "--machine_rank" not in source
 
-    readme = (ROOT / "README.md").read_text()
-    readme_zh = (ROOT / "README_zh.md").read_text()
-    assert "compatibility wrapper above supports one machine only" in readme
-    assert "64-GPU setup requires an external multi-node launcher" in readme
-    assert "上述兼容启动脚本仅支持单机" in readme_zh
 
-
-def test_base_launcher_contract_identifies_initial_weights_and_exit_set():
+def test_base_launcher_encodes_the_configurable_strict_window_training_contract():
     source = (ROOT / "scripts" / "train_leapbot.sh").read_text()
     assert 'INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-$RELEASE_CHECKPOINT}"' in source
-    assert '"initial_checkpoint_sha256=$INITIAL_CHECKPOINT_SHA256"' in source
-    assert 'TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"' in source
-    assert '"model.training_exit_depths=[$TRAINING_EXIT_DEPTHS_CSV]"' in source
-    assert '--expected-trained-exit-depths "$expected_training_exit_depths"' in source
-    assert "training_asset_manifest.py" in source
-    assert '"dataset_content_sha256=$DATASET_CONTENT_SHA256"' in source
-    assert '"text_embedding_cache_sha256=$TEXT_EMBEDDING_CACHE_SHA256"' in source
-    assert '"text_cache_provenance_sha256=$TEXT_CACHE_PROVENANCE_SHA256"' in source
-    assert '"text_cache_verification_method=$TEXT_CACHE_VERIFICATION_METHOD"' in source
-    assert '"text_cache_verified_file_count=$TEXT_CACHE_VERIFIED_FILE_COUNT"' in source
-    assert '"text_encoder_checkpoint_sha256=$TEXT_ENCODER_CHECKPOINT_SHA256"' in source
-    assert '"tokenizer_sha256=$TOKENIZER_SHA256"' in source
-    assert '"vae_checkpoint_sha256=$VAE_CHECKPOINT_SHA256"' in source
-    assert 'DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"' in source
-    assert 'flock -s "$TEXT_CACHE_LOCK_FD"' in source
-    assert '"data.train.text_embedding_cache_dir=$TEXT_EMBEDDING_CACHE"' in source
-    assert '"data.train.dataset_dirs=[$ROOT_DIR/data/' in source
-    assert 'ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT"' in source
-    assert 'RELEASE_CHECKPOINT_SHA256="$ACTUAL_RELEASE_CHECKPOINT_SHA256"' in source
-    assert '"padding_attention_mask=true"' in source
-    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
-    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert 'HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"' in source
+    assert '[[ "$HISTORY_WINDOW_BLOCKS" =~ ^[1-9][0-9]*$ ]]' in source
+    assert '"$HISTORY_WINDOW_BLOCKS" != "8"' not in source
     assert 'LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"' in source
     assert 'INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"' in source
-    assert '"h0_anchor_mixing=per_global_micro_batch"' in source
-    assert 'TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"' in source
-    assert "${TOPOLOGY_TAG}" in source
-    assert "mb8_ga2" not in source
-    assert "mb8-ga2" not in source
-    assert "full_bptt_v4" not in source
-    assert "full-bptt-v4" not in source
+    assert 'TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"' in source
+    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
+    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert "model.history_training_mode=strict_replay_window_bptt" in source
+    assert '"model.history_window_blocks=$HISTORY_WINDOW_BLOCKS"' in source
+    assert '"data.train.history_window_blocks=$HISTORY_WINDOW_BLOCKS"' in source
+    assert "data.train.history_sampling_mode=recent_window" in source
+    assert "data.train.use_episode_anchor=true" in source
+    assert "history_padding=left_masked" in source
+    assert "episode_anchor=single_real_v0" in source
+    assert "future_video_condition_clean_warmup_steps" in source
+    assert "future_video_condition_noise_ramp_steps" in source
+    assert "training_asset_manifest.py" in source
+    assert 'flock -s "$TEXT_CACHE_LOCK_FD"' in source
+    assert 'DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"' in source
+    assert '"padding_attention_mask=true"' in source
+    assert "LR_SELECTION_MANIFEST" not in source
+    assert "H0_SELECTION_MANIFEST" not in source
 
 
-def test_multi_exit_launcher_requires_winner_and_all_four_exits():
+def test_causal_comparison_fixes_every_factor_except_causal_mode():
+    source = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
+    assert 'SELECTED_LR="${LEARNING_RATE:-1.0e-4}"' in source
+    assert 'MAX_STEPS="${MAX_STEPS:-5000}"' in source
+    assert 'SAVE_EVERY="${SAVE_EVERY:-179}"' in source
+    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
+    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
+    assert 'NUM_PROCESSES="${NUM_PROCESSES:-8}"' in source
+    assert 'MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"' in source
+    assert "history_training_mode=strict_replay_window_bptt" in source
+    assert "history_sampling_mode=recent_window" in source
+    assert 'HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"' in source
+    assert 'history_window_blocks=$HISTORY_WINDOW_BLOCKS' in source
+    assert "padding_attention_mask=true" in source
+    assert "training_exit_depths=30" in source
+    assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
+    assert "LR_SELECTION_MANIFEST" not in source
+    assert "H0_SELECTION_MANIFEST" not in source
+
+
+def test_multi_exit_launcher_inherits_a_validated_strict_window_winner():
     source = (ROOT / "scripts" / "train_multi_exit.sh").read_text()
     assert 'SOURCE_TRAIN_ROOT="${SOURCE_TRAIN_ROOT:?' in source
     assert 'INITIAL_CHECKPOINT="$SOURCE_CHECKPOINT"' in source
     assert "TRAINING_EXIT_DEPTHS_CSV=8,16,24,30" in source
     assert "--expected-trained-exit-depths 30" in source
-    assert "--expected-history-vae-batch-chunk-size 1" in source
+    assert '--expected-history-window-blocks "$HISTORY_WINDOW_BLOCKS"' in source
+    assert "history_training_mode=strict_replay_window_bptt" in source
+    assert "history_sampling_mode=recent_window" in source
+    assert 'history_window_blocks="$HISTORY_WINDOW_BLOCKS"' in source
+    assert "history_padding=left_masked" in source
+    assert "episode_anchor=single_real_v0" in source
     assert '[[ "$NUM_PROCESSES" -ne 8 ]]' in source
     assert '[[ "$BATCH_SIZE" -ne 1 ]]' in source
     assert '[[ "$GRAD_ACCUM" -ne 16 ]]' in source
-    assert "history_training_mode=incremental_full_bptt" in source
-    assert "full_episode_history=true" in source
-    assert "padding_attention_mask=true" in source
-    assert "training_exit_depths=30" in source
-    assert "batch_size=20" in source
-    assert "gradient_accumulation_steps=1" in source
-    assert "global_batch=160" in source
-    assert "multi_exit_incremental_full_bptt_b1_ga16_bs128" in source
-    assert "^[0-9a-f]{64}$" in source
-    assert "^[0-9a-f]{40}$" in source
     assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
     assert 'SOURCE_CODE_COMMIT" != "$CURRENT_CODE_COMMIT' in source
     assert 'INITIAL_BLOCK_OVERSAMPLE="$(contract_value initial_block_oversample)"' in source
     assert 'MULTI_EXIT_LR="$(contract_value learning_rate)"' in source
     assert "SOURCE_ASSET_MANIFEST_SHA256" in source
-    assert "SOURCE_LR_SELECTION_SHA256" in source
-    assert "SOURCE_H0_SELECTION_SHA256" in source
     assert "EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" in source
+    assert "SOURCE_LR_SELECTION_SHA256" not in source
+    assert "SOURCE_H0_SELECTION_SHA256" not in source
 
 
-def test_formal_causal_comparison_requires_self_identifying_checkpoints():
-    source = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
-    assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
-    assert 'LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?' in source
-    assert 'H0_SELECTION_MANIFEST="${H0_SELECTION_MANIFEST:?' in source
-    assert "--expected-kind learning_rate" in source
-    assert "--expected-kind initial_block_oversample" in source
-    assert "lr_selection_manifest_sha256" in source
-    assert "h0_selection_manifest_sha256" in source
-    assert "causal_lingbot_video_kv_v6_b20_ga1" in source
-    assert "causal-lingbot-video-kv-v6-b20-ga1" in source
-    assert 'BATCH_SIZE="${BATCH_SIZE:-20}"' in source
-    assert 'GRAD_ACCUM="${GRAD_ACCUM:-1}"' in source
-    assert 'MAX_STEPS="${MAX_STEPS:-895}"' in source
-    assert 'SAVE_EVERY="${SAVE_EVERY:-179}"' in source
-    assert '[[ "$BATCH_SIZE" -ne 20 ]]' in source
-    assert '[[ "$GRAD_ACCUM" -ne 1 ]]' in source
-    assert '[[ "$GLOBAL_BATCH" -ne 160 ]]' in source
-    assert "mb8_ga2" not in source
-    assert "mb8-ga2" not in source
-    assert "full_bptt_v4" not in source
-    assert "full-bptt-v4" not in source
-
-
-def test_candidate_formal_budget_is_five_x1_epochs_and_fixed_under_h0_x4():
-    launcher = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
-    docs = (ROOT / "docs" / "TRAINING_AND_REPRODUCTION.md").read_text()
-
-    assert 'MAX_STEPS="${MAX_STEPS:-895}"' in launcher
-    assert 'SAVE_EVERY="${SAVE_EVERY:-179}"' in launcher
-    assert "ceil(28523 / 160) = 179" in docs
-    assert "`895` optimizer steps" in docs
-    assert "不是按扩增后的数据长度重算" in docs
-    assert "必须先" in docs and "H41--H50" in docs
-
-
-def test_h0_retention_screen_consumes_the_selected_lr():
-    source = (ROOT / "scripts" / "screen_h0_retention.sh").read_text()
-    assert 'LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?' in source
-    assert "--expected-kind learning_rate" in source
-    assert "--allowed-basis fixed_noise_audit" in source
-    assert "--allowed-basis user_directed" in source
-    assert 'LEARNING_RATE="$SELECTED_LR"' in source
-    assert "1.0e-5|1.0e-4" in source
-    assert 'LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"' not in source
-
-
-def test_user_directed_lr_entry_validates_only_selected_complete_step100_run():
-    source = (ROOT / "scripts" / "select_learning_rate.sh").read_text()
-    assert 'SELECTED_LR="${SELECTED_LR:-1.0e-4}"' in source
-    assert 'FINAL_STEP="${FINAL_STEP:-100}"' in source
-    assert 'SELECTION_REASON="${SELECTION_REASON:?' in source
-    assert 'USER_SELECTION_NOTE="${USER_SELECTION_NOTE:?' in source
-    assert "create-user-directed-learning-rate" in source
-    assert "--allowed-basis user_directed" in source
-    assert "audit_learning_rate.sh" not in source
-    assert "LOW_CHECKPOINT" not in source
-    assert "HIGH_CHECKPOINT" not in source
-    assert 'run_root="$SCREEN_ROOT/$run_name"' in source
-    assert 'state_dir="$run_root/checkpoints/state/$final_tag"' in source
-
-
-def test_lr_audit_is_fixed_noise_paired_and_runtime_isomorphic():
-    source = (ROOT / "scripts" / "audit_learning_rate.sh").read_text()
-    assert "[$RELEASE_CHECKPOINT,$LOW_CHECKPOINT,$HIGH_CHECKPOINT]" in source
-    assert "model.history_training_mode=incremental_full_bptt" in source
-    assert "model.history_vae_batch_chunk_size=1" in source
-    assert "[correct,masked,shuffled]" in source
-    assert "stratified.fixed_u_values" in source
-    assert "+stratified.noise_repeats=2" in source
-    assert "--expected-history-vae-batch-chunk-size 1" in source
-    assert "CANDIDATE_LEARNING_RATES=(1.0e-5 1.0e-4)" in source
-    assert 'contract_file="$candidate_root/run_contract.txt"' in source
-    assert '--expected-field "learning_rate=$learning_rate"' in source
-    assert "--expected-run-contract-sha256" in source
-    assert "--expected-code-commit" in source
-    assert "validate_run_contract_group.py" in source
-
-
-def test_h0_audit_validates_sampling_factor_and_uses_the_same_draw_contract():
-    source = (ROOT / "scripts" / "audit_h0_retention.sh").read_text()
-    assert 'LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?' in source
-    assert "--allowed-basis fixed_noise_audit" in source
-    assert "--allowed-basis user_directed" in source
-    assert "initial_block_oversample" in source
-    assert "[$RELEASE_CHECKPOINT,$X1_CHECKPOINT,$X4_CHECKPOINT]" in source
-    assert "[correct,masked,shuffled]" in source
-    assert "stratified.fixed_u_values" in source
-    assert "--expected-run-contract-sha256" in source
-
-
-def test_causal_training_explicitly_accepts_lr_basis_and_binds_manifest_sha():
-    source = (ROOT / "scripts" / "train_causal_modes.sh").read_text()
-    assert "--allowed-basis fixed_noise_audit" in source
-    assert "--allowed-basis user_directed" in source
-    assert 'LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST"' in source
-    assert 'LR_SELECTION_MANIFEST_SHA256="$LR_SELECTION_MANIFEST_SHA256"' in source
-    assert '"lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256"' in source
-
-
-def test_paired_screen_and_audit_defaults_use_v6_mb10_ga2_identity():
-    launchers = (
-        "screen_learning_rate.sh",
-        "audit_learning_rate.sh",
-        "screen_h0_retention.sh",
-        "audit_h0_retention.sh",
-    )
-    for launcher in launchers:
-        source = (ROOT / "scripts" / launcher).read_text()
-        assert "incremental_v6_mb10_ga2" in source
-        assert "incremental_v5" not in source
-        assert "incremental-v5" not in source
-    assert "lr-screen-incremental-v6-mb10-ga2" in (
-        ROOT / "scripts" / "screen_learning_rate.sh"
-    ).read_text()
-    assert "h0-retention-incremental-v6-mb10-ga2" in (
-        ROOT / "scripts" / "screen_h0_retention.sh"
-    ).read_text()
-
-
-def test_paired_screens_enforce_measured_b10_ga2_topology():
-    for launcher in (
-        "screen_learning_rate.sh",
-        "screen_h0_retention.sh",
+def test_formal_launchers_use_repository_relative_environment_paths():
+    for name in (
+        "train_leapbot.sh",
+        "train_causal_modes.sh",
+        "train_multi_exit.sh",
+        "evaluate_checkpoint.sh",
+        "evaluate_causal_modes.sh",
+        "evaluate_fastwam_baseline.sh",
+        "evaluate_pareto.sh",
     ):
-        source = (ROOT / "scripts" / launcher).read_text()
-        assert 'BATCH_SIZE="${BATCH_SIZE:-10}"' in source
-        assert 'GRAD_ACCUM="${GRAD_ACCUM:-2}"' in source
-        assert "REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true" in source
-        assert '[[ "$BATCH_SIZE" -ne 10 ]]' in source
-        assert '[[ "$GRAD_ACCUM" -ne 2 ]]' in source
-        assert 'WANDB_ENABLED="${WANDB_ENABLED:-true}"' in source
-        assert 'WANDB_MODE="${WANDB_MODE:-online}"' in source
-        assert 'WANDB_ENABLED="$WANDB_ENABLED"' in source
-        assert 'WANDB_MODE="$WANDB_MODE"' in source
+        source = (ROOT / "scripts" / name).read_text()
+        assert 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in source
+        assert "/home/sheng" not in source
+
+
+def test_reproduction_docs_describe_only_the_strict_window_recipe():
+    docs = (ROOT / "docs" / "TRAINING_AND_REPRODUCTION.md").read_text()
+    assert "strict_replay_window_bptt" in docs
+    assert "history_window_blocks=8" in docs
+    assert "左侧全 mask padding" in docs
+    assert "srun -p i64m1tga800u" in docs
+    assert "train_causal_modes.sh" in docs
+    assert "incremental_full_bptt` checkpoint" in docs

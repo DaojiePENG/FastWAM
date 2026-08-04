@@ -4,8 +4,10 @@ set -euo pipefail
 
 # Evaluate the three controlled causal modes and optional FastWAM baseline.
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
@@ -20,6 +22,7 @@ INCLUDE_BASELINE="${INCLUDE_BASELINE:-true}"
 VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-true}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-true}"
 REQUIRE_TRAINING_COMPLETE="${REQUIRE_TRAINING_COMPLETE:-true}"
+HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 
 MODES=(interleaved vision_causal action_aggregator)
 declare -A CHECKPOINT_BY_MODE
@@ -94,7 +97,7 @@ for mode in "${MODES[@]}"; do
         --contract "$mode=$TRAIN_ROOT/$mode/run_contract.txt"
     )
 done
-"$ROOT_DIR/.venv/bin/python" \
+"$PYTHON_BIN" \
     "$ROOT_DIR/scripts/validate_run_contract_group.py" \
     "${contract_args[@]}" \
     --expected-field "max_steps=$FINAL_STEP" \
@@ -115,12 +118,16 @@ for mode in "${MODES[@]}"; do
         printf 'Invalid training identity in %s\n' "$run_contract_file" >&2
         exit 2
     fi
-    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+    "$PYTHON_BIN" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
         "$(mode_checkpoint "$mode")" \
         --expected-step "$FINAL_STEP" \
         --expected-mode "$mode" \
         --expected-trained-exit-depths 30 \
         --expected-history-vae-batch-chunk-size 1 \
+        --expected-history-training-mode strict_replay_window_bptt \
+        --expected-history-window-blocks "$HISTORY_WINDOW_BLOCKS" \
+        --expected-condition-clean-warmup-steps 200 \
+        --expected-condition-noise-ramp-steps 800 \
         --expected-run-contract-sha256 "$expected_run_contract_sha256" \
         --expected-code-commit "$expected_code_commit" \
         --state-dir "$TRAIN_ROOT/$mode/checkpoints/state/$FINAL_STEP_TAG" \
@@ -171,12 +178,14 @@ build_mode_fingerprint() {
             "EVALUATION.memory.causal_mode=$mode"
             EVALUATION.memory.exit_depth=30
             EVALUATION.memory.max_history_blocks=70
+            EVALUATION.memory.history_storage_mode=strict_replay
+            "EVALUATION.memory.history_window_blocks=$HISTORY_WINDOW_BLOCKS"
             EVALUATION.memory.retained_history_blocks=null
         )
     fi
     mkdir -p "$(dirname "$expected")"
     PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
         --config-name "$config_name" \
         --output "$expected" \
         --checkpoint-sha256 "${CHECKPOINT_SHA256_BY_MODE[$mode]}" \
@@ -200,7 +209,7 @@ for mode in "${EVAL_MODES[@]}"; do
         for existing_result in "$EVAL_ROOT/$mode/libero_10"/gpu*_task"${task_id}"_results.json; do
             [[ -e "$existing_result" ]] || continue
             if ! PYTHONPATH="$ROOT_DIR/src" \
-                "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+                "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
                 "$existing_result" \
                 --expected "$(fingerprint_path "$mode" "$task_id")"; then
                 log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
@@ -242,13 +251,15 @@ run_task() {
             "EVALUATION.memory.causal_mode=$mode"
             "EVALUATION.memory.exit_depth=30"
             "EVALUATION.memory.max_history_blocks=70"
+            "EVALUATION.memory.history_storage_mode=strict_replay"
+            "EVALUATION.memory.history_window_blocks=$HISTORY_WINDOW_BLOCKS"
             "EVALUATION.memory.retained_history_blocks=null"
         )
     fi
     for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
         [[ -e "$existing_result" ]] || continue
         if [[ -s "$existing_result" ]] && PYTHONPATH="$ROOT_DIR/src" \
-            "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+            "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
             "$existing_result" \
             --expected "$expected_fingerprint"; then
             log "skip exact completed mode=$mode task=$task_id result=$existing_result"
@@ -269,7 +280,7 @@ run_task() {
         PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
         --config-name "$config_name" \
         "task=$task_choice" \
         "ckpt=$checkpoint" \
@@ -326,7 +337,7 @@ if (( failed )); then
     exit 1
 fi
 
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
+"$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/pareto.py" \
     "$EVAL_ROOT" \
     --output-dir "$EVAL_ROOT/pareto" \
     --expected-tasks 10 \

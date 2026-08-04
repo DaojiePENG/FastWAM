@@ -315,19 +315,25 @@ def result_matches_fingerprint(
             ):
                 return False
             if memory_enabled:
+                memory_contract = expected_normalized["runtime_contract"].get(
+                    "memory", {}
+                )
+                causal_components = [
+                    "conditioning_s",
+                    "observation_prefill_s",
+                    "future_video_setup_s",
+                    "future_video_denoise_s",
+                    "future_video_cache_s",
+                    "action_setup_s",
+                    "action_denoise_s",
+                    "causal_model_residual_s",
+                ]
+                if memory_contract.get("history_storage_mode") == "strict_replay":
+                    causal_components.insert(1, "history_replay_s")
                 if not _timing_group_closes(
                     timing,
                     total_field="causal_model_s",
-                    component_fields=(
-                        "conditioning_s",
-                        "observation_prefill_s",
-                        "future_video_setup_s",
-                        "future_video_denoise_s",
-                        "future_video_cache_s",
-                        "action_setup_s",
-                        "action_denoise_s",
-                        "causal_model_residual_s",
-                    ),
+                    component_fields=tuple(causal_components),
                 ):
                     return False
                 commit = replan.get("commit")

@@ -18,9 +18,10 @@ from leapbot_va.data import (
 )
 
 
-def test_causal_dataset_defaults_to_complete_episode_history():
+def test_causal_dataset_has_an_explicit_recent_window_sampling_mode():
     signature = inspect.signature(LeapRobotVideoDataset)
     assert signature.parameters["full_episode_history"].default is True
+    assert signature.parameters["history_sampling_mode"].default is None
     assert signature.parameters["max_history_blocks"].default == 70
 
 
@@ -322,3 +323,71 @@ def test_causal_dataset_rejects_padding_in_any_real_history_source():
         assert "episode_step=4" in message
         assert f"field={field}" in message
         assert f"source_slots=[{source_slot}]" in message
+
+
+class _MappedLeRobotSamples:
+    def __init__(self, samples):
+        self.samples = samples
+
+    def __getitem__(self, mapped_idx):
+        return self.samples[mapped_idx]
+
+
+def test_strict_dataset_loads_recent_suffix_and_v0_once_without_frame_repetition():
+    current = {
+        "idx": 17,
+        "pixel_values": torch.arange(
+            1 * 6 * 3 * 2 * 2, dtype=torch.float32
+        ).reshape(1, 6, 3, 2, 2),
+        "image_is_pad": torch.tensor([False, False, False, True, True, True]),
+        "action": torch.arange(6 * 3, dtype=torch.float32).reshape(6, 3),
+        "action_is_pad": torch.tensor([False, False, False, False, True, True]),
+        "proprio": torch.arange(6 * 2, dtype=torch.float32).reshape(6, 2),
+        "proprio_is_pad": torch.tensor([False, False, False, True, True, True]),
+        "instruction": "move the object",
+    }
+    anchor = {
+        **current,
+        "idx": 10,
+        "pixel_values": current["pixel_values"] + 1000.0,
+        "image_is_pad": torch.tensor([True, False, False, True, True, True]),
+        "proprio_is_pad": torch.tensor([True, False, False, True, True, True]),
+    }
+    dataset = object.__new__(LeapRobotVideoDataset)
+    dataset.lerobot_dataset = _MappedLeRobotSamples({17: current, 10: anchor})
+    dataset._valid_replan_indices = [17]
+    dataset._episode_step = {17: 4}
+    dataset._episode_start = {17: 10}
+    dataset.max_history_blocks = 70
+    dataset.min_history_blocks = 0
+    dataset.history_window_blocks = 1
+    dataset.history_storage_blocks = 1
+    dataset.replan_steps = 2
+    dataset.history_action_steps = 2
+    dataset.full_episode_history = True
+    dataset.use_episode_anchor = True
+    dataset.video_sample_indices = [0, 2, 4]
+    dataset.num_frames = 5
+    dataset.override_instruction = None
+    dataset._format_camera_video = lambda full_video, indices: full_video[
+        0, indices
+    ].permute(1, 0, 2, 3)
+    dataset._get_cached_text_context = lambda instruction: (
+        torch.zeros(3, 4),
+        torch.tensor([True, True, False]),
+    )
+
+    output = dataset._get(0)
+    assert output["history_valid_blocks"].tolist() == [True]
+    assert output["history_block_positions"].tolist() == [1]
+    assert output["current_block_position"].item() == 2
+    assert not output["full_episode_history"].item()
+    assert output["history_window_blocks"].item() == 1
+    assert output["episode_anchor_valid"].item()
+    torch.testing.assert_close(
+        output["episode_anchor_video"],
+        dataset._format_camera_video(anchor["pixel_values"], [1]),
+    )
+    assert not torch.equal(
+        output["episode_anchor_video"], output["history_video"]
+    )

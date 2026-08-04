@@ -17,6 +17,7 @@ from leapbot_va.eval_fingerprint import normalize_json_value, sha256_file
 
 
 KV_RETENTION_SEMANTICS = "physical_kv_blocks_recursive_prefix"
+STRICT_REPLAY_SEMANTICS = "strict_replay_real_window_plus_optional_v0_anchor"
 
 
 def _to_resolved_container(value: Any) -> Any:
@@ -190,15 +191,35 @@ def build_runtime_contract(
         int(memory_cfg.get("max_history_blocks", 0)) if memory_enabled else 0
     )
     retained = memory_cfg.get("retained_history_blocks", None) if memory_enabled else 0
+    history_storage_mode = (
+        str(memory_cfg.get("history_storage_mode", "incremental_kv"))
+        if memory_enabled
+        else "disabled"
+    )
+    history_window_blocks = (
+        int(memory_cfg.get("history_window_blocks", 0)) if memory_enabled else 0
+    )
     if retained is not None:
         retained = int(retained)
     if episode_capacity < 0 or (retained is not None and retained < 0):
         raise ValueError("memory capacity/retention must be non-negative")
     if retained is not None and retained > episode_capacity:
         raise ValueError("retained_history_blocks cannot exceed max_history_blocks")
-    effective_kv_retention_cap = (
-        episode_capacity if retained is None else int(retained)
-    )
+    if history_storage_mode not in ("incremental_kv", "strict_replay", "disabled"):
+        raise ValueError(f"unsupported memory history_storage_mode: {history_storage_mode}")
+    if history_storage_mode == "strict_replay":
+        if history_window_blocks <= 0 or history_window_blocks > episode_capacity:
+            raise ValueError(
+                "strict replay history_window_blocks must be in "
+                "[1,max_history_blocks]"
+            )
+        effective_kv_retention_cap = history_window_blocks
+        retention_semantics = STRICT_REPLAY_SEMANTICS
+    else:
+        effective_kv_retention_cap = (
+            episode_capacity if retained is None else int(retained)
+        )
+        retention_semantics = KV_RETENTION_SEMANTICS
 
     action_horizon_raw = evaluation.get("action_horizon", None)
     action_horizon = (
@@ -291,10 +312,15 @@ def build_runtime_contract(
             "exit_depth": int(memory_cfg.get("exit_depth", 0)) if memory_enabled else 0,
             "episode_capacity": episode_capacity,
             "retained_history_blocks": retained,
-            "retention_semantics": KV_RETENTION_SEMANTICS,
+            "history_storage_mode": history_storage_mode,
+            "history_window_blocks": history_window_blocks,
+            "episode_anchor": (
+                "single_real_v0" if history_storage_mode == "strict_replay" else None
+            ),
+            "retention_semantics": retention_semantics,
             "effective_kv_retention_cap": effective_kv_retention_cap,
-            # Compatibility alias. This is not a strict information window:
-            # retained high-layer K/V recursively encode earlier prefixes.
+            # Compatibility alias. Under strict_replay this is a real
+            # information window; incremental_kv remains recursively encoded.
             "effective_history_cap": effective_kv_retention_cap,
         },
         "input": {

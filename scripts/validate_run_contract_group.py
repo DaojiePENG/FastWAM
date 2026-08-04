@@ -50,13 +50,18 @@ _REQUIRED_FIELDS = (
     "future_video_condition_noise_probability",
     "future_video_condition_min_u",
     "future_video_condition_max_u",
+    "future_video_condition_clean_warmup_steps",
+    "future_video_condition_noise_ramp_steps",
     "initial_block_oversample",
     "h0_anchor_mixing",
     "save_every",
     "seed",
     "padding_attention_mask",
     "history_training_mode",
-    "full_episode_history",
+    "history_sampling_mode",
+    "history_window_blocks",
+    "history_padding",
+    "episode_anchor",
     "max_history_blocks",
     "replan_steps",
     "action_horizon",
@@ -134,8 +139,11 @@ def _validate_semantics(contract: RunContract) -> None:
         "text_cache_verified_file_count",
         "history_vae_batch_chunk_size",
         "num_video_frames",
+        "future_video_condition_clean_warmup_steps",
+        "future_video_condition_noise_ramp_steps",
         "initial_block_oversample",
         "save_every",
+        "history_window_blocks",
         "max_history_blocks",
         "replan_steps",
         "action_horizon",
@@ -185,6 +193,20 @@ def _validate_semantics(contract: RunContract) -> None:
             "padding_attention_mask must be exactly 'true', got "
             f"{values['padding_attention_mask']!r}"
         )
+    if values["history_training_mode"] != "strict_replay_window_bptt":
+        raise ValueError(
+            "history_training_mode must be strict_replay_window_bptt"
+        )
+    if values["history_sampling_mode"] != "recent_window":
+        raise ValueError("history_sampling_mode must be recent_window")
+    if int(values["history_window_blocks"]) > int(values["max_history_blocks"]):
+        raise ValueError(
+            "history_window_blocks cannot exceed max_history_blocks"
+        )
+    if values["history_padding"] != "left_masked":
+        raise ValueError("history_padding must be left_masked")
+    if values["episode_anchor"] != "single_real_v0":
+        raise ValueError("episode_anchor must be single_real_v0")
     if values["h0_anchor_mixing"] != "per_global_micro_batch":
         raise ValueError(
             "h0_anchor_mixing must be exactly 'per_global_micro_batch', got "

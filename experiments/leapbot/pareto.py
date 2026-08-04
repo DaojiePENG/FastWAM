@@ -10,7 +10,10 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-from leapbot_va.eval_contract import KV_RETENTION_SEMANTICS
+from leapbot_va.eval_contract import (
+    KV_RETENTION_SEMANTICS,
+    STRICT_REPLAY_SEMANTICS,
+)
 from leapbot_va.eval_fingerprint import normalize_evaluation_fingerprint
 
 
@@ -39,11 +42,17 @@ def _validated_kv_retention_contract(
 
     if not isinstance(memory, dict):
         raise TypeError(f"{context}: runtime memory contract must be an object")
+    storage_mode = memory.get("history_storage_mode", "incremental_kv")
+    expected_semantics = (
+        STRICT_REPLAY_SEMANTICS
+        if storage_mode == "strict_replay"
+        else KV_RETENTION_SEMANTICS
+    )
     semantics = memory.get("retention_semantics")
-    if semantics != KV_RETENTION_SEMANTICS:
+    if semantics != expected_semantics:
         raise ValueError(
             f"{context}: memory.retention_semantics must be "
-            f"{KV_RETENTION_SEMANTICS!r}, got {semantics!r}"
+            f"{expected_semantics!r}, got {semantics!r}"
         )
 
     integer_fields = (
@@ -74,7 +83,21 @@ def _validated_kv_retention_contract(
             f"{context}: memory.retained_history_blocks cannot exceed "
             "memory.episode_capacity"
         )
-    expected_cap = episode_capacity if retained is None else retained
+    if storage_mode == "strict_replay":
+        history_window = memory.get("history_window_blocks")
+        if (
+            isinstance(history_window, bool)
+            or not isinstance(history_window, int)
+            or history_window <= 0
+            or history_window > episode_capacity
+        ):
+            raise ValueError(
+                f"{context}: strict replay history_window_blocks must be in "
+                "[1,episode_capacity]"
+            )
+        expected_cap = history_window
+    else:
+        expected_cap = episode_capacity if retained is None else retained
     kv_cap = values["effective_kv_retention_cap"]
     if kv_cap != expected_cap:
         raise ValueError(

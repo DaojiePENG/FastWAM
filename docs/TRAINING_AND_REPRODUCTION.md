@@ -1,883 +1,263 @@
-# LeapBot-VA 训练、评测与集群复现手册
+# LeapBot-VA 严格窗口训练、评测与集群复现
 
-本文面向两类读者：当前 8×H800 服务器的操作者，以及之后接手代码、在更大单机或多机集群上复现实验的工程师。文中的“正式训练”均指 `incremental_full_bptt` 完整历史方案；短历史随机窗口不是正式配方。
+本文是交给合作者的主操作文档。当前正式实现是 `strict-window-v7`，不再使用旧版“整段 episode 前缀持续累积 KV”的训练方式，也不再使用 H41–H50 容量探针。模型原理和三种 causal mask 见 [CAUSAL_MEMORY_MODES.md](./CAUSAL_MEMORY_MODES.md)。
 
-所有结果必须同时保留代码 commit、资产 manifest、run contract、完整训练状态和评测 fingerprint。仅有一个 `.pt` 权重文件不足以证明一次实验可复现。
+## 1. 当前冻结的 v7 契约
 
-> 当前交接状态：代码已经切换到 LingBot 风格未来视频 KV 条件；本机 GPU
-> 当前不可用，因此旧 H800 数字全部只能作为被废弃架构的历史记录。集群接手者
-> 必须先在本 commit 上跑 CPU 测试、真实 6B 等价检查和 ZeRO-2 容量探针，再冻结
-> B/GA。旧 LeapBot checkpoint、LR/H0 选择 manifest 和旧容量报告不得跨架构复用。
-
-## 1. 先明确 H、B、GA 和“全历史”
-
-### 1.1 历史长度 H
-
-`H` 是当前重规划点之前的真实历史块数。每个历史块包含：
-
-- 重规划边界处的一张真实双相机观测；
-- 该观测自己的 proprio；
-- 随后真实执行的 10 步动作。
-
-因此，`H=50` 表示当前样本读取此前 50 张真实重规划观测和 500 步真实已执行动作，不表示 batch size，也不表示预测 horizon。当前动作目标始终是 32 步，在线 rollout 最多执行并提交前 10 步。
-
-正式数据配置为：
+每 10 个控制步重规划一次，预测 32 步动作，只执行并提交前 10 步。当前块的信息流为：
 
 ```text
-data.train.full_episode_history=true
-data.train.min_history_blocks=0
+[可选的真实 V0 anchor]
+  -> [最近 W=8 个完整真实块: Vt -> At(executed)]
+  -> 当前真实 V
+  -> 当前未来视频条件 C
+  -> 当前 noisy action chunk
+```
+
+核心不变量如下：
+
+- `max_history_blocks=70` 只是 episode 的硬容量，即最多 700 个已执行控制步；
+- `history_window_blocks=8` 是默认训练和在线推理共同的信息窗口，即最近 80 个已执行动作；W 可通过 `HISTORY_WINDOW_BLOCKS` 调整，但每个 W 必须单独训练，评测值必须与 checkpoint 合同一致；
+- episode 开始历史不足 W 时使用左侧全 mask padding，不复制第一帧作为有效历史；
+- V0 离开最近窗口后只额外出现一次真实视觉 anchor，不重复 V0，不附带已经过期的 A0；
+- 历史视觉来自同轨迹的真实重规划观测，历史动作只来自 demonstration 或环境实际下发的命令；
+- 在线端保存真实单帧 VAE latent、对应上下文/proprio 和已执行动作，每轮重新计算窗口内 KV；
+- 只删除最老 KV、保留吸收过旧信息的新 KV 不叫严格窗口，v7 禁止这样做；
+- 当前未来视频 KV 是本轮 ActionDiT 的临时条件，绝不写入跨轮 memory；
+- 未执行的后 22 个预测动作绝不进入 memory；
+- episode 若在 chunk 中途结束，只提交实际执行的 1–9 步并立即 reset；这种 partial block 不能接下一观测；
+- 窗口内部不 detach、不加门控，Action loss 可以沿完整 W 和当前未来视频条件反传。
+
+正式配置为：
+
+```text
+model.history_training_mode=strict_replay_window_bptt
+model.history_window_blocks=8
+data.train.history_sampling_mode=recent_window
+data.train.history_window_blocks=8
+data.train.use_episode_anchor=true
 data.train.max_history_blocks=70
-model.history_training_mode=incremental_full_bptt
-model.history_vae_batch_chunk_size=1
 ```
 
-对 episode 中位于第 `k` 个重规划边界的样本，训练输入就是从 episode 开始到当前时刻的完整前缀，故 `H=k`。它不是从 `0–8` 中随机截取。当前 FastWAM release 版 LIBERO 训练数据的真实最长前缀为 `H=50`；`70` 是容量和推理上限，训练集没有凭空生成 `H=51–69` 的真实轨迹。代码仍保留短窗口 ablation 能力，但 canonical production pipeline 没有对应 launcher，本次正式结果也不运行 0–8/0–16 短窗口实验。
+`recent_window` 在同一 episode 中确定性选择所有可用的最近窗口，不会随机丢弃窗口内历史。日志中的 `history_blocks_mean` 因而位于 0–8：它是该 batch 中实际有效的最近历史块均值，不是随机截断开关。
 
-日志中早期出现 `history_blocks_max=8` 只说明该 optimizer step 恰好抽到的最长样本是 H8，不说明训练配置被限制成 0–8。长度感知 sampler 会把相近 H 的样本放入同一 global micro-batch 以减轻分布式 straggler，但会先随机打乱完整数据集，不实施历史课程学习。
+## 2. Future-video 条件和 loss 诊断
 
-`H41–H50, B10` 是显存压力测试的写法：一个微批里放入 10 个不同的真实样本，其 H 分别为 41、42、…、50；`B10` 表示该 rank 的 micro-batch size 为 10。它不是正式训练的历史范围设置。
+训练保留 FastWAM 的 video/action flow-matching。ActionDiT 可以读取当前未来视频条件的逐层 KV，但 video flow target 使用独立噪声分支，不能泄漏到 action prefix。
 
-### 1.2 B、GA、world size 与 global batch
-
-本文约定：
-
-- `B` 或 `batch_size`：每个 GPU/rank 每次前向的样本数；
-- `GA` 或 `gradient_accumulation_steps`：累计多少个 micro-batch 后做一次 optimizer step；
-- `world_size`：参与本次训练的 GPU/rank 数；
-- `global_batch = B × GA × world_size`。
-
-当前正式拓扑如下：
-
-| 阶段 | 并行方式 | 每个 run 的 world size | B | GA | 每个 run 的 global batch | 深度 |
-|---|---|---:|---:|---:|---:|---:|
-| 学习率配对筛选 | 两个 run 并发，各占 4 卡 | 4 | 10 | 2 | 80 | D30 |
-| H0 保真配对筛选 | 两个 run 并发，各占 4 卡 | 4 | 10 | 2 | 80 | D30 |
-| 三种 causal 模式候选正式训练 | 三个 run 顺序运行，各用 8 卡 | 8 | 20 | 1 | 160 | D30 |
-| 多出口训练 | 一个 8 卡 run | 8 | 1 | 16 | 128 | D8/16/24/30 |
-
-每次 optimizer step 都是完整 global batch。`ResumableEpochSampler` 会把 epoch 尾部确定性补齐到 `B × GA × world_size` 的整数倍，避免 Accelerate 在 dataloader 结尾提前同步一个不足 global batch 的更新。
-
-表中的 D30 `B20/GA1/global160` 是为了充分使用 80 GiB H800 而准备的候选
-正式拓扑，不是仅凭静态配置就已经冻结的结果。它必须先在目标硬件、目标 mode 和
-同一代码 commit 上通过第 10.1 节的真实 H41--H50 ZeRO-2 容量探针，确认无 OOM、
-两次 optimizer update 都真实提交且没有写 checkpoint，之后才能启动该 mode 的
-正式训练。若探针失败，必须形成新的 B/GA/global-batch 协议并重新计算步数，不能
-绕过 launcher guard。
-
-## 2. 模型和训练不变量
-
-正式训练按时间顺序执行：
+条件课程是：
 
 ```text
-V0 -> A0 -> V1 -> A1 -> ... -> VH -> 未来视频条件 C -> 当前 A
-                                      \-> 独立视频 target T -> video loss
+step 0..199:       只用 clean GT future condition
+step 200..999:     noised-condition 概率从 0 线性升到 0.5
+step >=1000:       50% clean GT + 50% noised GT
+noised GT 的 u:    [0.5, 1.0]
 ```
 
-其中所有历史 `V/A` 均来自同一条真实轨迹。历史 K/V 不 detach、不压缩、不加门控，梯度可沿完整历史前缀反传，这就是这里的 full BPTT。`C` 是 LingBot 风格的 GT/高噪声 GT teacher-forced 视频条件，ActionDiT 读取其逐层 KV；`T` 是独立加噪的 flow-matching target，绝不进入动作 prefix。两者都不进入跨轮持久 KV。
+这是输入分布课程，不是 attention gate。在线推理仍从噪声经 VideoDiT 去噪得到当前未来条件，然后生成动作；不调用 VAE decode。
 
-三种 causal 模式分别是：
+W&B 中重点看：
 
-- `action_aggregator`：每张视觉独立编码，ActionDiT 汇聚全部历史视觉和动作；
-- `interleaved`：新视觉读取历史视觉和历史动作；
-- `vision_causal`：新视觉只读取历史视觉。
+- `train/loss_action_d30`：30 层出口的当前 32 步 action FM loss；`d30` 是深度，不是 30 步预测；
+- `train/loss_action_d30_ema`：上述指标的指数滑动平均；
+- `train/loss_action_d30_condition_clean` 与 `_condition_noised`：区分 clean/noised future condition；
+- `train/loss_action_d30_h0`、`h1_4`、`h5_8`：区分有效历史长度；
+- `train/loss_action_d30_h5_8_condition_noised` 等：历史长度与条件类型的联合诊断；
+- `train/future_video_condition_noise_probability`：课程当前目标概率；
+- `train/future_video_condition_noised_fraction`：本次实际抽样比例；
+- `train/history_blocks_mean`：batch 内真实有效 recent blocks 的均值；
+- `train/episode_anchor_fraction`：V0 已离开窗口、因此启用一次 anchor 的样本比例。
 
-三种模式中，当前动作都能读取历史视觉、历史动作、当前真实视觉、本轮未来视频条件以及当前双向动作块。详细 mask 关系见 [CAUSAL_MEMORY_MODES.md](./CAUSAL_MEMORY_MODES.md)。
+不要只看聚合 action loss 判断实现错误。若 clean 低、noised 高，是条件分布难度；若 H0 低而 H5–8 高，才优先检查历史信息流；若 H0 本身明显偏离 FastWAM，则先检查基础 factorization、时间位置或 checkpoint 初始化。
 
-训练和推理对真实 prefix 使用相同逐 segment 程序，但本轮未来视频的来源不同：
+## 3. 获取代码和环境
 
-| 内容 | 训练 | 在线推理 | 是否跨轮持久化 |
-|---|---|---|---|
-| 历史视觉 | 同 episode 真实边界帧 | 已提交真实观测 KV | 是 |
-| 历史动作 | demonstration 已执行动作 | 环境实际下发动作 | 是 |
-| 当前真实视觉 | 当前 GT 边界帧 | 相机当前帧 | 是 |
-| 未来视频条件 | 50% clean GT，50% high-noise GT | 从噪声经 VideoDiT 去噪生成 | 否 |
-| 视频 flow target | 独立 timestep/noise 的 GT target | 不存在 | 否 |
-| 当前动作 | noisy GT 动作做 FM loss | ActionDiT 去噪后执行前 10 步 | 仅实际执行部分 |
-
-Action loss 会通过未来条件 K/V 回传到 VideoDiT；视频 target 的独立随机噪声
-不会进入 action prefix。这样既保留物理世界模型的“想象未来再反推动作”，又不
-污染下一轮的真实历史。训练中使用 GT/noised-GT、推理中使用生成视频会形成
-condition distribution gap；50% 高噪声 teacher forcing 是当前明确采用的缓解，
-最终是否足够必须由 LIBERO rollout 而不是训练 loss 判定。
-
-训练期保留 FastWAM 的视频与动作 flow-matching；推理期先在 latent 空间生成未来视频、保存其临时 KV，再做动作去噪。推理会调用 VideoDiT 和视频输出投影，但不做 VAE decode；跨轮仍只提交真实观测和实际下发动作。
-
-## 3. 正式入口清单
-
-日常操作者只需要下面这些 canonical 入口：
-
-| 脚本 | 用途 | 是否直接调用 |
-|---|---|---|
-| `scripts/screen_learning_rate.sh` | 并发训练两个学习率候选 | 是，流水线第 1 步 |
-| `scripts/audit_learning_rate.sh` | 固定观测、timestep、noise 和历史变体，产出学习率选择 manifest | 是，第 2 步 |
-| `scripts/screen_h0_retention.sh` | 并发比较真实 H0 的 x1/x4 采样 | 是，第 3 步 |
-| `scripts/audit_h0_retention.sh` | 固定噪声审计 H0 保真和长历史作用，产出 H0 选择 manifest | 是，第 4 步 |
-| `scripts/train_causal_modes.sh` | 用同一合同顺序训练三种 D30 causal 模式 | 是，第 5 步 |
-| `scripts/evaluate_causal_modes.sh` | 评测三种模式和可选 FastWAM baseline | 是，dev10/final50 共用 |
-| `scripts/train_multi_exit.sh` | 从获胜 D30 权重训练 D8/16/24/30 出口 | 是 |
-| `scripts/evaluate_pareto.sh` | 跑深度×KV 保留上限网格并生成 Pareto 结果 | 是 |
-| `scripts/evaluate_checkpoint.sh` | 单 checkpoint、单深度/历史配置评测 | 按需 |
-| `scripts/evaluate_fastwam_baseline.sh` | 单独评测 FastWAM release baseline | 按需 |
-| `scripts/train_leapbot.sh` | 单模式 ZeRO-2 基础训练器，其他训练入口最终调用它 | smoke、调度器适配或专家使用 |
-
-`scripts/train.py` 是 Hydra/Trainer 内核，不包含完整的资产、GPU、run-contract 和 checkpoint 验收保护，不应作为正式实验入口。`scripts/fastwam_legacy/` 中的是上游 FastWAM 兼容入口，不用于 LeapBot 正式对比；它们也会对 `NNODES!=1` 或非零 `NODE_RANK` fail-fast，不能当作 LeapBot/论文规模的多机 launcher。
-
-## 4. 环境准备
-
-当前服务器的所有训练、评测和资产命令应由用户 `sheng` 执行；root 只用于安装驱动、系统库等系统级操作。这样可保证 checkpoint、W&B cache 和数据文件的属主一致。如果当前已经是 `sheng`，跳过第一行；只有处于 root shell 时才执行 `su - sheng`。
+正式开发源是 DaojiePENG/FastWAM 的 `leapbot-va` 分支：
 
 ```bash
-su - sheng
-mkdir -p /home/sheng/workspace
-cd /home/sheng/workspace
-
-# LeapBot-VA 的正式开发源必须是该仓库的 leapbot-va 分支。
+mkdir -p "$HOME/workspace"
+cd "$HOME/workspace"
 git clone -b leapbot-va --single-branch \
-  https://github.com/DaojiePENG/FastWAM.git leapbot-va
-cd leapbot-va
+  https://github.com/DaojiePENG/FastWAM.git FastWAM
+cd FastWAM
 git branch --show-current
 git remote -v
 export ROOT_DIR="$(git rev-parse --show-toplevel)"
-
-uv venv --python /usr/bin/python3.10 .venv
-uv sync --dev
 ```
 
-上面两条检查中，当前分支必须是 `leapbot-va`，`origin` 必须指向
-`https://github.com/DaojiePENG/FastWAM.git`。GitHub 上游
-`yuantianyuan01/FastWAM` 只用于参考 FastWAM 原始实现；需要时另设为
-`upstream`，不得替换正式开发源：
+分支必须是 `leapbot-va`。原始 FastWAM 只作为参考 upstream：
 
 ```bash
 git remote add upstream https://github.com/yuantianyuan01/FastWAM.git
 ```
 
-如果目录已经存在，不要重复 clone；在确认没有未提交改动后更新指定分支：
+推荐 Python 3.10 和锁定环境：
 
 ```bash
-cd /home/sheng/workspace/leapbot-va
-git fetch origin leapbot-va
-git switch leapbot-va
-git pull --ff-only origin leapbot-va
-```
-
-正式训练必须从干净的 `leapbot-va` commit 启动。仅下载默认分支、上游仓库或
-源码压缩包，都不满足 run contract 的代码来源要求。
-
-核心版本由 `pyproject.toml`/`uv.lock` 固定，包括 PyTorch 2.7.1+cu128、Accelerate 1.12.0、DeepSpeed 0.18.5 和 W&B 0.23.1。新机器还需要：
-
-- 能运行 CUDA 12.8 构建 PyTorch 的 NVIDIA 驱动；
-- GCC/G++ 和 DeepSpeed 扩展所需的开发工具；
-- LIBERO 评测环境、MuJoCo 3.3.2 和可用的 EGL；
-- 当前 wrapper 默认期望 LIBERO 在 `/home/sheng/workspace/LIBERO`。迁移到其他路径时设置 `LIBERO_ROOT=/path/to/LIBERO`；三套 canonical 评测 wrapper 会用它统一构造 fingerprint 和实际 evaluator 的 `PYTHONPATH`。
-
-先做非 GPU 验收：
-
-```bash
-git status --short                 # 正式运行前必须为空
-git rev-parse HEAD
-uv run pytest -q
-```
-
-正式训练器默认拒绝 dirty worktree，也拒绝所选 GPU 已使用超过 2048 MiB 的情况。
-
-## 5. 资产、T5 cache 与 provenance
-
-### 5.1 下载固定 revision 的 FastWAM 资产
-
-```bash
-export DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"
-uv run python scripts/download_leapbot_assets.py --root "$ROOT_DIR"
-```
-
-该脚本固定下载：
-
-- `yuanty/LIBERO-fastwam` 的四套 LeRobot 数据；
-- `yuanty/fastwam` 的 LIBERO release checkpoint 和 dataset stats；
-- 六个下载文件的 revision、字节数和 SHA-256 manifest。
-
-它不读取本地 RLDS。四套训练数据目录是 `libero_spatial`、`libero_object`、`libero_goal` 和 `libero_10`，评测使用 `libero_10` 的 10 个任务。
-
-### 5.2 下载 Wan VAE、T5 和 tokenizer
-
-T5 与 tokenizer 会在下一步预计算时由与模型构造相同的 resolver 自动下载。正式 launcher 在启动前要求 Wan2.2 VAE 已存在，因此建议先显式解析并下载它：
-
-```bash
-DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
-uv run python - <<'PY'
-from fastwam.models.wan22.helpers.loader import _resolve_configs
-
-_, _, vae, _ = _resolve_configs(
-    model_id="Wan-AI/Wan2.2-TI2V-5B",
-    tokenizer_model_id="Wan-AI/Wan2.1-T2V-1.3B",
-    redirect_common_files=True,
-)
-vae.download_if_necessary()
-print(vae.path)
-PY
-```
-
-默认下载源是 ModelScope；需要 Hugging Face 时可设置 `DIFFSYNTH_DOWNLOAD_SOURCE=huggingface`。最终 VAE 必须解析到：
-
-```text
-checkpoints/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors
-```
-
-### 5.3 预计算并严格验证 T5 cache
-
-```bash
-export LEAPBOT_DATASET_STATS="$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json"
-
-CUDA_VISIBLE_DEVICES=0 \
-DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
-uv run python scripts/precompute_text_embeds.py task=libero_leapbot_2cam224
-
-CUDA_VISIBLE_DEVICES=0 \
-DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
-uv run python scripts/verify_text_cache_provenance.py \
-  task=libero_leapbot_2cam224 \
-  +text_cache_verification_device=cuda
-```
-
-第二条命令不是可选的 checksum 检查。它会用已解析的 T5/tokenizer 在线重新编码所有正式 prompt，并要求 cache 中 BF16 context 和 bool mask 在 shape、dtype、数值上逐元素完全一致，然后写入：
-
-```text
-data/text_embeds_cache/libero/.leapbot_text_cache_provenance.json
-```
-
-正式训练要求 provenance 的方法为 `online_source_forward_cache_tensor_exact`。生成/验证 cache 时取得独占文件锁；训练全程持有共享锁，防止 cache 在 epoch 中途被替换。
-
-2026-07-31 在当前正式资产上已验证 40/40 个 cache 文件。可用于跨机器核对的身份是：
-
-| 资产 | 已验证值 |
-|---|---|
-| training asset manifest | `886da5d91d6497bffb6b68de674cae5457175bbf9432bfd17c2aa794d019e977` |
-| extracted dataset content | `aa5f87acb4df51ba3ff9aa4a671f64efd891bd17ddfc4912006f9b4d541bb361` |
-| text cache | `4fad91546fe15c9fa04cb8d4ea08e8a758aead8c4273e87aaaff203621211332` |
-| text cache provenance | `f4dfb1a72cfebb90c92557ba68d746c3e716bf66e1e65de0c1a0a4a673c5d646` |
-| text encoder | `d92de679881d38af9c89eff7bb1b6d6c9d96cb2b69831e4027e9ecabdd38eb23` |
-| tokenizer tree | `a8bc717cf013b7790af3b115681470a445fd2ac2b8e5ba750f1041f13ac54279` |
-| VAE | `0e913a2ca571c75fcb63385a8edadcca73454af5842596cb1ad11e4142590996` |
-
-这些值只对相同正式资产成立；不要为了“匹配表格”而复制 provenance。重新生成 cache 后必须重新在线验证，并以新 manifest 为准。
-
-每次 canonical 训练启动时都会在启动 Accelerate/W&B 之前重新散列正式数据、cache、VAE、release 权重和来源 manifest。因此命令刚启动后的几分钟内 W&B 还没有 run/curve 可能是正常的；应先看 shell 输出和 output directory 中的资产检查进度。散列完成且 rank 0 初始化 W&B 后才会出现线上 run。
-
-### 5.4 哪些内容预计算，哪些内容在线计算
-
-当前实现确实沿用 FastWAM 的静态编码缓存思路，但只缓存不会随训练更新的语言条件。当前 40 个 T5 `.pt` cache 的精确总大小为 42,074,760 bytes：
-
-| 内容 | 预计算/在线 | 原因 |
-|---|---|---|
-| T5 prompt context 与 mask | 离线预计算 | 训练时 `load_text_encoder=false`，避免每步加载和前向 11.36 GB T5 权重 |
-| release dataset stats | 官方预计算并复用 | 保持动作/proprio 归一化与 FastWAM 一致 |
-| 当前及每个历史真实观测的 VAE latent | 每步在线 | 严格使用 rollout 同构的 batch-one、T=1 编码；不使用历史 latent 离线近似 |
-| 未来视频 latent | 每步在线 | 同一次 T9 VAE encode 同时提供独立 video target 与 GT/加噪 GT 动作条件；只有条件 K/V 进入本轮动作 prefix |
-| MP4 解码、双相机拼接、resize 和 normalize | 每步在线 | 数据 loader 的实际训练输入变换 |
-| 历史动作归一化、proprio 处理 | 每步在线 | 必须与对应真实轨迹和 release stats 一致 |
-| 历史视觉/动作 K/V | 训练时在线且保留计算图 | ActionDiT/VideoDiT 会更新；预计算 K/V 会使其 stale，并破坏 full BPTT |
-| 推理期历史 K/V | episode 内在线增量缓存 | 持久部分只来自真实观测和实际下发动作；生成视频 KV 只活到本轮动作完成 |
-
-所以，当前没有预计算历史图像特征或动作特征。训练慢的主要代价正是对完整真实前缀做在线 VAE 编码和全梯度 causal 前向；这是模型语义的一部分，不应通过 detached cache 偷换。
-
-canonical launcher 会强制注入并散列 release dataset stats。若绕过它直接运行 Trainer，且 `pretrained_norm_stats`/`LEAPBOT_DATASET_STATS` 为空，会触发全数据 normalization stats 重算：这既耗时，也改变实验身份。正式流程禁止绕过 launcher 或在 stats 为空时开跑。
-
-因为 VAE 冻结，未来可以研究“严格绑定资产的 VAE latent cache”，但当前未实现、未验收，不能计入现有速度。按当前唯一数据帧粗算，T1 latent 约 1.0 GiB、T9 clip latent 约 3.0 GiB，raw 总量约 4.0 GiB；真正启用前必须把数据字节、像素变换、视频 decoder 版本、VAE 权重/hash 和 dtype 写入 manifest，并通过 online-vs-cache 的 loss 与全梯度等价测试。即使未来缓存 VAE latent，也不能缓存训练中的视觉/动作 K/V，因为 DiT 权重在更新。
-
-## 6. DeepSpeed/Accelerate 拓扑
-
-正式训练由 `scripts/train_leapbot.sh` 调用 Accelerate 和 `scripts/accelerate_configs/accelerate_zero2_ds.yaml`，再读取 `scripts/ds_configs/ds_zero2_config.json`：
-
-- DeepSpeed ZeRO stage 2；
-- optimizer state 和 gradient 在 ranks 间分片，模型参数仍在每卡复制；
-- 不使用 CPU offload，也不使用 NVMe offload；
-- BF16；
-- ActionDiT 全量训练，VideoDiT 使用 rank-16 LoRA；
-- DiT/MoT 开启 gradient checkpointing；
-- AdamW，betas 0.9/0.95，weight decay 0.01，global grad clip 1.0。
-
-当前可训练参数实测为 1.033B / 总 6.740B，其中 ActionDiT 与辅助参数约 1.0216B，VideoDiT LoRA 约 11.8M。
-
-DeepSpeed JSON 的 batch 字段为 `auto`，但这不意味着拓扑未经检查。`Accelerator.prepare()` 后，Trainer 从实际 DeepSpeed engine 读取 micro-batch、GA、global batch 和 ZeRO stage，与 Hydra 配置逐项比较；任一不一致立即失败。日志中必须出现类似：
-
-```text
-Verified DeepSpeed topology: micro_batch_per_gpu=20 grad_accum=1 global_batch=160 world_size=8 zero_stage=2
-```
-
-每个 optimizer step 前还会收集所有 rank 的 gradient norm；任一 rank 非有限时在 `optimizer.step()` 前失败。
-
-## 7. W&B 设置与曲线
-
-canonical 训练入口默认 `WANDB_ENABLED=true`、`WANDB_MODE=online`。先以运行训练的同一用户登录：
-
-```bash
-uv run wandb login
-export WANDB_ENTITY="<your-entity>"
-export WANDB_PROJECT="leapbot-va"
-export WANDB_ENABLED=true
-export WANDB_MODE=online
-```
-
-W&B 由 rank 0 写入，每个 optimizer step 记录：
-
-- `train/loss`、`train/loss_video_d30`、`train/loss_action_d30`；
-- 多出口时各深度的 video/action loss；
-- `train/history_blocks_mean`、`train/history_blocks_max` 及 EMA；
-- `train/grad_norm`、各 optimizer group 的 LR；
-- step/s、sample/s、峰值 allocated/reserved GPU memory。
-
-launcher 用稳定的 `WANDB_RUN_ID` 和 `WANDB_RESUME=allow`。相同 output directory、相同 run contract 的断点恢复会接到同一条 W&B 曲线。若没有线上曲线，先检查对应 `train.log` 中是否出现 `Initialized wandb run`，再检查登录用户、entity/project 和网络；不要用一个新 run 手工转录旧日志冒充连续训练。
-
-需要离线运行时可显式设置 `WANDB_MODE=offline`，之后用同版本 W&B CLI 同步本地 run。`WANDB_ENABLED=false` 只适合 smoke，不适合正式筛选。
-
-## 8. 单机 8 卡完整流水线
-
-以下命令均从仓库根目录执行，并使用显式输出目录，便于交接。先统一环境：
-
-```bash
-export ROOT_DIR="$(git rev-parse --show-toplevel)"
-export DATASET_STATS="$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json"
-export LEAPBOT_DATASET_STATS="$DATASET_STATS"
-export DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"
-export LIBERO_ROOT="/home/sheng/workspace/LIBERO"
-export WANDB_ENTITY="<your-entity>"
-export WANDB_PROJECT="leapbot-va"
-export WANDB_ENABLED=true
-export WANDB_MODE=online
-```
-
-### 8.0 当前架构的集群接手顺序
-
-不要从旧输出目录 resume。合作者拿到新的干净 commit 后按以下顺序执行：
-
-```bash
+uv venv --python 3.10 .venv
 uv sync --dev
 uv run pytest -q
-
-# 三种 mode 均需在目标 GPU/驱动/依赖栈上验收；先 B20，OOM 或余量不足再 B18。
-MODE=action_aggregator BATCH_SIZE=20 \
-  OUTPUT_DIR="$ROOT_DIR/runs/acceptance/current_action_aggregator_b20" \
-  bash scripts/probe_zero2_high_history_capacity.sh
 ```
 
-容量通过并冻结 B/GA 与 update 预算后，可先按用户已选的 `1e-4` 直接训练一个
-`action_aggregator` 基线；该入口会上传 W&B，并把新世界模型条件写入合同：
+学校 HPC 已存在环境时可以直接指定解释器，不要求仓库内必须有 `.venv`：
 
 ```bash
+export PYTHON_BIN=/path/to/python
+export ACCELERATE_BIN=/path/to/accelerate
+PYTHONPATH=src "$PYTHON_BIN" -m pytest -q
+```
+
+`scripts/train_leapbot.sh` 和 `scripts/train_causal_modes.sh` 会使用这两个变量。正式训练从干净 commit 启动；launcher 默认拒绝 dirty worktree和已被明显占用的 GPU。
+
+## 4. 学校 HPC 的单卡调试
+
+申请一张 A800 调试资源：
+
+```bash
+srun -p i64m1tga800u -n 4 --mem=128G --gres=gpu:1 \
+  --time=24:00:00 --pty bash
+```
+
+进入 allocation 后再执行：
+
+```bash
+cd /path/to/FastWAM
+export ROOT_DIR="$(pwd)"
+nvidia-smi
+PYTHONPATH=src "$PYTHON_BIN" -m pytest -q \
+  tests/test_packed_training_masks.py \
+  tests/test_incremental_full_bptt_training.py \
+  tests/test_runtime_temporal_positions.py
+```
+
+单卡只用于 tiny-model、数据样本、真实 6B 单步和显存 smoke，不在交互 allocation 中直接开始长时间正式训练。Slurm 集群上的正式多卡启动应由站点的 `sbatch` wrapper 设置节点数、GPU 数、master address/port，再调用同一个 canonical launcher。
+
+## 5. 资产与预计算
+
+下载 release checkpoint、dataset stats 和官方 LeRobot LIBERO 数据：
+
+```bash
+export DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints"
+"$PYTHON_BIN" scripts/download_leapbot_assets.py --root "$ROOT_DIR"
+```
+
+预计算文本编码：
+
+```bash
+"$PYTHON_BIN" scripts/precompute_text_embeds.py \
+  --root "$ROOT_DIR" \
+  --output "$ROOT_DIR/data/text_embeds_cache/libero"
+```
+
+正式 launcher 会校验数据、VAE、文本 cache、下载 manifest 和 release checkpoint 的 SHA-256。当前预计算内容是语言 T5 embedding 和固定资产；真实观测 VAE latent 没有离线固化，因为数据增强和当前真实帧仍需在线一致处理。训练数据加载只读取最近 W 的稀疏重规划观测与对应 `10W` 步动作，不再为一个样本解码 70 块完整前缀。
+
+## 6. 正式启动入口
+
+先只跑一个 mode 验证曲线，推荐 `action_aggregator`：
+
+```bash
+cd "$ROOT_DIR"
 MODE=action_aggregator \
-BATCH_SIZE=20 \
-GRAD_ACCUM=1 \
-MAX_STEPS=895 \
-SAVE_EVERY=179 \
-LEARNING_RATE=1.0e-4 \
-OUTPUT_DIR="$ROOT_DIR/runs/current_action_aggregator_lr1e-4" \
-WANDB_ENABLED=true WANDB_MODE=online \
+NUM_PROCESSES=8 GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
+BATCH_SIZE=20 GRAD_ACCUM=1 MAX_STEPS=5000 \
+LEARNING_RATE=1.0e-4 WANDB_ENABLED=true WANDB_MODE=online \
 bash scripts/train_leapbot.sh
 ```
 
-上面是 B20 探针通过后的 reference 示例；若探针要求 B18 或实验协议选择不同
-update 预算，应先统一修改并冻结三种 mode 的这些值，再启动任何正式 run。
+`B20/GA1` 是 8×80GB 的候选值，不是对任何集群都保证不 OOM。先把 `MAX_STEPS=2`、`SAVE_EVERY=2` 在目标硬件做真实模型 smoke，记录每 rank peak allocated/reserved，再逐步增加 B。出现 OOM 时优先下降 B 并增加 GA 保持 global batch，不要静默改变其他实验因素。
 
-若目标是论文级三模式公平比较，则三种 mode 必须使用同一个已验收拓扑、同一
-update 数、seed 和 release 初始化；可以在三台 8 卡节点并行，但输出目录、端口和
-W&B run ID 必须隔离。旧 `lr-selection.json`/`h0-selection.json` 的 architecture
-contract 不匹配时必须重新生成或在实验协议中明确记录“用户固定 LR=1e-4”的
-直接入口，不能篡改旧 manifest。
-
-### 8.1 学习率配对筛选
-
-两个候选都是 `action_aggregator`、完整历史、D30、100 optimizer steps、constant LR；它们使用相同 seed、初始化、数据顺序和 noise 顺序，仅 LR 不同。
+三种 causal mode 的同合同顺序对比：
 
 ```bash
-export LR_SCREEN_ROOT="$ROOT_DIR/runs/lr_screen_full_history_s100"
-SCREEN_ROOT="$LR_SCREEN_ROOT" \
-MAX_STEPS=100 \
-bash scripts/screen_learning_rate.sh
-```
-
-该入口同时启动：
-
-- GPU 0–3：LR `1e-5`；
-- GPU 4–7：LR `1e-4`。
-
-LR 决策有两条互斥路径。默认、可做统计比较的路径是在一张空闲 GPU 上跑固定噪声
-审计：
-
-```bash
-export LR_AUDIT_ROOT="$ROOT_DIR/runs/lr_audit_full_history_s100"
-SCREEN_ROOT="$LR_SCREEN_ROOT" \
-OUTPUT_DIR="$LR_AUDIT_ROOT" \
-FINAL_STEP=100 \
-GPU_ID=0 \
-bash scripts/audit_learning_rate.sh
-
-export LR_SELECTION_MANIFEST="$LR_AUDIT_ROOT/learning_rate_selection.json"
-```
-
-审计覆盖 `H={0,1,4,8,16,32,50}`、correct/masked/cross-episode-shuffled 历史、固定 flow timestep 和固定 Gaussian noise，并用 bootstrap 生成选择 manifest。W&B 上的随机 minibatch loss 只能用于诊断，正式 LR 选择以该固定审计为准。
-
-如果用户明确要求跳过固定噪声 LR audit，可以改用非统计的显式决策入口。例如，用户
-指定 `1.0e-4` 时：
-
-```bash
-export LR_DECISION_ROOT="$ROOT_DIR/runs/lr_selection_user_directed_s100"
-
-SCREEN_ROOT="$LR_SCREEN_ROOT" \
-SELECTED_LR=1.0e-4 \
-FINAL_STEP=100 \
-SELECTION_REASON='The user explicitly selected 1.0e-4 from the online screen.' \
-USER_SELECTION_NOTE='The user judged 1p0e-4 clearly better and requested skipping the fixed-noise LR audit.' \
-OUTPUT_MANIFEST="$LR_DECISION_ROOT/learning_rate_selection.json" \
-bash scripts/select_learning_rate.sh
-
-export LR_SELECTION_MANIFEST="$LR_DECISION_ROOT/learning_rate_selection.json"
-```
-
-`select_learning_rate.sh` 只读取被选 run；不会把未选择或已终止的 `1.0e-5` 当作输入。
-但被选 run 必须有完整且互相一致的 `step_000100.pt`、DeepSpeed `step_000100`
-trainer state、run contract、`code_commit` 和 `run_contract_sha256`。候选值只允许
-`1.0e-5/1.0e-4`，缺少 step100 产物的已终止 run 不能被选择。
-
-这种 manifest 明确记录 `selection_basis=user_directed`、UTC 决策时间、理由、用户说明、
-checkpoint SHA 和 run-contract SHA，同时记录
-`statistical_audit_performed=false`。它只证明“用户选择了哪个完整 checkpoint”，不能用于
-声称 `1.0e-4` 在固定样本/噪声下统计优于 `1.0e-5`。后续 H0 与 causal-mode launcher
-会显式接受该 basis，并把整个 LR manifest 文件的 SHA-256 写入各自 run contract；因此
-决策来源不会在下游丢失或被静默替换。
-
-### 8.2 H0 保真筛选
-
-H0 筛选不丢弃任何非零历史。`x4` 只重复真正的 episode-start/H0 样本；所有 H>0 样本仍带从 episode 开始的完整前缀。
-
-```bash
-export H0_SCREEN_ROOT="$ROOT_DIR/runs/h0_screen_full_history_s100"
-LR_SELECTION_MANIFEST="$LR_SELECTION_MANIFEST" \
-SCREEN_ROOT="$H0_SCREEN_ROOT" \
-MAX_STEPS=100 \
-bash scripts/screen_h0_retention.sh
-
-export H0_AUDIT_ROOT="$ROOT_DIR/runs/h0_audit_full_history_s100"
-LR_SELECTION_MANIFEST="$LR_SELECTION_MANIFEST" \
-SCREEN_ROOT="$H0_SCREEN_ROOT" \
-OUTPUT_DIR="$H0_AUDIT_ROOT" \
-FINAL_STEP=100 \
-GPU_ID=0 \
-bash scripts/audit_h0_retention.sh
-
-export H0_SELECTION_MANIFEST="$H0_AUDIT_ROOT/initial_block_oversample_selection.json"
-```
-
-### 8.3 三种 D30 causal 模式候选正式训练
-
-先按第 10.1 节在准备运行的 causal mode 上完成 B20 容量探针。通过后，固定数据
-`x1` 有 28,523 个 replan 样本，因此原始等计算量 epoch 为
-`ceil(28523 / 160) = 179` 个 optimizer steps；五个 epoch 的预算为 `895`
-steps，每 179 steps 保存一次。正式训练采用真实 H0 `x4`，但仍统一跑
-`895` optimizer steps，而不是按扩增后的数据长度重算“五个 augmented epochs”。
-
-`ResumableEpochSampler` 会把 x4 后的数据级 H0 比例固定混入每一个 global
-micro-batch；在 8×B20 下约为 33 个 H0 与 127 个完整 H>0 样本。每个 rank
-均同时含 H0/H>0，因此 GA1 的每次 optimizer update 都获得两类梯度。H>0 样本
-仍携带从 episode 开始的全部 GT 观测、动作与 proprio，不进行历史截断、mask
-或模型生成动作替换。长度分组只在 H>0 池内部进行，以继续控制分布式 straggler。
-这样三种 mode 的 optimizer update、global batch 和总计算预算完全一致。
-
-```bash
-export CAUSAL_TRAIN_ROOT="$ROOT_DIR/runs/causal_full_history_d30_b20_ga1_s895_seed42"
-
-LR_SELECTION_MANIFEST="$LR_SELECTION_MANIFEST" \
-H0_SELECTION_MANIFEST="$H0_SELECTION_MANIFEST" \
-TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-MAX_STEPS=895 \
-SAVE_EVERY=179 \
+MODES_CSV=action_aggregator,interleaved,vision_causal \
+MAX_STEPS=5000 LEARNING_RATE=1.0e-4 \
 bash scripts/train_causal_modes.sh
 ```
 
-该脚本用全部 8 张 GPU 顺序训练 `action_aggregator`、`interleaved`、`vision_causal`。每种模式都从同一个 FastWAM release 权重独立初始化；一个模式的终点不会作为下一个模式的起点。scheduler 为 5% warmup + cosine，seed 为 42。
+三个 mode 必须保持相同 release 初始化、数据、global batch、训练步数、随机种子、W、V0 anchor 和 condition curriculum。正式 checkpoint 同时保存权重、训练窗口、condition curriculum、代码 commit 和 run-contract hash。
 
-需要分阶段占用集群时，可用同一个 `CAUSAL_TRAIN_ROOT` 和完全相同的两个选择 manifest，设置例如 `MODES_CSV=action_aggregator` 只跑一个模式；后续再跑其余模式。不要改变 topology、MAX_STEPS、SAVE_EVERY、seed 或资产。
-
-### 8.4 dev10 与 final50
-
-评测前安装 LIBERO/MuJoCo/EGL。开发筛选在 10 个 `libero_10` 任务上每任务 10 次，默认同时包含 FastWAM release baseline：
+多出口训练从获胜 D30 checkpoint 开始：
 
 ```bash
-export DEV_EVAL_ROOT="$ROOT_DIR/evaluate_results/causal_full_history_dev10"
-TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-FINAL_STEP=895 \
-NUM_TRIALS=10 \
-GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
-EVAL_ROOT="$DEV_EVAL_ROOT" \
-bash scripts/evaluate_causal_modes.sh
-```
-
-最终表必须使用新的结果目录，每任务 50 次：
-
-```bash
-export FINAL_EVAL_ROOT="$ROOT_DIR/evaluate_results/causal_full_history_final50"
-TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-FINAL_STEP=895 \
-NUM_TRIALS=50 \
-GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
-EVAL_ROOT="$FINAL_EVAL_ROOT" \
-bash scripts/evaluate_causal_modes.sh
-```
-
-入口会验证三种 run contract 和 checkpoint，给每个 checkpoint/task/config 建 fingerprint，拒绝把不同 commit、权重、任务初始状态或运行参数的结果混在同一个 `EVAL_ROOT`。汇总结果位于 `EVAL_ROOT/pareto/results.csv`。
-
-canonical 评测在 fingerprint 和实际 evaluator 两侧都固定 `EVALUATION.save_rollout_video=false`，避免 500/10,000-episode 评测被视频 I/O 和磁盘占用污染；如需定性视频，应在独立结果目录另跑，不得与正式 latency 树混用。
-
-causal-mode winner 不是训练脚本自动指定的。应根据 dev/final 结果记录获胜 `MODE`、checkpoint step、结果目录和选择理由，再进入多出口阶段。
-
-### 8.5 多出口训练
-
-多出口从获胜 D30 `.pt` 权重开始一个新的 optimizer/scheduler，训练 step 从 0 重新计数。一次 30 层前向计算：
-
-```text
-L30 + (L8 + L16 + L24) / 3
-```
-
-每个 `Ld` 都含 video 和 action flow-matching loss。
-
-```bash
-export WINNER_MODE="<action_aggregator|interleaved|vision_causal>"
-export MULTI_EXIT_STEPS="<freeze-this-before-running>"
-export MULTI_EXIT_ROOT="$ROOT_DIR/runs/multi_exit_full_history"
-
-SOURCE_TRAIN_ROOT="$CAUSAL_TRAIN_ROOT" \
-MODE="$WINNER_MODE" \
-SOURCE_STEP=895 \
-MAX_STEPS="$MULTI_EXIT_STEPS" \
-TRAIN_ROOT="$MULTI_EXIT_ROOT" \
+SOURCE_TRAIN_ROOT=/path/to/causal_run_root \
+MODE=action_aggregator SOURCE_STEP=5000 MAX_STEPS=3000 \
 bash scripts/train_multi_exit.sh
 ```
 
-`MAX_STEPS` 当前无隐式默认，必须在实验协议中先冻结。若决定给多出口与 D30 相同的 895 次更新，应明确写 `MULTI_EXIT_STEPS=895`；不要事后根据曲线改口径。多出口自身仍固定使用 8×B1×GA16/global128；其 source contract 则必须是已经验收的 D30 8×B20×GA1/global160。
+## 7. DeepSpeed、显存和吞吐
 
-### 8.6 深度×KV 保留上限 Pareto
-
-开发阶段可先设 `NUM_TRIALS=10`，最终报告使用 50：
-
-```bash
-export PARETO_ROOT="$ROOT_DIR/evaluate_results/depth_history_pareto_final50"
-
-TRAIN_ROOT="$MULTI_EXIT_ROOT" \
-MODE="$WINNER_MODE" \
-FINAL_STEP="$MULTI_EXIT_STEPS" \
-NUM_TRIALS=50 \
-GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
-GRID_ROOT="$PARETO_ROOT" \
-BASELINE_RESULTS_ROOT="$FINAL_EVAL_ROOT" \
-bash scripts/evaluate_pareto.sh
-```
-
-默认网格为 `D={8,16,24,30} × KV-retention={0,8,16,32,full}`，共 20 个 LeapBot 配置；每配置 10 任务×50 次即 500 episodes，总计 10,000 个 LeapBot episodes。`kvret8` 表示只物理保留最近 8 个块的 K/V tensor；较新的 K/V 在生成时已经读取过更老前缀，因此它不是严格的“最后 8 块信息”消融。
-
-汇总保留成功率—P50/P95 重规划延迟—峰值显存的全部非支配点。默认 LeapBot 只能从 memory-enabled LeapBot 行中选：先限制在成功率距最佳不超过 1 个百分点且置信区间重叠的配置，再取 P50 最低者；FastWAM baseline 不能被误标成 LeapBot 默认。若没有浅出口满足条件，就保留 D30 并如实报告速度目标未达到。重规划 profiler 分别记录真实观测前推、动作去噪和实际动作 K/V commit，不能用只计模型 kernel 的局部计时替代。
-
-## 9. Run contract、checkpoint 与断点恢复
-
-每个训练目录至少包含：
+默认多卡训练通过 Accelerate + DeepSpeed ZeRO-2 启动：
 
 ```text
-run_contract.txt
-training_asset_manifest.json
-train.log
-config.yaml
-checkpoints/
-  weights/step_XXXXXX.pt
-  state/step_XXXXXX/
-    trainer_state.json
-    ... DeepSpeed optimizer/model shards and RNG state ...
-checkpoint_validation.json
+scripts/accelerate_configs/accelerate_zero2_ds.yaml
+scripts/ds_configs/ds_zero2_config.json
 ```
 
-`run_contract.txt` 绑定：
+ZeRO-2 分片 optimizer state 与 gradient，参数仍在每张卡。v7 的主要额外开销来自 W 内逐 segment attached KV 和反向重计算；在线推理每次重规划也会重新前推最多 `V0 + W×(V,A)` 的真实 prefix。因此：
 
-- commit、release checkpoint、dataset stats；
-- 四套数据、下载 manifest、T5 cache/provenance、T5/tokenizer/VAE hash；
-- causal mode、B/GA/world/global batch、max steps；
-- LR/scheduler、seed、optimizer、历史和出口配置；
-- 上游 LR/H0 选择 manifest 的 SHA-256。
+- memory 是严格有界的，不随 episode 无限增加；
+- 延迟不再是旧 incremental-KV 的 O(1)，而是有界 O(W)；
+- `replay_bytes` 统计真实 latent/context/action replay buffer；
+- `cache_bytes` 统计本轮重建后的逐层 KV；
+- profiler 必须单独记录 `history_replay_s`、`observation_prefill_s`、`future_video_denoise_s`、`future_video_cache_s`、`action_denoise_s` 和 commit。
 
-`.pt` 是便于评测/下游初始化的 portable weights；`state/step_*` 才包含 ZeRO-2 optimizer、scheduler、所有 rank RNG 和精确 dataloader cursor。需要续训时必须保留后者。
+实际 B、吞吐和峰值显存只能由目标 commit、目标 mode 和目标 GPU 的 smoke 冻结。旧版 H41–H50 或 10GB 全局 KV 估计不适用于 v7。
 
-安全恢复方法是：在相同 commit、相同资产、相同输出目录上，重新执行逐字相同的 canonical 命令。launcher 只选择已经完整写出 `trainer_state.json` 的最新 state，忽略半写入目录；Trainer 再检查 run contract 和 dataloader topology。不要手工把 `.pt` 当作“断点恢复”，因为这只加载权重，不恢复 optimizer/scheduler/step。
+## 8. 评测
 
-`max_steps` 是 run contract 的组成部分。当前实现不支持把一个 895-step run 原地改成 2000 steps 并声称是同一实验；应在开跑前冻结预算。不要用 `ALLOW_CROSS_CONTRACT_RESUME`、`ALLOW_DIRTY` 等逃生开关构造正式结果。
+评测配置必须与 checkpoint 的严格窗口合同一致：
 
-验证某个 final checkpoint 的关键证据：
+```text
+EVALUATION.memory.enabled=true
+EVALUATION.memory.history_storage_mode=strict_replay
+EVALUATION.memory.history_window_blocks=8
+EVALUATION.memory.max_history_blocks=70
+EVALUATION.replan_steps=10
+EVALUATION.action_horizon=32
+```
+
+运行单 checkpoint：
 
 ```bash
-grep '^run_contract_sha256=' "$CAUSAL_TRAIN_ROOT/action_aggregator/run_contract.txt"
-grep 'Verified DeepSpeed topology' "$CAUSAL_TRAIN_ROOT/action_aggregator/train.log"
-grep 'max_steps reached' "$CAUSAL_TRAIN_ROOT/action_aggregator/train.log"
+CKPT=/path/to/step_005000.pt \
+MODE=action_aggregator EXIT_DEPTH=30 TRIALS=10 \
+bash scripts/evaluate_checkpoint.sh
 ```
 
-canonical launcher 在结束时会运行 `validate_leapbot_checkpoint.py` 并生成 `checkpoint_validation.json`。缺少该文件、final state 或 `max_steps reached` 日志的 run 不应进入正式评测。
+开发筛选每任务 10 次；最终每任务 50 次。记录逐任务/平均成功率、完成步数、P50/P95 重规划延迟、peak GPU memory、`cache_bytes`、`replay_bytes` 和上述各阶段耗时。Strict checkpoint 若被要求使用 `incremental_kv` 或不同 W，模型会 fail-fast，不能把不一致运行混入 Pareto 表。
 
-## 10. H800 历史实测与当前架构待验收资源
+## 9. 断点恢复与复现证据
 
-以下数据均来自 2026-07-31 的旧 action-only 条件实现。当前版本在每轮 ActionDiT
-前新增未来视频去噪、video head 和临时逐层 KV，因此这些数字已整体失效：不能
-用于承诺当前显存、时延、吞吐或 loss，也不能据此直接批准 B20。保留本节仅用于
-解释旧日志来源；当前数值必须由接手集群在新 commit 上重测。
+一次可复现实验至少保留：
 
-### 10.1 GPU、RAM 与吞吐
+- Git commit 和干净工作树证明；
+- `run_contract.txt`；
+- `training_asset_manifest.json`；
+- `checkpoints/weights/step_*.pt`；
+- 对应的完整 DeepSpeed/Accelerate state 目录；
+- W&B run ID、完整日志和 checkpoint validation JSON；
+- 评测 fingerprint、逐 episode JSON 和 Pareto 汇总。
 
-| 场景 | 状态 | 观测（仅旧架构历史） |
-|---|---|---|
-| 历史验收：8卡 ZeRO-2，B8/GA2/global128，两步 smoke | 实测 | step1 Hmean=5.7109/Hmax=8，113s，日志累计 1.13 samples/s；step2 Hmean=2.0938/Hmax=4，46s，累计 1.61 samples/s；该结果证明旧拓扑链路，不是 B20 容量证据 |
-| 同一历史 B8/GA2 两步 smoke | 实测 | 峰值每卡 allocated 21.00 GiB，reserved 22.07 GiB；含资产合同、模型加载和 checkpoint 保存的总墙钟 5m31s；保留用于回归审计，不作为当前正式配方 |
-| 双 4 卡 LR 正式筛选，B10/GA2/global80 | 2026-07-31 step8 运行中快照 | 当时见到 Hmean 最高 18.125；峰值每卡 allocated 32.66 GiB、reserved 34.51 GiB，`nvidia-smi` 约 36.9 GiB；不是 100-step 最终峰值 |
-| 上述两个 run 同时运行 | 2026-07-31 step8 整机快照 | `free -h` 当时显示全机 used 158–159 GiB / total 1.8 TiB / available 1.6 TiB / 无 swap；这是系统级占用，不能全部归因到训练进程，也不是训练完成值 |
-| 单卡 full-optimizer B10，真实 H41–H50，2 updates×2 microbatches | 显存压力实测 | action_aggregator 47.01/49.93 GiB、interleaved 47.63/50.10 GiB、vision_causal 49.02/51.21 GiB（allocated/reserved） |
+只保留 `.pt` 不能精确恢复 optimizer、scheduler、sampler 和 RNG。旧 `incremental_full_bptt` checkpoint 与 v7 的 `strict_replay_window_bptt` 合同不同，禁止跨合同 resume。
 
-上表的单卡 `full_prefix_smoke.py` 会完整执行真实图和 AdamW，但它不是
-DeepSpeed engine，因此只能用作保守趋势证据，不能代替最终 8 卡拓扑验收。正式
-扩大 micro-batch 前运行 checkpoint-free 容量探针：
+## 10. 必做验收
+
+提交给大集群前至少通过：
 
 ```bash
-su sheng -c '
-  cd /home/sheng/workspace/leapbot-va &&
-  MODE=action_aggregator \
-  BATCH_SIZE=20 \
-  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_action_aggregator_b20 \
-  bash scripts/probe_zero2_high_history_capacity.sh
-'
+PYTHONPATH=src "$PYTHON_BIN" -m pytest -q
+bash -n scripts/train_leapbot.sh scripts/train_causal_modes.sh \
+  scripts/train_multi_exit.sh
 ```
 
-该入口固定为 8 卡、ZeRO-2、BF16、D30、chunk1、
-`incremental_full_bptt`、正式 ActionDiT/VideoLoRA optimizer，并执行恰好两次
-optimizer update。每个 rank 的一个 micro-batch 包含 B 个不同的真实数据行；每行
-都是同一 episode 内未截断、未合成的 H41–H50 完整前缀。固定批次只在 rank 和
-update 之间重复，历史张量本身绝不复制延长。探针禁用 W&B，且不得写 portable
-weights 或 DeepSpeed state；结果只写 `capacity_probe.json`、小型 config/contract
-和日志。
+GPU smoke 还必须确认：
 
-探针和正式训练一样，对 T5 cache 持有整个进程生命周期的 shared `flock`，并在
-启动 GPU 进程前生成 `training_asset_manifest.json`。完整数据、T5 cache/provenance、
-VAE 和 pinned download manifest 的 hash 由该文件覆盖，其 `manifest_sha256` 同时
-写入 `probe_contract.txt` 及成功/失败报告。optimizer 报告分别注明
-`action_and_aux: weight_decay=0.01` 与 `video_lora: weight_decay=0`，不能笼统描述成
-所有参数都使用 wd0.01。
+1. H0、早期 padding、H8 和 `V0+H8` 都能前向/反向；
+2. clean/noised condition 分项指标都出现，课程概率按 step 变化；
+3. strict replay 的在线 segment 恰为 `V0 + recent W(V,A) + current V`；
+4. 只执行的 10 步动作被缓存，预测后 22 步不存在于 replay；
+5. reset 清空 KV、replay、anchor、prompt 和 episode clock；
+6. profiler 中没有 VAE decode，future-video KV 只在当前调用存在；
+7. 6B 的两步 optimizer smoke 无 NaN、无假更新、无 OOM。
 
-默认 `PROBE_TIMEOUT_SECONDS=7200`，只允许正整数；超时会终止整个 Accelerate
-进程组并写 `status=timeout`。每次 update 都检查 DeepSpeedEngine 的
-`global_steps` 恰好增加 1、`_step_applied=true`、`skipped_steps` 不增加且
-Accelerate 未报告 skipped；最终还断言 `global_steps` 总 delta 恰好为 2。报告会
-扫描 `checkpoints/` 的实际文件列表，任何文件都会把结果升级为
-`status=contract_violation`，即使训练计算本身成功也不能作为容量验收。
-
-`MODE` 默认是 `action_aggregator`，且只接受三种正式值：
-`action_aggregator`、`interleaved`、`vision_causal`。首个策略先按默认模式测 B20；
-在另外两种模式正式开跑前，可用独立输出目录重复同一探针，尤其建议复验已有
-单卡压力结果中峰值略高的 `vision_causal`。报告、输出目录默认名和
-`probe_contract.txt` 都绑定实际 `MODE`，不同模式的结果不得覆盖或混用。
-
-capacity probe 已更新为当前未来视频条件训练程序。当前 release 数据对 B20
-的确定性选择为 H44×8、H45×6、H46×2、
-H47/H48/H49/H50 各 1（20 个不同数据行，平均 H45.4）；实际选择和每 rank
-收到的数据行/H 列表都会写入报告，不能只凭配置推断。
-
-先测 B20。只有报告 `status=passed`、拓扑字段为 8×B20×GA1/global160、代码与
-资产身份匹配，并且最坏 rank 的 `global_peak_reserved_gib` 留有足够安全余量，
-才可冻结 B20/GA1 候选。`70–75 GiB` 是期望的充分利用区间，不是允许忽略 OOM、
-跳步或合同违规的宽限条件。若 launcher OOM，它仍会聚合 rank OOM
-证据并明确写出 `status=oom`；随后必须换全新目录回退 B18：
-
-```bash
-su sheng -c '
-  cd /home/sheng/workspace/leapbot-va &&
-  MODE=action_aggregator \
-  BATCH_SIZE=18 \
-  OUTPUT_DIR=/home/sheng/workspace/leapbot-va/runs/acceptance/zero2_h41_h50_action_aggregator_b18 \
-  bash scripts/probe_zero2_high_history_capacity.sh
-'
-```
-
-容量通过不等于可以悄悄改变实验合同。8 卡 B20/GA1 的 global batch 是 160；
-B18/GA1 是 144；历史 B8/GA2 和 B16/GA1 都是 128。最终选择若改变 global batch，
-三种 causal mode 必须统一采用同一 B/GA/world、重新冻结每 epoch optimizer step、
-scheduler/save 间隔和 run contract，不能从 global128 的 optimizer state 续训。
-
-ZeRO-2 没有 CPU/NVMe offload。主机内存主要来自 8 个 rank、每 rank 3 个 dataloader workers、视频解码/预取、Python/模型元数据和系统 page cache。迁移到较小 RAM 节点时应实测，不应把 1.8 TiB 机器上的 available 数字当作最低要求。
-
-### 10.2 旧时间规划（不得用于当前承诺）
-
-| 阶段 | 当前估计 |
-|---|---|
-| 两个 100-step LR run 并发 | 运行早期动态 ETA 约 3.5–4.5 小时；尚不是完成实测，后续高 H batch 可能改变 ETA |
-| 100-step H0 配对筛选 | 拓扑相同，预计同量级；需用实际前 20–50 step 校准 |
-| D30 候选正式 895-step 单模式，8×H800、B20/GA1 | 容量探针通过前不承诺时长；按旧拓扑早期吞吐只能粗略规划约 29–48 小时/模式，必须在正式 step50 重估 |
-| 三模式顺序训练 | 粗略规划约 87–144 小时，即约 3.6–6 天；探针和首个 mode 实测优先于该估计 |
-| 多出口训练 | 尚无可负责的端到端实测；四深度 loss 和 B1/GA16 会改变吞吐，应在前 50 step 后重新估计 |
-| LIBERO 评测/Pareto | 强依赖 simulator reset、任务 episode 长度和 inference steps；以 episode 数规划，不给未经实测的小时数 |
-
-正式训练启动后，应在 step 50 用 `train.log` 的累计 step/s、Hmean/Hmax 和最近窗口墙钟重新给 ETA。首个 step 包含 kernel/allocator warmup，不能单独用于外推。
-
-当前架构首次集群运行应先记录：两步容量探针峰值、首 10/50 optimizer steps 的
-P50 step time、H 分布、allocated/reserved 显存与主机 RAM。只有这些新数据才能
-替换上表，并用于估算单模式总时长。
-
-### 10.3 磁盘
-
-当前输入资产的已验证字节量大致为：
-
-- 四套 extracted 数据 4.73 GB，下载 tar 另约 4.69 GB；
-- FastWAM release checkpoint 12.04 GB；
-- T5 11.36 GB、VAE 1.41 GB、tokenizer 约 21 MB；
-- 40 个 T5 cache 文件约 42 MB。
-
-合计约 34 GB，不含 `.venv`、Hugging Face/ModelScope 元数据和文件系统开销。
-
-历史 8卡 B8/GA2 ZeRO-2 两步 smoke 的一个完整 checkpoint 实测约 46 GiB：portable weights 约 12.1 GB，DeepSpeed model state 约 24.9 GB，8 个 optimizer shards 合计约 12.4 GB。B20/GA1 仍是相同模型与 ZeRO stage，暂以这个实测值做磁盘下限规划；必须用首个 B20 checkpoint 校准。按候选 `SAVE_EVERY=179` 保存 895 steps 会有 5 个 checkpoint，粗略约 230 GiB/模式，三模式约 690 GiB。正式集群至少应在此基础上为多出口、筛选和评测留余量。
-
-可以在确认 final checkpoint 已复制、验证且不再需要从中间 step 恢复后归档旧 state，但 final `state/` 和 `checkpoint_validation.json` 必须保留；评测中间 checkpoint 时也需要对应 state 通过身份验证。不要在训练写 checkpoint 时并发移动或删除 shard。
-
-## 11. 更大 GPU 集群的扩展边界
-
-当前 canonical reference 是单机 8 卡，Accelerate 配置明确为 `num_machines: 1`。更大集群可提升并行实验数，但不能直接把环境变量改成 16/32 卡后仍称为同一 reference。
-
-当前代码没有完成多节点端到端验收，因此本节是扩展检查表，不是可直接复制运行的多机命令。完成 rank-0 合同/W&B、rendezvous、共享存储与跨节点资产验证工程并跑通验收之前，不应宣称“支持多节点正式训练”。
-
-### 11.1 最安全的扩展：实验级并行
-
-在 B20 探针通过并冻结后，优先保持每个 D30 run 的 8卡/B20/GA1/global160 不变，在不同节点并行跑三种 causal mode、不同 seed 或评测配置。多出口仍保持其独立的 8卡/B1/GA16/global128。这样每类 run 都与各自冻结的 reference 拓扑一致。
-
-需要为每个 job 保证：
-
-- 相同 commit、release 权重、dataset stats、LR/H0 选择 manifest 和资产 manifest；
-- 独立 GPU allocation、端口、output subdirectory 和 W&B run ID；
-- 三个 causal mode 最终仍通过 `validate_run_contract_group.py` 的共同字段验证；
-- 若共享一个 `TRAIN_ROOT` 并发建 contract，要避免共同 validation 文件的写入竞争。生产调度适配器应为每个 mode 做原子目录管理，或先逐个创建 contract 再并发训练。
-
-### 11.2 扩大单个 run 的 world size
-
-`train_causal_modes.sh` 当前故意强制 8 GPU×B20×GA1；该候选首先必须通过容量探针。要改成多机、更多卡或 B18 回退，必须作为一个新的训练协议修改并重新验收：
-
-1. 创建多机 Accelerate 配置，正确设置 `num_machines`、`machine_rank`、主节点地址/端口和 rendezvous；
-2. 调整 B/GA，使目标 global batch 明确；
-3. 更新 canonical wrapper 的 topology guard 和 run-contract 预期；
-4. 在所有被比较模式上使用完全相同的新 topology；
-5. 重做两步 ZeRO-2 smoke、resume smoke、sampler 尾部和 checkpoint 验收；
-6. 重新做 LR 筛选。即使 global batch 不变，world-size/sharding 改变也会改变每 rank 数据/noise 分配，不能默认沿用 8 卡最优 LR。
-
-ZeRO-2 仍会在每卡复制全部模型参数，增加 GPU 数主要缩小 optimizer/gradient shard，不会按 GPU 数线性消除 activation 和完整历史的显存。单卡显存预算仍应按 B、D 和最坏 H 做验收。
-
-### 11.3 数据、cache、NCCL 和共享存储
-
-- 预先把四套数据、release 权重、T5/tokenizer/VAE 和 cache stage 到每个节点的相同逻辑路径；不要让所有节点在作业开始时同时下载。
-- 数据和 text cache 在训练期间必须只读。共享文件系统需支持可靠的 POSIX `flock`；若不支持，应在调度层冻结资产并逐节点验证 manifest。
-- 多机上要配置 NCCL 网卡、IB/RoCE、firewall 和 rendezvous 端口，并先跑两步 smoke。
-- checkpoint 应写到吞吐足够的共享存储；单 checkpoint 约 46 GiB，保存时会产生明显 I/O 停顿。
-- `CUDA_VISIBLE_DEVICES` 应由调度器分配；不要在多个同节点 job 中复用相同 `MAIN_PROCESS_PORT`。
-- 训练 wrapper 的本地 `nvidia-smi` preflight 只能看到本机，不能替代集群调度器的全局资源隔离。
-
-## 12. 验收与实现检查入口
-
-建议接手者按下面路径审代码：
-
-| 关注点 | 实现/测试 |
-|---|---|
-| 完整 episode 历史采样、真实动作和 padding 拒绝 | `src/leapbot_va/data.py`、`tests/test_incremental_full_bptt_training.py` |
-| causal mask、未来信息隔离、完整梯度 | `src/leapbot_va/training.py`、`tests/test_causal_masks.py`、`tests/test_packed_training_masks.py` |
-| episode 位置和 RoPE | `src/leapbot_va/positions.py`、`tests/test_hierarchical_positions.py` |
-| 显式 KV memory 状态机和事务回滚 | `src/leapbot_va/memory.py`、`src/leapbot_va/runtime.py`、`tests/test_memory.py`、`tests/test_inference_contract.py` |
-| 实际执行动作的后处理/重归一化 | `src/leapbot_va/libero.py`、`tests/test_libero_action_commit.py` |
-| ZeRO-2 拓扑、sampler、resume、W&B | `src/fastwam/trainer.py`、`src/fastwam/utils/samplers.py`、对应 trainer/sampler tests |
-| T5/VAE/tokenizer/cache 身份 | `src/leapbot_va/conditioning_assets.py`、`tests/test_conditioning_assets.py` |
-| 评测 fingerprint、future-video 分段计时和 Pareto | `src/leapbot_va/eval_fingerprint.py`、`experiments/libero/eval_libero_single.py`、`experiments/leapbot/pareto.py` |
-
-每个新 commit 的最低 CPU 验收是：
-
-```bash
-uv run pytest -q
-bash -n scripts/*.sh scripts/fastwam_legacy/*.sh
-```
-
-有正式资产和空闲 H800 时，建议每个硬件/依赖栈至少跑一次真实 6B 训练—在线 KV 等价验证：
-
-```bash
-for mode in action_aggregator interleaved vision_causal; do
-  CUDA_VISIBLE_DEVICES=0 \
-  uv run python scripts/validate_real_6b_runtime_training_equivalence.py \
-    --checkpoint "$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt" \
-    --dataset-stats "$DATASET_STATS" \
-    --causal-mode "$mode" \
-    --history-blocks 8 \
-    --device cuda:0 \
-    --dtype bf16 \
-    --output-json "$ROOT_DIR/runs/acceptance/${mode}_h8.json"
-done
-```
-
-下面的 B8/GA2 命令仅用于复现已有历史回归 smoke，不是当前 B20 正式容量验收；
-正式开跑前必须使用第 10.1 节的 checkpoint-free B20/H41--H50 probe：
-
-```bash
-SMOKE_ROOT="/tmp/leapbot-zero2-w8-b8-ga2-$(git rev-parse --short HEAD)"
-MODE=vision_causal \
-NUM_PROCESSES=8 \
-GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
-BATCH_SIZE=8 \
-GRAD_ACCUM=2 \
-MAX_STEPS=2 \
-SAVE_EVERY=2 \
-LEARNING_RATE=1.0e-5 \
-LR_SCHEDULER_TYPE=constant \
-OUTPUT_DIR="$SMOKE_ROOT" \
-WANDB_ENABLED=false \
-WANDB_MODE=disabled \
-REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
-bash scripts/train_leapbot.sh
-```
-
-检查该历史 smoke 的 `run_contract.txt` 中 `8/8/2/128`、日志中的 ZeRO stage 2、有限 grad norm、峰值显存、`trainer_state.json` 的 step/cursor，以及 `checkpoint_validation.json`。不得把这一结果写成 B20/GA1/global160 已通过。
-
-## 13. 常见误判和故障定位
-
-### W&B 没曲线
-
-先看训练进程是否真正到 optimizer step，而不是还在 hash 资产、加载 6B 模型或保存 checkpoint。再检查 `train.log` 的 W&B 初始化、当前用户的登录凭证和 `WANDB_MODE`。smoke 若显式关闭 W&B，本来就不会有线上曲线。
-
-### action loss 不能和 FastWAM 曲线直接对齐
-
-`train/loss_action_d30` 只有在相同样本、历史、noise、flow timestep、mask、global batch 和权重初始化下才可直接做数值归因。全历史训练的随机 W&B step 与 FastWAM H0 reference 不满足这些条件。保真比较应使用 `audit_learning_rate.sh`/`audit_h0_retention.sh` 的固定噪声、native H0 和 masked/shuffled controls。
-
-正式训练还会记录 `train/loss_action_d30_h0`、`h1_4`、`h5_8`、`h9_16`、
-`h17_plus` 以及 `train/history_h0_fraction`。分桶 loss 使用真实样本数加权跨 rank
-聚合，不能用未加权的 per-rank 均值代替。H0 每步都有值；其他历史桶因 H>0
-长度分组可能稀疏出现，应结合各自 EMA 和固定噪声审计判断。
-
-### video loss 初值在不同 causal mode 差异大
-
-`action_aggregator` 的视觉块独立，最接近 release 初始化的视觉路径；`interleaved`/`vision_causal` 让未适配的视觉专家首次读取长前缀，初始 video loss 可能更大。应比较控制训练后的效果，不应把不同 H 分布的第一个随机 step 当作架构错误结论。
-
-### OOM
-
-先同时查看 `history_blocks_max`、allocated/reserved 和 `nvidia-smi`。显存随 H、B 和出口数变化。新的非正式拓扑可降低 B、提高 GA 以保持 global batch，但三种正式模式必须一起采用同一新拓扑并重做 LR/验收。不要把 `history_vae_batch_chunk_size` 改为 2；正式 runtime 同构合同固定为 1。
-
-### 资产或 contract mismatch
-
-不要覆盖旧输出目录。检查是否换了 commit、stats、cache、VAE、选择 manifest、MAX_STEPS 或 topology；使用新的 output root。cache 发生任何重算后重新跑在线 provenance 验证。
-
-### 评测目录被拒绝
-
-这通常意味着目录里已有不同 checkpoint/config/task 初始状态的结果。保留旧目录用于审计，换一个全新的 `EVAL_ROOT`；不要删除 fingerprint 后强行混合结果。
-
-## 14. 交付清单
-
-一次可交接的完整实验至少应打包或登记：
-
-- 仓库 commit 和干净 worktree 证明；
-- `uv.lock`、GPU/驱动、PyTorch/DeepSpeed/Accelerate 版本；
-- 下载 manifest、training asset manifest、T5 cache provenance；
-- LR/H0 固定噪声 audit JSON 与两个 selection manifests；
-- 每个 causal mode 的 `run_contract.txt`、`train.log`、W&B URL、final `.pt`、final full state 和 validation JSON；
-- dev10、final50 的完整 fingerprint/result tree 与汇总表；
-- multi-exit source lineage、训练合同和 final state；
-- D×KV 网格结果、逐任务成功率、P50/P95 latency、峰值显存、cache 大小和最终 Pareto 图；
-- 所有“实测”和“估计”时长/资源的明确标注。
-
-只有这些证据齐全，后续团队才能区分“模型效果差异”“训练拓扑差异”“资产漂移”和“评测环境漂移”。
+若这些条件没有全部满足，不启动 5000-step 或三模式正式比较。

@@ -22,7 +22,8 @@ EXPECTED_FINGERPRINT = {"schema_version": 3, "identity": "expected"}
 @pytest.mark.parametrize("launcher", LAUNCHERS)
 def test_eval_launchers_are_portable_and_disable_rollout_video(launcher):
     source = (REPO_ROOT / "scripts" / launcher).read_text()
-    assert 'LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"' in source
+    assert 'LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"' in source
+    assert "/home/sheng" not in source
     assert 'PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero"' in source
     assert source.count("EVALUATION.save_rollout_video=false") == 2
 
@@ -311,16 +312,18 @@ def test_evaluator_model_and_egl_use_same_physical_gpu(tmp_path, launcher):
         assert "EVALUATION.device=cuda:3" in record["argv"]
 
 
-def test_depth_history_launcher_covers_full_grid_with_isolated_result_roots():
+def test_depth_launcher_compares_exits_under_the_fixed_trained_window():
     source = (REPO_ROOT / "scripts" / "evaluate_pareto.sh").read_text()
     assert 'DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"' in source
-    assert 'HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"' in source
+    assert 'HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"' in source
+    assert 'HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-$HISTORY_WINDOW_BLOCKS}"' in source
     assert 'KV_RETENTION_CAPS_CSV="${KV_RETENTION_CAPS_CSV:-$HISTORY_CAPS_CSV}"' in source
+    assert '"$kv_retention_cap" != "$HISTORY_WINDOW_BLOCKS"' in source
     assert (
-        'config_root="$GRID_ROOT/configs/d${depth}_kvret${kv_retention_cap}"'
+        'config_root="$GRID_ROOT/configs/d${depth}_w${kv_retention_cap}"'
         in source
     )
-    assert "kv-retention=$kv_retention_cap" in source
-    assert 'RETAINED_HISTORY_BLOCKS="$kv_retention_cap"' in source
-    assert "depth/kv-retention Pareto complete" in source
+    assert "strict-window=$kv_retention_cap" in source
+    assert 'HISTORY_WINDOW_BLOCKS="$kv_retention_cap"' in source
+    assert "depth/strict-window Pareto complete" in source
     assert "--expected-trained-exit-depths 8,16,24,30" in source

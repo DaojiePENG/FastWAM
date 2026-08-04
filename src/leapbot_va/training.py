@@ -349,9 +349,11 @@ def validate_packed_history_metadata(
 ) -> torch.Tensor:
     """Validate that packed history describes one causal episode prefix.
 
-    Returns the number of valid blocks per sample.  Full-episode samples must
-    contain the exact prefix ``0..current_block-1``; short-window ablations may
-    start later, but must still be left-aligned and strictly precede current.
+    Returns the number of valid blocks per sample. Full-episode samples contain
+    the exact left-aligned prefix ``0..current_block-1``. Strict fixed-window
+    samples are right-aligned so early padding occupies stable age slots; the
+    legacy random-window layout may remain left-aligned. In either layout valid
+    blocks must be contiguous and be the most recent real episode suffix.
     """
 
     if history_valid_blocks.ndim != 2 or history_valid_blocks.dtype != torch.bool:
@@ -365,12 +367,47 @@ def validate_packed_history_metadata(
         raise ValueError("replan_steps must be positive")
 
     history_counts = history_valid_blocks.sum(dim=1)
+    if full_episode_history and not torch.equal(
+        current_block_positions, history_counts
+    ):
+        raise ValueError(
+            "full-episode training must expose every preceding observation/action block"
+        )
     slots = torch.arange(
         history_valid_blocks.shape[1], device=history_valid_blocks.device
     )[None, :]
-    expected_valid = slots < history_counts[:, None]
-    if not torch.equal(history_valid_blocks, expected_valid):
-        raise ValueError("history_valid_blocks must be left-aligned without internal gaps")
+    for row in range(batch):
+        valid_slots = torch.nonzero(
+            history_valid_blocks[row], as_tuple=False
+        ).flatten()
+        count = int(history_counts[row].item())
+        if count and not torch.equal(
+            valid_slots,
+            torch.arange(
+                int(valid_slots[0].item()),
+                int(valid_slots[0].item()) + count,
+                device=valid_slots.device,
+            ),
+        ):
+            raise ValueError(
+                "history_valid_blocks must be contiguous (left-aligned or "
+                "right-aligned) without internal gaps"
+            )
+        if count:
+            current_block = int(current_block_positions[row].item())
+            expected_positions = torch.arange(
+                current_block - count,
+                current_block,
+                device=history_block_positions.device,
+                dtype=history_block_positions.dtype,
+            )
+            if not torch.equal(
+                history_block_positions[row, valid_slots], expected_positions
+            ):
+                raise ValueError(
+                    "short history must be the consecutive suffix immediately "
+                    "preceding the current block"
+                )
 
     valid_positions = history_block_positions[history_valid_blocks]
     if valid_positions.numel() and bool((valid_positions < 0).any().item()):
@@ -388,9 +425,10 @@ def validate_packed_history_metadata(
             raise ValueError("history positions must strictly precede the current block")
 
     if full_episode_history:
-        if not torch.equal(current_block_positions, history_counts):
+        expected_valid = slots < history_counts[:, None]
+        if not torch.equal(history_valid_blocks, expected_valid):
             raise ValueError(
-                "full-episode training must expose every preceding observation/action block"
+                "full-episode history must be left-aligned without internal gaps"
             )
         absolute_slots = slots.expand_as(history_valid_blocks)
         if not torch.equal(
@@ -945,7 +983,9 @@ def sample_lingbot_future_video_condition(
     num_frames = int(clean_future_latents.shape[2])
     if num_frames <= 0:
         raise ValueError("future-video condition must contain at least one frame")
-    probability = float(model.future_video_condition_noise_probability)
+    probability = float(
+        model.effective_future_video_condition_noise_probability()
+    )
     add_noise = bool(
         torch.rand((), device=clean_future_latents.device).item() < probability
     )
@@ -1407,6 +1447,80 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         replan_steps=replan_steps,
         full_episode_history=full_episode_history,
     )
+    episode_anchor_valid = torch.as_tensor(
+        sample.get(
+            "episode_anchor_valid",
+            torch.zeros(batch, dtype=torch.bool),
+        ),
+        device=model.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    if episode_anchor_valid.shape != (batch,):
+        raise ValueError("episode_anchor_valid must provide one flag per sample")
+    if bool(episode_anchor_valid.any().item()):
+        if (
+            "episode_anchor_video" not in sample
+            or "episode_anchor_proprio" not in sample
+        ):
+            raise ValueError(
+                "a valid episode anchor requires episode_anchor_video and "
+                "episode_anchor_proprio"
+            )
+        for sample_index in torch.nonzero(
+            episode_anchor_valid, as_tuple=False
+        ).flatten().tolist():
+            if int(current_block_positions[sample_index].item()) <= 0:
+                raise ValueError("episode anchor cannot be used at block zero")
+            valid_positions = history_positions[
+                sample_index, history_valid[sample_index]
+            ]
+            if bool((valid_positions == 0).any().item()):
+                raise ValueError(
+                    "episode anchor must not duplicate V0 inside the recent window"
+                )
+    if model.history_training_mode == "strict_replay_window_bptt":
+        if "history_window_blocks" not in sample:
+            raise ValueError(
+                "strict replay training samples must declare history_window_blocks"
+            )
+        configured_windows = torch.as_tensor(
+            sample["history_window_blocks"],
+            device=model.device,
+            dtype=torch.long,
+        ).reshape(-1)
+        if configured_windows.shape != (batch,) or bool(
+            (configured_windows != model.training_history_window_blocks).any().item()
+        ):
+            raise ValueError(
+                "training data/model strict history window mismatch"
+            )
+        window = int(model.training_history_window_blocks)
+        if int(history_valid.shape[1]) != window:
+            raise ValueError(
+                f"strict replay history tensors must have exactly W={window} slots"
+            )
+        expected_counts = torch.minimum(
+            current_block_positions,
+            torch.full_like(current_block_positions, window),
+        )
+        if not torch.equal(history_counts, expected_counts):
+            raise ValueError(
+                "strict replay samples must include every real block in the "
+                "recent window"
+            )
+        slots = torch.arange(window, device=model.device)[None, :]
+        expected_right_aligned = slots >= (window - history_counts[:, None])
+        if not torch.equal(history_valid, expected_right_aligned):
+            raise ValueError(
+                "strict replay early history must use left padding with a "
+                "right-aligned valid suffix"
+            )
+        expected_anchor = current_block_positions > window
+        if not torch.equal(episode_anchor_valid, expected_anchor):
+            raise ValueError(
+                "strict replay must add exactly one V0 anchor after V0 leaves "
+                "the recent window"
+            )
     if model.proprio_encoder is None:
         raise ValueError("causal history training requires proprio_encoder")
 
@@ -1460,24 +1574,74 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         base_context_mask = inputs["context_mask"][sample_index : sample_index + 1]
         completed_segments: list[dict[str, Any]] = []
         history_count = int(history_counts[sample_index].item())
+        history_slots = torch.nonzero(
+            history_valid[sample_index], as_tuple=False
+        ).flatten().tolist()
 
-        for history_index in range(history_count):
+        if bool(episode_anchor_valid[sample_index].item()):
+            anchor_context, anchor_context_mask = _context_for_proprio(
+                model,
+                base_context,
+                base_context_mask,
+                sample["episode_anchor_proprio"][
+                    sample_index : sample_index + 1
+                ],
+            )
+            anchor_image = sample["episode_anchor_video"][
+                sample_index : sample_index + 1, :, 0
+            ]
+            anchor_latents = _runtime_single_observation_latents(
+                model, anchor_image, tiled=tiled
+            )
+            anchor_pre = model._prepare_real_observation_pre_dit(
+                latents=anchor_latents,
+                context=anchor_context,
+                context_mask=anchor_context_mask,
+                block_index=0,
+            )
+            _, anchor_kv = _prefill_with_segment_history(
+                model,
+                expert_name="video",
+                tokens=anchor_pre["tokens"],
+                freqs=anchor_pre["freqs"],
+                t_mod=anchor_pre["t_mod"],
+                context_payload={
+                    "context": anchor_pre["context"],
+                    "mask": anchor_pre["context_mask"],
+                },
+                history_segments=[],
+                max_layers=final_depth,
+                return_segment_kv=True,
+            )
+            if anchor_kv is None:
+                raise RuntimeError("episode anchor prefill did not return K/V")
+            completed_segments.append(
+                {
+                    "modality": "video",
+                    "block_index": 0,
+                    "kv": anchor_kv,
+                }
+            )
+
+        if len(history_slots) != history_count:
+            raise RuntimeError("validated history count/slot mismatch")
+        for history_slot in history_slots:
             block_position = history_positions[
-                sample_index, history_index
+                sample_index, history_slot
             ].reshape(1)
             block_context, block_context_mask = _context_for_proprio(
                 model,
                 base_context,
                 base_context_mask,
                 history_proprio[
-                    sample_index : sample_index + 1, history_index
+                    sample_index : sample_index + 1, history_slot
                 ],
             )
 
             block_image = sample["history_video"][
                 sample_index : sample_index + 1,
                 :,
-                history_index,
+                history_slot,
             ]
             block_latents = _runtime_single_observation_latents(
                 model, block_image, tiled=tiled
@@ -1515,7 +1679,7 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             )
 
             executed_actions = history_action[
-                sample_index : sample_index + 1, history_index
+                sample_index : sample_index + 1, history_slot
             ]
             clean_action_timestep = torch.zeros(
                 (1,), device=model.device, dtype=executed_actions.dtype
@@ -1882,6 +2046,15 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
         "h9_16": (history_counts >= 9) & (history_counts <= 16),
         "h17_plus": history_counts >= 17,
     }
+    condition_noised = torch.tensor(
+        condition_noise_flags,
+        device=history_counts.device,
+        dtype=torch.bool,
+    )
+    condition_bins = {
+        "condition_clean": ~condition_noised,
+        "condition_noised": condition_noised,
+    }
     for depth, (_, video_loss, action_loss) in losses.items():
         metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(
             video_loss.detach()
@@ -1900,6 +2073,32 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
                 if bin_count
                 else 0.0
             )
+        for condition_name, condition_mask in condition_bins.items():
+            metric_name = f"loss_action_d{depth}_{condition_name}"
+            condition_count = int(condition_mask.sum().item())
+            metric_weights[metric_name] = float(condition_count)
+            metrics[metric_name] = (
+                model.loss_lambda_action
+                * float(action_values[condition_mask].mean().detach())
+                if condition_count
+                else 0.0
+            )
+            # The joint split makes it possible to distinguish a history
+            # regression from a future-condition corruption without rerunning
+            # the checkpoint on a second diagnostic data stream.
+            for history_name, history_mask in history_bins.items():
+                joint_mask = condition_mask & history_mask
+                joint_name = (
+                    f"loss_action_d{depth}_{history_name}_{condition_name}"
+                )
+                joint_count = int(joint_mask.sum().item())
+                metric_weights[joint_name] = float(joint_count)
+                metrics[joint_name] = (
+                    model.loss_lambda_action
+                    * float(action_values[joint_mask].mean().detach())
+                    if joint_count
+                    else 0.0
+                )
     metrics["history_blocks_mean"] = float(
         history_counts.float().mean().detach()
     )
@@ -1907,11 +2106,32 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     metrics["history_h0_fraction"] = float(
         (history_counts == 0).float().mean().detach()
     )
+    metrics["episode_anchor_fraction"] = float(
+        episode_anchor_valid.float().mean().detach()
+    )
     metrics["future_video_condition_noised_fraction"] = float(
         sum(condition_noise_flags) / max(1, len(condition_noise_flags))
     )
+    metrics["future_video_condition_noise_probability"] = float(
+        model.effective_future_video_condition_noise_probability()
+    )
     metrics["future_video_condition_sigma_mean"] = float(
         torch.stack(condition_sigma_means).mean().detach()
+    )
+    noised_sigma_values = [
+        sigma
+        for sigma, was_noised in zip(
+            condition_sigma_means, condition_noise_flags
+        )
+        if was_noised
+    ]
+    metrics["future_video_condition_sigma_noised_mean"] = (
+        float(torch.stack(noised_sigma_values).mean().detach())
+        if noised_sigma_values
+        else 0.0
+    )
+    metric_weights["future_video_condition_sigma_noised_mean"] = float(
+        len(noised_sigma_values)
     )
     # Wan22Trainer consumes these per-metric sample counts when combining
     # sparse H bins across ranks and gradient-accumulation micro-batches.  The

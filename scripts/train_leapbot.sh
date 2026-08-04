@@ -6,11 +6,14 @@ set -euo pipefail
 #   * FastWAM release initialization
 #   * block-local RoPE + first-block-anchored episode timing
 #   * one raw causal-attention softmax (no history gate)
-#   * chronological real-data prefix with full BPTT
+#   * V0 anchor + configurable recent real-data replay window with full BPTT
 #   * LingBot-style GT/noised-GT future-video K/V for ActionDiT
 #   * ActionDiT full fine-tuning + conservative VideoDiT LoRA
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+ACCELERATE_BIN="${ACCELERATE_BIN:-$ROOT_DIR/.venv/bin/accelerate}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-$RELEASE_CHECKPOINT}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
@@ -27,11 +30,14 @@ LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"
 LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
+HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 NUM_VIDEO_FRAMES="${NUM_VIDEO_FRAMES:-9}"
 FUTURE_VIDEO_CONDITIONING="${FUTURE_VIDEO_CONDITIONING:-lingbot_teacher_forced_v1}"
 FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY="${FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY:-0.5}"
 FUTURE_VIDEO_CONDITION_MIN_U="${FUTURE_VIDEO_CONDITION_MIN_U:-0.5}"
 FUTURE_VIDEO_CONDITION_MAX_U="${FUTURE_VIDEO_CONDITION_MAX_U:-1.0}"
+FUTURE_VIDEO_CONDITION_CLEAN_WARMUP_STEPS="${FUTURE_VIDEO_CONDITION_CLEAN_WARMUP_STEPS:-200}"
+FUTURE_VIDEO_CONDITION_NOISE_RAMP_STEPS="${FUTURE_VIDEO_CONDITION_NOISE_RAMP_STEPS:-800}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"
 TRAINING_EXIT_DEPTHS_CSV="${TRAINING_EXIT_DEPTHS_CSV:-30}"
 SAVE_EVERY="${SAVE_EVERY:-500}"
@@ -46,17 +52,15 @@ ALLOW_DIRTY="${ALLOW_DIRTY:-false}"
 ALLOW_CROSS_CONTRACT_RESUME="${ALLOW_CROSS_CONTRACT_RESUME:-false}"
 ALLOW_EXISTING_UNCONTRACTED="${ALLOW_EXISTING_UNCONTRACTED:-false}"
 REQUIRE_SELF_IDENTIFYING_CHECKPOINT="${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}"
-LR_SELECTION_MANIFEST_SHA256="${LR_SELECTION_MANIFEST_SHA256:-}"
-H0_SELECTION_MANIFEST_SHA256="${H0_SELECTION_MANIFEST_SHA256:-}"
 EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="${EXPECTED_TRAINING_ASSET_MANIFEST_SHA256:-}"
 
 GLOBAL_BATCH=$((NUM_PROCESSES * BATCH_SIZE * GRAD_ACCUM))
 TOPOLOGY_TAG="w${NUM_PROCESSES}_b${BATCH_SIZE}_ga${GRAD_ACCUM}_bs${GLOBAL_BATCH}"
 LR_TAG="${LEARNING_RATE//./p}"
 LR_TAG="${LR_TAG//+/_}"
-OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/final_lingbot_video_kv_v6_${TOPOLOGY_TAG}_${MODE}_peft_${MAX_STEPS}steps_${LR_SCHEDULER_TYPE}_lr${LR_TAG}_seed${SEED}}"
-WANDB_GROUP="${WANDB_GROUP:-final-lingbot-video-kv-v6-${TOPOLOGY_TAG}-seed${SEED}}"
-RUN_NAME="${RUN_NAME:-final-lingbot-video-kv-v6-${TOPOLOGY_TAG//_/-}-${MODE//_/-}-peft-${MAX_STEPS}steps-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed${SEED}}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/runs/strict_window_v7_w${HISTORY_WINDOW_BLOCKS}_${TOPOLOGY_TAG}_${MODE}_peft_${MAX_STEPS}steps_${LR_SCHEDULER_TYPE}_lr${LR_TAG}_seed${SEED}}"
+WANDB_GROUP="${WANDB_GROUP:-strict-window-v7-w${HISTORY_WINDOW_BLOCKS}-${TOPOLOGY_TAG}-seed${SEED}}"
+RUN_NAME="${RUN_NAME:-strict-window-v7-w${HISTORY_WINDOW_BLOCKS}-${TOPOLOGY_TAG//_/-}-${MODE//_/-}-peft-${MAX_STEPS}steps-${LR_SCHEDULER_TYPE}-lr${LR_TAG}-seed${SEED}}"
 LOG_FILE="$OUTPUT_DIR/train.log"
 FINAL_TAG="step_$(printf '%06d' "$MAX_STEPS")"
 FINAL_CHECKPOINT="$OUTPUT_DIR/checkpoints/weights/$FINAL_TAG.pt"
@@ -102,6 +106,10 @@ if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
     log "missing FastWAM release checkpoint: $RELEASE_CHECKPOINT"
     exit 1
 fi
+if [[ ! -x "$PYTHON_BIN" || ! -x "$ACCELERATE_BIN" ]]; then
+    log "missing Python/Accelerate executables: PYTHON_BIN=$PYTHON_BIN ACCELERATE_BIN=$ACCELERATE_BIN"
+    exit 1
+fi
 if [[ ! -s "$INITIAL_CHECKPOINT" ]]; then
     log "missing initialization checkpoint: $INITIAL_CHECKPOINT"
     exit 1
@@ -140,6 +148,11 @@ if [[ "$HISTORY_VAE_BATCH_CHUNK_SIZE" != "1" ]]; then
     log "runtime-isomorphic training requires history VAE chunk 1; got $HISTORY_VAE_BATCH_CHUNK_SIZE"
     exit 1
 fi
+if ! [[ "$HISTORY_WINDOW_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
+    || (( HISTORY_WINDOW_BLOCKS > 70 )); then
+    log "history window must be a positive integer no greater than episode capacity 70; got $HISTORY_WINDOW_BLOCKS"
+    exit 1
+fi
 if [[ "$NUM_VIDEO_FRAMES" != "9" ]] \
     || [[ "$FUTURE_VIDEO_CONDITIONING" != "lingbot_teacher_forced_v1" ]] \
     || [[ "$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" != "0.5" ]] \
@@ -152,10 +165,7 @@ if ! [[ "$INITIAL_BLOCK_OVERSAMPLE" =~ ^[1-9][0-9]*$ ]]; then
     log "initial block oversampling must be a positive integer; got $INITIAL_BLOCK_OVERSAMPLE"
     exit 1
 fi
-for selection_sha in \
-    "$LR_SELECTION_MANIFEST_SHA256" \
-    "$H0_SELECTION_MANIFEST_SHA256" \
-    "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256"; do
+for selection_sha in "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256"; do
     if [[ -n "$selection_sha" && ! "$selection_sha" =~ ^[0-9a-f]{64}$ ]]; then
         log "selection manifest identity must be a SHA-256: $selection_sha"
         exit 1
@@ -180,7 +190,7 @@ cleanup_asset_manifest() {
 }
 trap cleanup_asset_manifest EXIT
 DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/training_asset_manifest.py" \
+"$PYTHON_BIN" "$ROOT_DIR/scripts/training_asset_manifest.py" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot" \
@@ -190,7 +200,7 @@ DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
     --download-manifest "$ASSET_DOWNLOAD_MANIFEST" \
     --output "$ASSET_MANIFEST_TMP"
 manifest_value() {
-    "$ROOT_DIR/.venv/bin/python" - "$ASSET_MANIFEST_TMP" "$1" <<'PY'
+    "$PYTHON_BIN" - "$ASSET_MANIFEST_TMP" "$1" <<'PY'
 import json
 import sys
 
@@ -252,12 +262,6 @@ contract_fields+=( \
     "tokenizer_sha256=$TOKENIZER_SHA256" \
     "vae_checkpoint_sha256=$VAE_CHECKPOINT_SHA256" \
 )
-if [[ -n "$LR_SELECTION_MANIFEST_SHA256" ]]; then
-    contract_fields+=("lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256")
-fi
-if [[ -n "$H0_SELECTION_MANIFEST_SHA256" ]]; then
-    contract_fields+=("h0_selection_manifest_sha256=$H0_SELECTION_MANIFEST_SHA256")
-fi
 contract_fields+=( \
     "mode=$MODE" \
     "num_processes=$NUM_PROCESSES" \
@@ -269,18 +273,23 @@ contract_fields+=( \
     "lr_scheduler_type=$LR_SCHEDULER_TYPE" \
     "video_lora_multiplier=$VIDEO_LORA_MULTIPLIER" \
     "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    "history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
     "world_model_conditioning=$FUTURE_VIDEO_CONDITIONING" \
     "num_video_frames=$NUM_VIDEO_FRAMES" \
     "future_video_condition_noise_probability=$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" \
     "future_video_condition_min_u=$FUTURE_VIDEO_CONDITION_MIN_U" \
     "future_video_condition_max_u=$FUTURE_VIDEO_CONDITION_MAX_U" \
+    "future_video_condition_clean_warmup_steps=$FUTURE_VIDEO_CONDITION_CLEAN_WARMUP_STEPS" \
+    "future_video_condition_noise_ramp_steps=$FUTURE_VIDEO_CONDITION_NOISE_RAMP_STEPS" \
     "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
     "h0_anchor_mixing=per_global_micro_batch" \
     "save_every=$SAVE_EVERY" \
     "seed=$SEED" \
     "padding_attention_mask=true" \
-    "history_training_mode=incremental_full_bptt" \
-    "full_episode_history=true" \
+    "history_training_mode=strict_replay_window_bptt" \
+    "history_sampling_mode=recent_window" \
+    "history_padding=left_masked" \
+    "episode_anchor=single_real_v0" \
     "max_history_blocks=70" \
     "replan_steps=10" \
     "action_horizon=32" \
@@ -335,7 +344,7 @@ else
 fi
 
 preflight_gpus
-log "start incremental full-BPTT PEFT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE topology=$TOPOLOGY_TAG gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE h0_anchor_mixing=per_global_micro_batch resume=$RESUME_PATH"
+log "start strict W${HISTORY_WINDOW_BLOCKS} replay-window BPTT: commit=$CODE_COMMIT contract=$RUN_CONTRACT_SHA256 mode=$MODE topology=$TOPOLOGY_TAG gpus=$GPU_IDS_CSV micro_batch=$BATCH_SIZE grad_accum=$GRAD_ACCUM global_batch=$GLOBAL_BATCH max_steps=$MAX_STEPS action_lr=$LEARNING_RATE lr_scheduler=$LR_SCHEDULER_TYPE video_lora_multiplier=$VIDEO_LORA_MULTIPLIER history_vae_batch_chunk=$HISTORY_VAE_BATCH_CHUNK_SIZE initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE resume=$RESUME_PATH"
 
 CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     PYTHONHASHSEED="$SEED" \
@@ -352,7 +361,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     WANDB_DIR="$OUTPUT_DIR" \
     WANDB_RUN_ID="$RUN_NAME" \
     WANDB_RESUME=allow \
-    "$ROOT_DIR/.venv/bin/accelerate" launch \
+    "$ACCELERATE_BIN" launch \
     --config_file "$ROOT_DIR/scripts/accelerate_configs/accelerate_zero2_ds.yaml" \
     --num_processes "$NUM_PROCESSES" \
     --main_process_port "$MAIN_PROCESS_PORT" \
@@ -360,13 +369,16 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     task=libero_leapbot_2cam224 \
     "output_dir=$OUTPUT_DIR" \
     "model.causal_mode=$MODE" \
-    model.history_training_mode=incremental_full_bptt \
+    model.history_training_mode=strict_replay_window_bptt \
+    "model.history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
     "model.history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
     "model.future_video_conditioning=$FUTURE_VIDEO_CONDITIONING" \
     "model.num_video_frames=$NUM_VIDEO_FRAMES" \
     "model.future_video_condition_noise_probability=$FUTURE_VIDEO_CONDITION_NOISE_PROBABILITY" \
     "model.future_video_condition_min_u=$FUTURE_VIDEO_CONDITION_MIN_U" \
     "model.future_video_condition_max_u=$FUTURE_VIDEO_CONDITION_MAX_U" \
+    "model.future_video_condition_clean_warmup_steps=$FUTURE_VIDEO_CONDITION_CLEAN_WARMUP_STEPS" \
+    "model.future_video_condition_noise_ramp_steps=$FUTURE_VIDEO_CONDITION_NOISE_RAMP_STEPS" \
     model.training_strategy=video_lora_action_full \
     model.video_lora.enabled=true \
     model.video_lora.rank=16 \
@@ -374,7 +386,9 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     model.video_lora.dropout=0.0 \
     "model.video_lora.learning_rate_multiplier=$VIDEO_LORA_MULTIPLIER" \
     model.mot_checkpoint_mixed_attn=true \
-    data.train.full_episode_history=true \
+    data.train.history_sampling_mode=recent_window \
+    "data.train.history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
+    data.train.use_episode_anchor=true \
     "data.train.text_embedding_cache_dir=$TEXT_EMBEDDING_CACHE" \
     "data.train.dataset_dirs=[$ROOT_DIR/data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot,$ROOT_DIR/data/libero_mujoco3.3.2/libero_10_no_noops_lerobot]" \
     data.train.min_history_blocks=0 \
@@ -412,16 +426,20 @@ if [[ "${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}" == "true" ]]; then
     )
 fi
 expected_training_exit_depths="${TRAINING_EXIT_DEPTHS_CSV:-30}"
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+"$PYTHON_BIN" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
     "$FINAL_CHECKPOINT" \
     --expected-step "$MAX_STEPS" \
     --expected-mode "$MODE" \
     --expected-trained-exit-depths "$expected_training_exit_depths" \
     --expected-video-lora-multiplier "$VIDEO_LORA_MULTIPLIER" \
     --expected-history-vae-batch-chunk-size "$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    --expected-history-training-mode strict_replay_window_bptt \
+    --expected-history-window-blocks "$HISTORY_WINDOW_BLOCKS" \
+    --expected-condition-clean-warmup-steps "$FUTURE_VIDEO_CONDITION_CLEAN_WARMUP_STEPS" \
+    --expected-condition-noise-ramp-steps "$FUTURE_VIDEO_CONDITION_NOISE_RAMP_STEPS" \
     "${checkpoint_identity_args[@]}" \
     --state-dir "$OUTPUT_DIR/checkpoints/state/$FINAL_TAG" \
     --output "$OUTPUT_DIR/checkpoint_validation.json" \
     >>"$LOG_FILE" 2>&1
 
-log "incremental full-history PEFT complete: $FINAL_CHECKPOINT"
+log "strict replay-window PEFT complete: $FINAL_CHECKPOINT"

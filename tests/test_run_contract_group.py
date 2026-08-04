@@ -39,7 +39,7 @@ BASE_FIELDS = (
     ("batch_size", "20"),
     ("gradient_accumulation_steps", "1"),
     ("global_batch", "160"),
-    ("max_steps", "895"),
+    ("max_steps", "5000"),
     ("learning_rate", "1.0e-4"),
     ("lr_scheduler_type", "cosine"),
     ("video_lora_multiplier", "1.0"),
@@ -49,13 +49,18 @@ BASE_FIELDS = (
     ("future_video_condition_noise_probability", "0.5"),
     ("future_video_condition_min_u", "0.5"),
     ("future_video_condition_max_u", "1.0"),
+    ("future_video_condition_clean_warmup_steps", "200"),
+    ("future_video_condition_noise_ramp_steps", "800"),
     ("initial_block_oversample", "4"),
     ("h0_anchor_mixing", "per_global_micro_batch"),
     ("save_every", "179"),
     ("seed", "42"),
     ("padding_attention_mask", "true"),
-    ("history_training_mode", "incremental_full_bptt"),
-    ("full_episode_history", "true"),
+    ("history_training_mode", "strict_replay_window_bptt"),
+    ("history_sampling_mode", "recent_window"),
+    ("history_window_blocks", "8"),
+    ("history_padding", "left_masked"),
+    ("episode_anchor", "single_real_v0"),
     ("max_history_blocks", "70"),
     ("replan_steps", "10"),
     ("action_horizon", "32"),
@@ -91,7 +96,7 @@ def test_group_accepts_only_mode_and_derived_hash_differences(tmp_path):
     ]
     result = validator.validate_contract_group(
         contracts,
-        expected_fields=(("max_steps", "895"),),
+        expected_fields=(("max_steps", "5000"),),
     )
     assert [item["mode"] for item in result["contracts"]] == [
         "action_aggregator",
@@ -158,6 +163,25 @@ def test_contract_requires_padding_attention_mask_to_be_true(tmp_path):
         overrides={"padding_attention_mask": "false"},
     )
     with pytest.raises(ValueError, match="padding_attention_mask must be exactly 'true'"):
+        _load(path, "action_aggregator")
+
+
+def test_contract_accepts_a_nondefault_bounded_history_window(tmp_path):
+    path = _write_contract(
+        tmp_path / "w16.txt",
+        "action_aggregator",
+        overrides={"history_window_blocks": "16"},
+    )
+    assert _load(path, "action_aggregator").values["history_window_blocks"] == "16"
+
+
+def test_contract_rejects_history_window_larger_than_episode_capacity(tmp_path):
+    path = _write_contract(
+        tmp_path / "oversized-window.txt",
+        "action_aggregator",
+        overrides={"history_window_blocks": "71"},
+    )
+    with pytest.raises(ValueError, match="cannot exceed max_history_blocks"):
         _load(path, "action_aggregator")
 
 

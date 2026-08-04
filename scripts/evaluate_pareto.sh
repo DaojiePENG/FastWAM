@@ -4,7 +4,9 @@ set -euo pipefail
 
 # Evaluate the trained exit-depth x retained-KV grid and select the Pareto set.
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
 FINAL_STEP="${FINAL_STEP:?FINAL_STEP is required}"
@@ -12,8 +14,9 @@ GRID_ROOT="${GRID_ROOT:-$ROOT_DIR/evaluate_results/leapbot_depth_history_pareto}
 NUM_TRIALS="${NUM_TRIALS:-50}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
+HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 DEPTHS_CSV="${DEPTHS_CSV:-8,16,24,30}"
-HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-0,8,16,32,full}"
+HISTORY_CAPS_CSV="${HISTORY_CAPS_CSV:-$HISTORY_WINDOW_BLOCKS}"
 KV_RETENTION_CAPS_CSV="${KV_RETENTION_CAPS_CSV:-$HISTORY_CAPS_CSV}"
 BASELINE_RESULTS_ROOT="${BASELINE_RESULTS_ROOT:-}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
@@ -42,12 +45,16 @@ if [[ ! "$EXPECTED_RUN_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]] \
 fi
 
 mkdir -p "$GRID_ROOT/.checkpoint_validation"
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+"$PYTHON_BIN" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
     "$CHECKPOINT" \
     --expected-step "$FINAL_STEP" \
     --expected-mode "$MODE" \
     --expected-trained-exit-depths 8,16,24,30 \
     --expected-history-vae-batch-chunk-size 1 \
+    --expected-history-training-mode strict_replay_window_bptt \
+    --expected-history-window-blocks "$HISTORY_WINDOW_BLOCKS" \
+    --expected-condition-clean-warmup-steps 200 \
+    --expected-condition-noise-ramp-steps 800 \
     --expected-run-contract-sha256 "$EXPECTED_RUN_CONTRACT_SHA256" \
     --expected-code-commit "$EXPECTED_CODE_COMMIT" \
     --state-dir "$TRAIN_ROOT/$MODE/checkpoints/state/$FINAL_STEP_TAG" \
@@ -65,14 +72,13 @@ for depth in "${DEPTHS[@]}"; do
             ;;
     esac
     for kv_retention_cap in "${KV_RETENTION_CAPS[@]}"; do
-        if [[ "$kv_retention_cap" != "full" ]] \
-            && { [[ ! "$kv_retention_cap" =~ ^[0-9]+$ ]] \
-                || (( kv_retention_cap > MAX_HISTORY_BLOCKS )); }; then
-            printf 'Invalid KV retention cap: %s\n' "$kv_retention_cap" >&2
+        if [[ "$kv_retention_cap" != "$HISTORY_WINDOW_BLOCKS" ]]; then
+            printf 'A strict checkpoint must be evaluated at its trained history window %s; got %s\n' \
+                "$HISTORY_WINDOW_BLOCKS" "$kv_retention_cap" >&2
             exit 2
         fi
-        config_root="$GRID_ROOT/configs/d${depth}_kvret${kv_retention_cap}"
-        log "evaluate mode=$MODE depth=$depth kv-retention=$kv_retention_cap trials=$NUM_TRIALS"
+        config_root="$GRID_ROOT/configs/d${depth}_w${kv_retention_cap}"
+        log "evaluate mode=$MODE depth=$depth strict-window=$kv_retention_cap trials=$NUM_TRIALS"
         ROOT_DIR="$ROOT_DIR" \
         TRAIN_ROOT="$TRAIN_ROOT" \
         EVAL_ROOT="$config_root" \
@@ -82,7 +88,7 @@ for depth in "${DEPTHS[@]}"; do
         GPU_IDS_CSV="$GPU_IDS_CSV" \
         LEAPBOT_DATASET_STATS="$DATASET_STATS" \
         MAX_HISTORY_BLOCKS="$MAX_HISTORY_BLOCKS" \
-        RETAINED_HISTORY_BLOCKS="$kv_retention_cap" \
+        HISTORY_WINDOW_BLOCKS="$kv_retention_cap" \
         EXIT_DEPTH="$depth" \
         EXPECTED_TRAINED_EXIT_DEPTHS=8,16,24,30 \
         bash "$ROOT_DIR/scripts/evaluate_checkpoint.sh"
@@ -98,14 +104,14 @@ if [[ -n "$BASELINE_RESULTS_ROOT" ]]; then
     pareto_inputs+=("$BASELINE_RESULTS_ROOT")
 fi
 
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
+"$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/pareto.py" \
     "${pareto_inputs[@]}" \
     --output-dir "$GRID_ROOT/pareto" \
     --expected-tasks 10 \
     --expected-trials-per-task "$NUM_TRIALS" \
     --require-profiled
 MPLCONFIGDIR="$ROOT_DIR/.cache/matplotlib" \
-    "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/plot_pareto.py" \
+    "$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/plot_pareto.py" \
     "$GRID_ROOT/pareto" \
     --output-dir "$GRID_ROOT/pareto"
-log "depth/kv-retention Pareto complete: $GRID_ROOT/pareto/results.csv"
+log "depth/strict-window Pareto complete: $GRID_ROOT/pareto/results.csv"

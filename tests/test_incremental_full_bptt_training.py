@@ -198,6 +198,30 @@ def test_lingbot_teacher_forcing_clean_and_high_noise_branches():
     assert not torch.equal(condition, clean)
 
 
+def test_future_video_condition_curriculum_is_driven_by_optimizer_step():
+    model = _model("interleaved")
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(2,),
+        future_video_condition_noise_probability=0.5,
+        future_video_condition_clean_warmup_steps=2,
+        future_video_condition_noise_ramp_steps=4,
+    )
+    expected = {
+        0: 0.0,
+        1: 0.0,
+        2: 0.0,
+        4: 0.25,
+        6: 0.5,
+        100: 0.5,
+    }
+    for step, probability in expected.items():
+        model.set_training_step(step)
+        assert model.effective_future_video_condition_noise_probability() == pytest.approx(
+            probability
+        )
+
+
 def test_training_rejects_video_length_outside_checkpoint_contract():
     model = _model("interleaved")
     sample = _sample((0,))
@@ -658,6 +682,32 @@ def test_training_and_runtime_share_persistent_prefix_and_condition_shape(causal
     assert result["bitwise_pass"]
 
 
+def test_strict_window_training_and_runtime_rebuild_the_same_prefix():
+    model = _model("action_aggregator", layers=8)
+    model.configure_causal_training(
+        causal_mode="action_aggregator",
+        training_exit_depths=(8,),
+        history_training_mode="strict_replay_window_bptt",
+        history_window_blocks=2,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+    )
+    sample = _sample((2,))
+    sample["history_window_blocks"] = torch.tensor([2])
+    sample["full_episode_history"] = torch.tensor([False])
+    sample["episode_anchor_video"] = torch.zeros(1, 3, 1, 16, 16)
+    sample["episode_anchor_proprio"] = torch.zeros(1, 2)
+    sample["episode_anchor_valid"] = torch.tensor([False])
+
+    result = validate_incremental_action_equivalence(model, sample, seed=1203)
+
+    assert result["history_storage_mode"] == "strict_replay"
+    assert result["sequence"]["runtime_conditioning_valid"]
+    assert result["prefix_kv"]["bitwise_equal"]
+    assert result["bitwise_pass"]
+
+
 def test_runtime_equivalence_rejects_padded_action_target_contract():
     model = _model("interleaved")
     sample = _sample((1,))
@@ -829,3 +879,70 @@ def test_checkpointed_padding_masks_survive_recompute_and_isolate_padded_tails(
             msg=lambda message, name=reference_name: f"{name}: {message}",
         )
     assert saw_finite_gradient
+
+
+def test_strict_window_accepts_only_right_aligned_recent_suffix_and_v0_anchor():
+    model = _model("interleaved")
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(2,),
+        history_training_mode="strict_replay_window_bptt",
+        history_window_blocks=4,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+    )
+
+    early = _sample((2,))
+    for key, dim in (
+        ("history_video", 2),
+        ("history_action", 1),
+        ("history_proprio", 1),
+    ):
+        value = early[key]
+        shape = list(value.shape)
+        shape[dim] = 2
+        early[key] = torch.cat([value.new_zeros(shape), value], dim=dim)
+    early["history_valid_blocks"] = torch.tensor(
+        [[False, False, True, True]]
+    )
+    early["history_block_positions"] = torch.tensor([[-1, -1, 0, 1]])
+    early["history_window_blocks"] = torch.tensor([4])
+    early["full_episode_history"] = torch.tensor([False])
+    early["episode_anchor_video"] = torch.zeros(1, 3, 1, 16, 16)
+    early["episode_anchor_proprio"] = torch.zeros(1, 2)
+    early["episode_anchor_valid"] = torch.tensor([False])
+    model.future_video_condition_noise_probability = 0.0
+    torch.manual_seed(9901)
+    early_loss, early_metrics = model.training_loss(early)
+    assert torch.isfinite(early_loss)
+    assert early_metrics["history_blocks_mean"] == 2.0
+    assert early_metrics["episode_anchor_fraction"] == 0.0
+    assert early_metrics["__metric_weight__loss_action_d2_condition_clean"] == 1.0
+    assert early_metrics["__metric_weight__loss_action_d2_condition_noised"] == 0.0
+
+    anchored = _sample((4,))
+    anchored["history_block_positions"] = torch.tensor([[1, 2, 3, 4]])
+    anchored["current_block_position"] = torch.tensor([5])
+    anchored["episode_step"] = torch.tensor([5 * REPLAN_STEPS])
+    anchored["history_window_blocks"] = torch.tensor([4])
+    anchored["full_episode_history"] = torch.tensor([False])
+    anchored["episode_anchor_video"] = torch.randn(1, 3, 1, 16, 16)
+    anchored["episode_anchor_proprio"] = torch.randn(1, 2)
+    anchored["episode_anchor_valid"] = torch.tensor([True])
+    model.future_video_condition_noise_probability = 1.0
+    torch.manual_seed(9902)
+    anchor_loss, anchor_metrics = model.training_loss(anchored)
+    assert torch.isfinite(anchor_loss)
+    assert anchor_metrics["history_blocks_mean"] == 4.0
+    assert anchor_metrics["episode_anchor_fraction"] == 1.0
+    assert anchor_metrics["__metric_weight__loss_action_d2_condition_clean"] == 0.0
+    assert anchor_metrics["__metric_weight__loss_action_d2_condition_noised"] == 1.0
+
+    broken = dict(early)
+    broken["history_valid_blocks"] = torch.tensor(
+        [[True, True, False, False]]
+    )
+    broken["history_block_positions"] = torch.tensor([[0, 1, -1, -1]])
+    with pytest.raises(ValueError, match="left padding"):
+        model.training_loss(broken)

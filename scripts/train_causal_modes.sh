@@ -4,42 +4,31 @@ set -euo pipefail
 
 # Candidate canonical controlled causal-mode training. Every mode uses the same
 # eight-rank B20/GA1 topology, sampler sharding, global batches, RNG streams, and
-# optimizer updates. This topology must pass the real H41--H50 ZeRO-2 capacity
-# probe before it is frozen for formal results. The optional MODES_CSV subset
+# optimizer updates. This topology must pass the real strict-window ZeRO-2 capacity
+# smoke before it is frozen for formal results. The optional MODES_CSV subset
 # permits an effect audit between expensive stages; invoking the remaining modes
 # later with the same TRAIN_ROOT preserves identical per-mode run contracts.
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-LR_SELECTION_MANIFEST="${LR_SELECTION_MANIFEST:?LR_SELECTION_MANIFEST is required}"
-H0_SELECTION_MANIFEST="${H0_SELECTION_MANIFEST:?H0_SELECTION_MANIFEST is required}"
-SELECTED_LR="$("$ROOT_DIR/.venv/bin/python" \
-    "$ROOT_DIR/scripts/history_audit_selection.py" validate \
-    --manifest "$LR_SELECTION_MANIFEST" \
-    --expected-kind learning_rate \
-    --allowed-basis fixed_noise_audit \
-    --allowed-basis user_directed \
-    --selected-value-only)"
-INITIAL_BLOCK_OVERSAMPLE="$("$ROOT_DIR/.venv/bin/python" \
-    "$ROOT_DIR/scripts/history_audit_selection.py" validate \
-    --manifest "$H0_SELECTION_MANIFEST" \
-    --expected-kind initial_block_oversample \
-    --allowed-basis fixed_noise_audit \
-    --selected-value-only)"
-LR_SELECTION_MANIFEST_SHA256="$(sha256sum "$LR_SELECTION_MANIFEST" | awk '{print $1}')"
-H0_SELECTION_MANIFEST_SHA256="$(sha256sum "$H0_SELECTION_MANIFEST" | awk '{print $1}')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+ACCELERATE_BIN="${ACCELERATE_BIN:-$ROOT_DIR/.venv/bin/accelerate}"
+SELECTED_LR="${LEARNING_RATE:-1.0e-4}"
+INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
-MAX_STEPS="${MAX_STEPS:-895}"
+MAX_STEPS="${MAX_STEPS:-5000}"
 SAVE_EVERY="${SAVE_EVERY:-179}"
 BATCH_SIZE="${BATCH_SIZE:-20}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
+HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
 WANDB_MODE="${WANDB_MODE:-online}"
 SEED="${SEED:-42}"
 LR_TAG="${SELECTED_LR//./p}"
-TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_lingbot_video_kv_v6_b20_ga1_d30_s${MAX_STEPS}_bs160_cosine_lr${LR_TAG}}"
+TRAIN_ROOT="${TRAIN_ROOT:-$ROOT_DIR/runs/causal_strict_window_v7_w${HISTORY_WINDOW_BLOCKS}_b20_ga1_d30_s${MAX_STEPS}_bs160_cosine_lr${LR_TAG}}"
 MODES_CSV="${MODES_CSV:-action_aggregator,interleaved,vision_causal}"
 IFS=',' read -r -a MODES <<<"$MODES_CSV"
 CANONICAL_MODES=(action_aggregator interleaved vision_causal)
@@ -49,7 +38,12 @@ log() {
 }
 
 if [[ "$NUM_PROCESSES" -ne 8 ]] || [[ "$BATCH_SIZE" -ne 20 ]] || [[ "$GRAD_ACCUM" -ne 1 ]]; then
-    log "candidate formal comparison requires 8 GPUs x batch 20 x grad accumulation 1 (global batch 160); run the H41-H50 capacity probe before freezing results"
+    log "candidate formal comparison requires 8 GPUs x batch 20 x grad accumulation 1 (global batch 160); run the matching strict-window capacity smoke first"
+    exit 1
+fi
+if ! [[ "$HISTORY_WINDOW_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
+    || (( HISTORY_WINDOW_BLOCKS > 70 )); then
+    log "history window must be a positive integer no greater than 70; got $HISTORY_WINDOW_BLOCKS"
     exit 1
 fi
 if (( ${#MODES[@]} == 0 )); then
@@ -116,7 +110,7 @@ validate_existing_contract_group() {
     if (( ${#contract_args[@]} == 0 )); then
         return 0
     fi
-    "$ROOT_DIR/.venv/bin/python" \
+    "$PYTHON_BIN" \
         "$ROOT_DIR/scripts/validate_run_contract_group.py" \
         "${contract_args[@]}" \
         --expected-field "code_commit=$CODE_COMMIT" \
@@ -131,9 +125,9 @@ validate_existing_contract_group() {
         --expected-field lr_scheduler_type=cosine \
         --expected-field "history_vae_batch_chunk_size=$HISTORY_VAE_BATCH_CHUNK_SIZE" \
         --expected-field "initial_block_oversample=$INITIAL_BLOCK_OVERSAMPLE" \
-        --expected-field h0_anchor_mixing=per_global_micro_batch \
-        --expected-field "lr_selection_manifest_sha256=$LR_SELECTION_MANIFEST_SHA256" \
-        --expected-field "h0_selection_manifest_sha256=$H0_SELECTION_MANIFEST_SHA256" \
+        --expected-field history_training_mode=strict_replay_window_bptt \
+        --expected-field history_sampling_mode=recent_window \
+        --expected-field "history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
         --expected-field "save_every=$SAVE_EVERY" \
         --expected-field "seed=$SEED" \
         --expected-field padding_attention_mask=true \
@@ -174,9 +168,8 @@ for mode in "${MODES[@]}"; do
     LR_SCHEDULER_TYPE=cosine \
     VIDEO_LORA_MULTIPLIER=1.0 \
     HISTORY_VAE_BATCH_CHUNK_SIZE="$HISTORY_VAE_BATCH_CHUNK_SIZE" \
+    HISTORY_WINDOW_BLOCKS="$HISTORY_WINDOW_BLOCKS" \
     INITIAL_BLOCK_OVERSAMPLE="$INITIAL_BLOCK_OVERSAMPLE" \
-    LR_SELECTION_MANIFEST_SHA256="$LR_SELECTION_MANIFEST_SHA256" \
-    H0_SELECTION_MANIFEST_SHA256="$H0_SELECTION_MANIFEST_SHA256" \
     EXPECTED_TRAINING_ASSET_MANIFEST_SHA256="$EXPECTED_ASSET_MANIFEST_SHA256" \
     REQUIRE_SELF_IDENTIFYING_CHECKPOINT=true \
     RELEASE_CHECKPOINT="$RELEASE_CHECKPOINT" \
@@ -184,7 +177,9 @@ for mode in "${MODES[@]}"; do
     DATASET_STATS="$DATASET_STATS" \
     SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
-    RUN_NAME="causal-lingbot-video-kv-v6-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
+    PYTHON_BIN="$PYTHON_BIN" \
+    ACCELERATE_BIN="$ACCELERATE_BIN" \
+    RUN_NAME="causal-strict-window-v7-w${HISTORY_WINDOW_BLOCKS}-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \
     MAIN_PROCESS_PORT=29971 \

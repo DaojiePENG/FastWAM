@@ -1,8 +1,29 @@
 """Utils for evaluating policies in LIBERO simulation environments."""
 
+import importlib.util
 import math
-import time
 import pathlib
+import sys
+import time
+
+
+def _disable_shared_robosuite_file_log() -> None:
+    """Disable robosuite's hard-coded /tmp log before importing LIBERO."""
+
+    package = importlib.util.find_spec("robosuite")
+    if package is None or not package.submodule_search_locations:
+        return
+    macros_path = pathlib.Path(next(iter(package.submodule_search_locations))) / "macros.py"
+    macros_spec = importlib.util.spec_from_file_location("robosuite.macros", macros_path)
+    if macros_spec is None or macros_spec.loader is None:
+        return
+    macros = importlib.util.module_from_spec(macros_spec)
+    macros_spec.loader.exec_module(macros)
+    macros.FILE_LOGGING_LEVEL = None
+    sys.modules["robosuite.macros"] = macros
+
+
+_disable_shared_robosuite_file_log()
 
 import imageio
 from PIL import Image, ImageDraw

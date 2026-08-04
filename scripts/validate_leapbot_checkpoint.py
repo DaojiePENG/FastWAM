@@ -46,6 +46,9 @@ def validate_checkpoint(
     expected_action_horizon: int = 32,
     expected_num_video_frames: int = 9,
     expected_history_vae_batch_chunk_size: int | None = None,
+    expected_history_window_blocks: int | None = None,
+    expected_condition_clean_warmup_steps: int | None = None,
+    expected_condition_noise_ramp_steps: int | None = None,
     expected_trained_exit_depths: tuple[int, ...] = (30,),
     expected_run_contract_sha256: str | None = None,
     expected_code_commit: str | None = None,
@@ -84,6 +87,24 @@ def validate_checkpoint(
                 f"checkpoint metadata mismatch for {key}: expected={expected!r} "
                 f"actual={actual!r}"
             )
+    for key, expected in (
+        ("training_history_window_blocks", expected_history_window_blocks),
+        (
+            "future_video_condition_clean_warmup_steps",
+            expected_condition_clean_warmup_steps,
+        ),
+        (
+            "future_video_condition_noise_ramp_steps",
+            expected_condition_noise_ramp_steps,
+        ),
+    ):
+        if expected is not None and payload.get(key) != int(expected):
+            raise ValueError(
+                f"checkpoint metadata mismatch for {key}: expected={int(expected)!r} "
+                f"actual={payload.get(key)!r}"
+            )
+        if expected is not None:
+            expected_metadata[key] = int(expected)
     for key, expected in (
         ("run_contract_sha256", expected_run_contract_sha256),
         ("code_commit", expected_code_commit),
@@ -211,6 +232,9 @@ def main() -> None:
     parser.add_argument("--expected-action-horizon", type=int, default=32)
     parser.add_argument("--expected-num-video-frames", type=int, default=9)
     parser.add_argument("--expected-history-vae-batch-chunk-size", type=int)
+    parser.add_argument("--expected-history-window-blocks", type=int)
+    parser.add_argument("--expected-condition-clean-warmup-steps", type=int)
+    parser.add_argument("--expected-condition-noise-ramp-steps", type=int)
     parser.add_argument("--expected-trained-exit-depths", default="30")
     parser.add_argument("--expected-run-contract-sha256")
     parser.add_argument("--expected-code-commit")
@@ -234,6 +258,13 @@ def main() -> None:
         expected_num_video_frames=args.expected_num_video_frames,
         expected_history_vae_batch_chunk_size=(
             args.expected_history_vae_batch_chunk_size
+        ),
+        expected_history_window_blocks=args.expected_history_window_blocks,
+        expected_condition_clean_warmup_steps=(
+            args.expected_condition_clean_warmup_steps
+        ),
+        expected_condition_noise_ramp_steps=(
+            args.expected_condition_noise_ramp_steps
         ),
         expected_trained_exit_depths=expected_trained_exit_depths,
         expected_run_contract_sha256=args.expected_run_contract_sha256,

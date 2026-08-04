@@ -150,15 +150,62 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         override_instruction: Optional[str] = None,
         max_history_blocks: int = 70,
         min_history_blocks: int = 0,
+        history_window_blocks: int | None = None,
         replan_steps: int = 10,
         history_seed: int = 42,
+        history_sampling_mode: str | None = None,
         full_episode_history: bool = True,
+        use_episode_anchor: bool = True,
         initial_block_oversample: int = 1,
     ):
+        if history_sampling_mode is not None:
+            if history_sampling_mode not in {"recent_window", "full_prefix", "random_window"}:
+                raise ValueError(
+                    "history_sampling_mode must be recent_window, full_prefix, or "
+                    "random_window"
+                )
+            requested_sparse_history = history_sampling_mode != "random_window"
+            if bool(full_episode_history) != requested_sparse_history:
+                raise ValueError(
+                    "history_sampling_mode conflicts with the legacy "
+                    "full_episode_history flag"
+                )
+            if history_sampling_mode == "recent_window" and history_window_blocks is None:
+                raise ValueError(
+                    "recent_window sampling requires history_window_blocks"
+                )
+            if history_sampling_mode == "full_prefix" and history_window_blocks is not None:
+                raise ValueError(
+                    "full_prefix sampling cannot set history_window_blocks"
+                )
+        else:
+            history_sampling_mode = (
+                "recent_window"
+                if full_episode_history and history_window_blocks is not None
+                else "full_prefix"
+                if full_episode_history
+                else "random_window"
+            )
+
         if max_history_blocks < 0:
             raise ValueError("max_history_blocks must be non-negative")
         if min_history_blocks < 0 or min_history_blocks > max_history_blocks:
             raise ValueError("min_history_blocks must be in [0,max_history_blocks]")
+        if history_window_blocks is not None:
+            if (
+                isinstance(history_window_blocks, bool)
+                or not isinstance(history_window_blocks, int)
+                or history_window_blocks <= 0
+                or history_window_blocks > max_history_blocks
+            ):
+                raise ValueError(
+                    "history_window_blocks must be a positive integer no greater "
+                    "than max_history_blocks"
+                )
+            if not full_episode_history:
+                raise ValueError(
+                    "strict fixed-window sampling requires sparse episode history"
+                )
         if replan_steps <= 0:
             raise ValueError("replan_steps must be positive")
         if isinstance(global_sample_stride, bool) or global_sample_stride != 1:
@@ -200,17 +247,27 @@ class LeapRobotVideoDataset(RobotVideoDataset):
 
         self.max_history_blocks = int(max_history_blocks)
         self.min_history_blocks = int(min_history_blocks)
+        self.history_window_blocks = (
+            None if history_window_blocks is None else int(history_window_blocks)
+        )
+        self.history_storage_blocks = (
+            self.max_history_blocks
+            if self.history_window_blocks is None
+            else self.history_window_blocks
+        )
         self.replan_steps = int(replan_steps)
         self.history_seed = int(history_seed)
+        self.history_sampling_mode = history_sampling_mode
         self.full_episode_history = bool(full_episode_history)
+        self.use_episode_anchor = bool(use_episode_anchor)
         self.initial_block_oversample = int(initial_block_oversample)
-        self.history_action_steps = self.max_history_blocks * self.replan_steps
+        self.history_action_steps = self.history_storage_blocks * self.replan_steps
         self.window_frames = self.history_action_steps + int(num_frames)
 
         resolved_shape_meta = OmegaConf.to_container(shape_meta, resolve=True)
         if self.full_episode_history:
             observation_offsets, action_offsets = full_episode_sparse_offsets(
-                max_history_blocks=self.max_history_blocks,
+                max_history_blocks=self.history_storage_blocks,
                 replan_steps=self.replan_steps,
                 current_action_horizon=int(num_frames) - 1,
                 current_video_offsets=list(self.video_sample_indices),
@@ -245,6 +302,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
 
         self._valid_replan_indices: list[int] = []
         self._episode_step: dict[int, int] = {}
+        self._episode_start: dict[int, int] = {}
         starts = self.lerobot_dataset.episode_data_index["from"].tolist()
         stops = self.lerobot_dataset.episode_data_index["to"].tolist()
         for start, stop in zip(starts, stops):
@@ -261,6 +319,7 @@ class LeapRobotVideoDataset(RobotVideoDataset):
                 index = int(start + relative_step)
                 self._valid_replan_indices.append(index)
                 self._episode_step[index] = relative_step
+                self._episode_start[index] = int(start)
         self._valid_replan_indices = oversample_episode_starts(
             self._valid_replan_indices,
             self._episode_step,
@@ -284,7 +343,10 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         if not self.full_episode_history:
             return None
         return tuple(
-            self._episode_step[index] // self.replan_steps
+            min(
+                self._episode_step[index] // self.replan_steps,
+                self.history_storage_blocks,
+            )
             for index in self._valid_replan_indices
         )
 
@@ -311,7 +373,10 @@ class LeapRobotVideoDataset(RobotVideoDataset):
                     "episode exceeds configured total replanning-block capacity: "
                     f"block={current_block} capacity={self.max_history_blocks}"
                 )
-            return current_block
+            return min(
+                current_block,
+                int(getattr(self, "history_storage_blocks", self.max_history_blocks)),
+            )
         upper = min(self.max_history_blocks, current_block)
         lower = min(self.min_history_blocks, upper)
         # numpy's worker seeding keeps this reproducible across dataloader runs.
@@ -343,8 +408,12 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         episode_step = self._episode_step[mapped_idx]
         history_blocks = self._choose_history_blocks(mapped_idx)
         current_block = episode_step // self.replan_steps
+        history_storage_blocks = int(
+            getattr(self, "history_storage_blocks", self.max_history_blocks)
+        )
+        strict_window = getattr(self, "history_window_blocks", None) is not None
         if self.full_episode_history:
-            observation_history_slots = self.max_history_blocks
+            observation_history_slots = history_storage_blocks
             current_indices = list(
                 range(
                     observation_history_slots,
@@ -356,14 +425,16 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             current_indices = [offset + value for value in self.video_sample_indices]
 
         if self.full_episode_history:
-            history_start = self.max_history_blocks - history_blocks
-            history_indices = list(range(history_start, self.max_history_blocks))
+            history_start = history_storage_blocks - history_blocks
+            history_indices = list(range(history_start, history_storage_blocks))
             history_action_end = self.history_action_steps
             history_action_slice = slice(
                 history_action_end - history_blocks * self.replan_steps,
                 history_action_end,
             )
-            absolute_history_positions = list(range(history_blocks))
+            absolute_history_positions = list(
+                range(current_block - history_blocks, current_block)
+            )
         else:
             history_indices, history_action_slice, absolute_history_positions = history_window_indices(
                 current_episode_step=episode_step,
@@ -413,32 +484,85 @@ class LeapRobotVideoDataset(RobotVideoDataset):
         current_image_is_pad = sample["image_is_pad"][current_indices]
         channels, _, height, width = video.shape
         history_video = torch.zeros(
-            (channels, self.max_history_blocks, height, width), dtype=video.dtype
+            (channels, history_storage_blocks, height, width), dtype=video.dtype
+        )
+        history_slot_start = (
+            history_storage_blocks - history_blocks if strict_window else 0
         )
         if history_indices:
-            history_video[:, :history_blocks] = self._format_camera_video(
-                sample["pixel_values"], history_indices
-            )
+            history_video[
+                :, history_slot_start : history_slot_start + history_blocks
+            ] = self._format_camera_video(sample["pixel_values"], history_indices)
 
         action_dim = int(sample["action"].shape[-1])
         proprio_dim = int(sample["proprio"].shape[-1])
         history_action = torch.zeros(
-            (self.max_history_blocks, self.replan_steps, action_dim),
+            (history_storage_blocks, self.replan_steps, action_dim),
             dtype=sample["action"].dtype,
         )
         history_proprio = torch.zeros(
-            (self.max_history_blocks, proprio_dim), dtype=sample["proprio"].dtype
+            (history_storage_blocks, proprio_dim), dtype=sample["proprio"].dtype
         )
-        history_valid = torch.zeros(self.max_history_blocks, dtype=torch.bool)
-        history_positions = torch.full((self.max_history_blocks,), -1, dtype=torch.long)
+        history_valid = torch.zeros(history_storage_blocks, dtype=torch.bool)
+        history_positions = torch.full((history_storage_blocks,), -1, dtype=torch.long)
         if history_blocks:
-            history_action[:history_blocks] = sample["action"][history_action_slice].reshape(
+            history_slots = slice(
+                history_slot_start, history_slot_start + history_blocks
+            )
+            history_action[history_slots] = sample["action"][history_action_slice].reshape(
                 history_blocks, self.replan_steps, action_dim
             )
-            history_proprio[:history_blocks] = sample["proprio"][history_indices]
-            history_valid[:history_blocks] = True
-            history_positions[:history_blocks] = torch.tensor(
+            history_proprio[history_slots] = sample["proprio"][history_indices]
+            history_valid[history_slots] = True
+            history_positions[history_slots] = torch.tensor(
                 absolute_history_positions, dtype=torch.long
+            )
+
+        # A single real V0 anchor preserves episode identity after it falls out
+        # of the recent window. It is never repeated into padded slots and is
+        # omitted while V0 is already current or part of the recent window.
+        episode_anchor_video = torch.zeros(
+            (channels, 1, height, width), dtype=video.dtype
+        )
+        episode_anchor_proprio = torch.zeros(
+            (proprio_dim,), dtype=sample["proprio"].dtype
+        )
+        episode_anchor_valid = bool(
+            strict_window
+            and getattr(self, "use_episode_anchor", False)
+            and current_block > history_storage_blocks
+        )
+        if episode_anchor_valid:
+            episode_start = self._episode_start[mapped_idx]
+            anchor_sample = self.lerobot_dataset[episode_start]
+            loaded_anchor_idx = int(anchor_sample.get("idx", -1))
+            if loaded_anchor_idx != episode_start:
+                raise RuntimeError(
+                    "underlying LeRobot loader substituted the episode anchor: "
+                    f"requested={episode_start} loaded={loaded_anchor_idx}"
+                )
+            anchor_observation_index = history_storage_blocks
+            _assert_unpadded_causal_source(
+                anchor_sample["image_is_pad"],
+                [anchor_observation_index],
+                mapped_idx=episode_start,
+                episode_step=0,
+                field="episode_anchor.image_is_pad",
+            )
+            _assert_unpadded_causal_source(
+                anchor_sample["proprio_is_pad"],
+                [anchor_observation_index],
+                mapped_idx=episode_start,
+                episode_step=0,
+                field="episode_anchor.proprio_is_pad",
+            )
+            episode_anchor_video.copy_(
+                self._format_camera_video(
+                    anchor_sample["pixel_values"], [anchor_observation_index]
+                )
+            )
+            episode_anchor_proprio.copy_(
+                anchor_sample["proprio"][anchor_observation_index]
             )
 
         action_start = self.history_action_steps
@@ -471,6 +595,8 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "history_video": history_video,
             "history_action": history_action,
             "history_proprio": history_proprio,
+            "episode_anchor_video": episode_anchor_video,
+            "episode_anchor_proprio": episode_anchor_proprio,
             "context": context,
         }
         for field, tensor in finite_fields.items():
@@ -495,9 +621,19 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "history_proprio": history_proprio,
             "history_valid_blocks": history_valid,
             "history_block_positions": history_positions,
+            "episode_anchor_video": episode_anchor_video,
+            "episode_anchor_proprio": episode_anchor_proprio,
+            "episode_anchor_valid": torch.tensor(
+                episode_anchor_valid, dtype=torch.bool
+            ),
+            "history_window_blocks": torch.tensor(
+                history_storage_blocks if strict_window else 0, dtype=torch.long
+            ),
             "current_block_position": torch.tensor(current_block, dtype=torch.long),
             "episode_step": torch.tensor(episode_step, dtype=torch.long),
-            "full_episode_history": torch.tensor(self.full_episode_history, dtype=torch.bool),
+            "full_episode_history": torch.tensor(
+                self.full_episode_history and not strict_window, dtype=torch.bool
+            ),
         }
 
     def __getitem__(self, idx):

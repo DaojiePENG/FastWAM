@@ -17,6 +17,7 @@ import torch
 
 CausalMode = Literal["interleaved", "vision_causal", "action_aggregator"]
 Modality = Literal["video", "action"]
+HistoryStorageMode = Literal["incremental_kv", "strict_replay"]
 
 VALID_CAUSAL_MODES: tuple[str, ...] = (
     "interleaved",
@@ -39,6 +40,8 @@ class LeapMemoryConfig:
     causal_mode: CausalMode = "interleaved"
     max_history_blocks: int = 70
     retained_history_blocks: int | None = None
+    history_storage_mode: HistoryStorageMode = "incremental_kv"
+    history_window_blocks: int = 8
     action_horizon: int = 32
     replan_steps: int = 10
 
@@ -53,6 +56,23 @@ class LeapMemoryConfig:
             )
         if self.max_history_blocks <= 0:
             raise ValueError("max_history_blocks must be positive")
+        if self.history_storage_mode not in ("incremental_kv", "strict_replay"):
+            raise ValueError(
+                "history_storage_mode must be incremental_kv or strict_replay"
+            )
+        if (
+            isinstance(self.history_window_blocks, bool)
+            or not isinstance(self.history_window_blocks, int)
+            or self.history_window_blocks <= 0
+            or (
+                self.history_storage_mode == "strict_replay"
+                and self.history_window_blocks > self.max_history_blocks
+            )
+        ):
+            raise ValueError(
+                "history_window_blocks must be a positive integer no greater "
+                "than max_history_blocks"
+            )
         if self.retained_history_blocks is not None:
             if isinstance(self.retained_history_blocks, bool) or not isinstance(
                 self.retained_history_blocks, int
@@ -125,6 +145,59 @@ class KVSegment:
         )
 
 
+@dataclass(frozen=True)
+class ReplayBlock:
+    """Real inputs required to reconstruct one completed causal block."""
+
+    block_index: int
+    observation_latents: torch.Tensor
+    context: torch.Tensor
+    context_mask: torch.Tensor
+    executed_actions: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if self.block_index < 0:
+            raise ValueError("replay block_index must be non-negative")
+        if (
+            self.observation_latents.ndim != 5
+            or self.observation_latents.shape[0] != 1
+            or self.observation_latents.shape[2] != 1
+        ):
+            raise ValueError(
+                "replay observation_latents must be [1,C,1,H,W]"
+            )
+        if self.context.ndim != 3 or self.context.shape[0] != 1:
+            raise ValueError("replay context must be [1,L,D]")
+        if self.context_mask.shape != self.context.shape[:2]:
+            raise ValueError("replay context_mask must match context [1,L]")
+        if self.context_mask.dtype != torch.bool:
+            raise ValueError("replay context_mask must be boolean")
+        if self.executed_actions.ndim != 3 or self.executed_actions.shape[0] != 1:
+            raise ValueError("replay executed_actions must be [1,T,D]")
+        if self.executed_actions.shape[1] <= 0:
+            raise ValueError("replay executed_actions must be non-empty")
+
+    @property
+    def nbytes(self) -> int:
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (
+                self.observation_latents,
+                self.context,
+                self.context_mask,
+                self.executed_actions,
+            )
+        )
+
+    def detached(self) -> "ReplayBlock":
+        return ReplayBlock(
+            block_index=self.block_index,
+            observation_latents=self.observation_latents.detach(),
+            context=self.context.detach(),
+            context_mask=self.context_mask.detach(),
+            executed_actions=self.executed_actions.detach(),
+        )
+
 @dataclass
 class MemorySnapshot:
     # Keep references to the immutable/detached segments rather than only a
@@ -138,6 +211,11 @@ class MemorySnapshot:
     prompt_fingerprint: str | None
     pending_context: torch.Tensor | None
     pending_context_mask: torch.Tensor | None
+    replay_blocks: tuple[ReplayBlock, ...]
+    episode_anchor: ReplayBlock | None
+    pending_observation_latents: torch.Tensor | None
+    pending_replay_context: torch.Tensor | None
+    pending_replay_context_mask: torch.Tensor | None
 
 
 @dataclass
@@ -152,6 +230,15 @@ class LeapMemoryState:
     prompt_fingerprint: str | None = None
     pending_context: torch.Tensor | None = field(default=None, repr=False)
     pending_context_mask: torch.Tensor | None = field(default=None, repr=False)
+    replay_blocks: list[ReplayBlock] = field(default_factory=list, repr=False)
+    episode_anchor: ReplayBlock | None = field(default=None, repr=False)
+    pending_observation_latents: torch.Tensor | None = field(
+        default=None, repr=False
+    )
+    pending_replay_context: torch.Tensor | None = field(default=None, repr=False)
+    pending_replay_context_mask: torch.Tensor | None = field(
+        default=None, repr=False
+    )
 
     def snapshot(self) -> MemorySnapshot:
         return MemorySnapshot(
@@ -162,6 +249,11 @@ class LeapMemoryState:
             prompt_fingerprint=self.prompt_fingerprint,
             pending_context=self.pending_context,
             pending_context_mask=self.pending_context_mask,
+            replay_blocks=tuple(self.replay_blocks),
+            episode_anchor=self.episode_anchor,
+            pending_observation_latents=self.pending_observation_latents,
+            pending_replay_context=self.pending_replay_context,
+            pending_replay_context_mask=self.pending_replay_context_mask,
         )
 
     def rollback(self, snapshot: MemorySnapshot) -> None:
@@ -172,6 +264,11 @@ class LeapMemoryState:
         self.prompt_fingerprint = snapshot.prompt_fingerprint
         self.pending_context = snapshot.pending_context
         self.pending_context_mask = snapshot.pending_context_mask
+        self.replay_blocks[:] = snapshot.replay_blocks
+        self.episode_anchor = snapshot.episode_anchor
+        self.pending_observation_latents = snapshot.pending_observation_latents
+        self.pending_replay_context = snapshot.pending_replay_context
+        self.pending_replay_context_mask = snapshot.pending_replay_context_mask
 
     def bind_prompt(self, fingerprint: str) -> None:
         if self.prompt_fingerprint is None:
@@ -223,6 +320,80 @@ class LeapMemoryState:
         self.pending_context_mask = context_mask.detach()
         self.phase = MemoryPhase.EXPECT_ACTION_COMMIT
 
+    def stage_replay_observation(
+        self,
+        *,
+        observation_latents: torch.Tensor,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+    ) -> None:
+        if self.config.history_storage_mode != "strict_replay":
+            return
+        if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
+            raise RuntimeError(
+                "replay observation can only be staged after observation K/V"
+            )
+        if self.pending_observation_latents is not None:
+            raise RuntimeError("a replay observation is already pending")
+        if (
+            observation_latents.ndim != 5
+            or observation_latents.shape[0] != 1
+            or observation_latents.shape[2] != 1
+        ):
+            raise ValueError("observation_latents must be [1,C,1,H,W]")
+        self.pending_observation_latents = observation_latents.detach()
+        self.pending_replay_context = context.detach()
+        self.pending_replay_context_mask = context_mask.detach()
+
+    def strict_replay_prefix(self) -> tuple[ReplayBlock, ...]:
+        """Return one optional V0 anchor plus the recent completed window."""
+
+        if self.config.history_storage_mode != "strict_replay":
+            return ()
+        recent = tuple(self.replay_blocks[-self.config.history_window_blocks :])
+        if (
+            self.episode_anchor is not None
+            and recent
+            and recent[0].block_index > 0
+        ):
+            return (self.episode_anchor, *recent)
+        return recent
+
+    def begin_strict_replay_rebuild(self) -> tuple[ReplayBlock, ...]:
+        if self.config.history_storage_mode != "strict_replay":
+            return ()
+        if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
+            raise RuntimeError("strict replay rebuild requires a committed block")
+        self.segments.clear()
+        return self.strict_replay_prefix()
+
+    def commit_replay_block(self, executed_actions: torch.Tensor) -> None:
+        if self.config.history_storage_mode != "strict_replay":
+            return
+        if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
+            raise RuntimeError("replay block can only finalize after action commit")
+        if (
+            self.pending_observation_latents is None
+            or self.pending_replay_context is None
+            or self.pending_replay_context_mask is None
+        ):
+            raise RuntimeError("no staged real observation is available for replay")
+        block_index = self.completed_blocks - 1
+        block = ReplayBlock(
+            block_index=block_index,
+            observation_latents=self.pending_observation_latents,
+            context=self.pending_replay_context,
+            context_mask=self.pending_replay_context_mask,
+            executed_actions=executed_actions.detach(),
+        ).detached()
+        if block_index == 0 and self.episode_anchor is None:
+            self.episode_anchor = block
+        self.replay_blocks.append(block)
+        del self.replay_blocks[: -self.config.history_window_blocks]
+        self.pending_observation_latents = None
+        self.pending_replay_context = None
+        self.pending_replay_context_mask = None
+
     def append_actions(self, segment: KVSegment) -> None:
         if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
             raise RuntimeError("an observation must be appended before executed actions")
@@ -266,7 +437,11 @@ class LeapMemoryState:
         eligible for eviction.
         """
 
-        retained = self.config.retained_history_blocks
+        retained = (
+            self.config.history_window_blocks
+            if self.config.history_storage_mode == "strict_replay"
+            else self.config.retained_history_blocks
+        )
         if retained is None:
             return
         first_retained_block = self.completed_blocks - retained
@@ -333,6 +508,13 @@ class LeapMemoryState:
         return sum(segment.nbytes for segment in self.segments)
 
     @property
+    def replay_nbytes(self) -> int:
+        unique = {id(block): block for block in self.replay_blocks}
+        if self.episode_anchor is not None:
+            unique[id(self.episode_anchor)] = self.episode_anchor
+        return sum(block.nbytes for block in unique.values())
+
+    @property
     def token_counts(self) -> dict[str, int]:
         return {
             modality: sum(
@@ -367,6 +549,11 @@ class LeapMemoryState:
         self.prompt_fingerprint = None
         self.pending_context = None
         self.pending_context_mask = None
+        self.replay_blocks.clear()
+        self.episode_anchor = None
+        self.pending_observation_latents = None
+        self.pending_replay_context = None
+        self.pending_replay_context_mask = None
 
 
 def build_block_causal_mask(

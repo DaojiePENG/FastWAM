@@ -8,7 +8,9 @@ from omegaconf import OmegaConf
 
 _ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(_ROOT / "experiments" / "libero"))
-sys.path.insert(0, "/home/sheng/workspace/LIBERO")
+_LIBERO_ROOT = _ROOT.parent / "LIBERO"
+if _LIBERO_ROOT.is_dir():
+    sys.path.insert(0, str(_LIBERO_ROOT))
 
 from experiments.libero import eval_libero_single as evaluator  # noqa: E402
 

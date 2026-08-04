@@ -601,3 +601,80 @@ def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
     assert memory.segments[0].positions.tolist() == [0]
     assert memory.segments[1].positions.tolist() == [0]
     assert memory.segments[2].positions.tolist() == [1]
+
+
+def test_strict_replay_rebuilds_recent_real_window_and_single_v0_anchor():
+    torch.manual_seed(9021)
+    model = _model(
+        layers=8,
+        proprio_dim=2,
+        vae=_TinyVideoVAE(),
+        video_attention_mask_mode="first_frame_causal",
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(8,),
+        history_training_mode="strict_replay_window_bptt",
+        history_window_blocks=2,
+        replan_steps=1,
+        action_horizon=2,
+        num_video_frames=3,
+    )
+    model.eval()
+    memory = model.create_memory(exit_depth=8, max_history_blocks=6)
+    assert memory.config.history_storage_mode == "strict_replay"
+    assert memory.config.history_window_blocks == 2
+
+    context = torch.randn(1, 3, 6)
+    context_mask = torch.ones(1, 3, dtype=torch.bool)
+    committed: list[torch.Tensor] = []
+    for block in range(4):
+        result = model.infer_action(
+            prompt=None,
+            input_image=torch.full((1, 3, 16, 16), float(block) / 10.0),
+            action_horizon=2,
+            num_video_frames=3,
+            proprio=torch.tensor([[float(block), -float(block)]]),
+            context=context,
+            context_mask=context_mask,
+            num_inference_steps=1,
+            seed=100 + block,
+            memory=memory,
+        )
+        # Only the command actually sent under replan_steps=1 is committed; the
+        # second predicted action must never enter replay state.
+        executed = result["action"][:1].clone()
+        committed.append(executed)
+        model.commit_executed_actions(memory, executed)
+
+    assert [block.block_index for block in memory.replay_blocks] == [2, 3]
+    assert memory.episode_anchor is not None
+    assert memory.episode_anchor.block_index == 0
+    assert memory.episode_anchor.executed_actions.shape[1] == 1
+    torch.testing.assert_close(
+        memory.episode_anchor.executed_actions[0].cpu(), committed[0]
+    )
+
+    result = model.infer_action(
+        prompt=None,
+        input_image=torch.full((1, 3, 16, 16), 0.4),
+        action_horizon=2,
+        num_video_frames=3,
+        proprio=torch.tensor([[4.0, -4.0]]),
+        context=context,
+        context_mask=context_mask,
+        num_inference_steps=1,
+        seed=104,
+        memory=memory,
+    )
+    assert [(segment.block_index, segment.modality) for segment in memory.segments] == [
+        (0, "video"),
+        (2, "video"),
+        (2, "action"),
+        (3, "video"),
+        (3, "action"),
+        (4, "video"),
+    ]
+    assert result["memory"]["replayed_segments"] == 5
+    assert result["memory"]["history_storage_mode"] == "strict_replay"
+    assert result["memory"]["replay_bytes"] > 0

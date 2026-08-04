@@ -515,6 +515,8 @@ def run_single_episode(
             retained_history_blocks=memory_cfg.get(
                 "retained_history_blocks", None
             ),
+            history_storage_mode=memory_cfg.get("history_storage_mode"),
+            history_window_blocks=memory_cfg.get("history_window_blocks"),
             action_horizon=action_horizon,
             replan_steps=replan_steps,
         )

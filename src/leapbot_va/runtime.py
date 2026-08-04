@@ -35,6 +35,7 @@ def create_leapbot(
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
     history_training_mode: str = "incremental_full_bptt",
+    history_window_blocks: int = 8,
     history_vae_batch_chunk_size: int = 1,
     replan_steps: int = 10,
     action_horizon: int = 32,
@@ -43,6 +44,8 @@ def create_leapbot(
     future_video_condition_noise_probability: float = 0.5,
     future_video_condition_min_u: float = 0.5,
     future_video_condition_max_u: float = 1.0,
+    future_video_condition_clean_warmup_steps: int = 0,
+    future_video_condition_noise_ramp_steps: int = 0,
     future_video_denoise_steps: int = -1,
     training_strategy: str = "full_dit",
     video_lora=None,
@@ -109,6 +112,7 @@ def create_leapbot(
         causal_mode=str(causal_mode),
         training_exit_depths=tuple(int(depth) for depth in training_exit_depths),
         history_training_mode=str(history_training_mode),
+        history_window_blocks=int(history_window_blocks),
         replan_steps=int(replan_steps),
         action_horizon=int(action_horizon),
         num_video_frames=int(num_video_frames),
@@ -117,6 +121,12 @@ def create_leapbot(
         ),
         future_video_condition_min_u=float(future_video_condition_min_u),
         future_video_condition_max_u=float(future_video_condition_max_u),
+        future_video_condition_clean_warmup_steps=int(
+            future_video_condition_clean_warmup_steps
+        ),
+        future_video_condition_noise_ramp_steps=int(
+            future_video_condition_noise_ramp_steps
+        ),
         future_video_denoise_steps=int(future_video_denoise_steps),
     )
     if str(future_video_conditioning) != model.future_video_conditioning:

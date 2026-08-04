@@ -222,9 +222,12 @@ def validate_incremental_action_equivalence(
             "action horizon; padded episode tails use a deliberately different "
             "key mask and must be validated by the padding-isolation audit"
         )
-    if model.history_training_mode != "incremental_full_bptt":
+    if model.history_training_mode not in {
+        "incremental_full_bptt",
+        "strict_replay_window_bptt",
+    }:
         raise ValueError(
-            "model must use history_training_mode=incremental_full_bptt"
+            "model must use an incremental or strict replay BPTT contract"
         )
     final_depth = int(model.mot.num_layers)
     if final_depth not in tuple(int(value) for value in model.training_exit_depths):
@@ -232,21 +235,42 @@ def validate_incremental_action_equivalence(
 
     history_valid = sample["history_valid_blocks"][0].to(dtype=torch.bool)
     history_count = int(history_valid.sum().item())
-    if history_valid.numel() and not torch.equal(
-        history_valid,
-        torch.arange(history_valid.numel(), device=history_valid.device)
-        < history_count,
-    ):
-        raise ValueError("history_valid_blocks must be a contiguous prefix")
+    history_slots = torch.nonzero(history_valid, as_tuple=False).flatten()
+    current_block = int(sample["current_block_position"][0].item())
     expected_positions = torch.arange(
-        history_count,
+        current_block - history_count,
+        current_block,
         dtype=sample["history_block_positions"].dtype,
         device=sample["history_block_positions"].device,
     )
     if not torch.equal(
-        sample["history_block_positions"][0, :history_count], expected_positions
+        sample["history_block_positions"][0, history_slots], expected_positions
     ):
-        raise ValueError("public runtime replay requires a full episode prefix from block 0")
+        raise ValueError("history positions must be the consecutive suffix before current")
+    strict_replay = model.history_training_mode == "strict_replay_window_bptt"
+    if strict_replay:
+        window = int(model.training_history_window_blocks)
+        if int(history_valid.numel()) != window:
+            raise ValueError("strict replay sample tensor capacity must equal trained W")
+        expected_valid = torch.arange(window, device=history_valid.device) >= (
+            window - history_count
+        )
+        if not torch.equal(history_valid, expected_valid):
+            raise ValueError("strict replay validation requires a right-aligned suffix")
+        if current_block != history_count:
+            raise ValueError(
+                "public strict replay equivalence starts from episode block zero; "
+                "select current_block=history_blocks (anchor behavior has a separate test)"
+            )
+        anchor_valid = sample.get("episode_anchor_valid")
+        if anchor_valid is not None and bool(anchor_valid[0].item()):
+            raise ValueError("this equivalence path requires V0 inside the recent window")
+    elif history_valid.numel() and not torch.equal(
+        history_valid,
+        torch.arange(history_valid.numel(), device=history_valid.device)
+        < history_count,
+    ):
+        raise ValueError("incremental history_valid_blocks must be a contiguous prefix")
 
     device = torch.device(model.device)
     was_training = bool(model.training)
@@ -347,7 +371,10 @@ def validate_incremental_action_equivalence(
         memory = model.create_memory(
             exit_depth=final_depth,
             causal_mode=model.causal_mode,
-            max_history_blocks=history_count + 1,
+            max_history_blocks=max(
+                history_count + 1,
+                int(getattr(model, "training_history_window_blocks", 1)),
+            ),
             action_horizon=action_horizon,
             replan_steps=replan_steps,
         )
@@ -358,28 +385,28 @@ def validate_incremental_action_equivalence(
             prefill_expert_segment=capture_runtime_prefill,
             forward_action_with_history=capture_runtime_action,
         ), torch.no_grad():
-            for history_index in range(history_count):
+            for history_order, history_slot in enumerate(history_slots.tolist()):
                 model.infer_action(
                     prompt=None,
                     input_image=sample["history_video"][
-                        0:1, :, history_index
+                        0:1, :, history_slot
                     ],
                     action_horizon=action_horizon,
                     num_video_frames=int(sample["video"].shape[2]),
                     proprio=sample["history_proprio"][
-                        0:1, history_index
+                        0:1, history_slot
                     ],
                     context=base_context,
                     context_mask=base_context_mask,
                     num_inference_steps=1,
-                    seed=seed + 10_000 + history_index,
+                    seed=seed + 10_000 + history_order,
                     rand_device="cpu",
                     tiled=tiled,
                     memory=memory,
                 )
                 model.commit_executed_actions(
                     memory,
-                    sample["history_action"][0:1, history_index],
+                    sample["history_action"][0:1, history_slot],
                 )
             model.infer_action(
                 prompt=None,
@@ -457,15 +484,34 @@ def validate_incremental_action_equivalence(
         expected_runtime = []
         for _ in range(history_count):
             expected_training.extend(("video_prefill", "action_prefill"))
-            expected_runtime.extend(
-                (
-                    "video_prefill",
-                    "video_prefill",
-                    "video_prefill",
-                    "action_forward",
-                    "action_prefill",
+        if strict_replay:
+            for completed in range(history_count):
+                expected_runtime.extend(
+                    ("video_prefill", "action_prefill") * completed
                 )
+                expected_runtime.extend(
+                    (
+                        "video_prefill",
+                        "video_prefill",
+                        "video_prefill",
+                        "action_forward",
+                        "action_prefill",
+                    )
+                )
+            expected_runtime.extend(
+                ("video_prefill", "action_prefill") * history_count
             )
+        else:
+            for _ in range(history_count):
+                expected_runtime.extend(
+                    (
+                        "video_prefill",
+                        "video_prefill",
+                        "video_prefill",
+                        "action_forward",
+                        "action_prefill",
+                    )
+                )
         expected_training.extend(
             (
                 "video_prefill",
@@ -512,6 +558,9 @@ def validate_incremental_action_equivalence(
             "replan_steps": replan_steps,
             "action_horizon": action_horizon,
             "history_training_mode": str(model.history_training_mode),
+            "history_storage_mode": (
+                "strict_replay" if strict_replay else "incremental_kv"
+            ),
             "training_loss": float(training_loss.detach().float().item()),
             "training_metrics": {
                 key: float(value) for key, value in training_metrics.items()
@@ -695,6 +744,7 @@ def _parse_args() -> argparse.Namespace:
         default="action_aggregator",
     )
     parser.add_argument("--history-blocks", type=int, default=8)
+    parser.add_argument("--history-window-blocks", type=int, default=8)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument(
         "--dtype", choices=("bf16", "fp32"), default="bf16"
@@ -723,8 +773,13 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    if args.history_blocks < 0:
-        raise ValueError("history-blocks must be non-negative")
+    if args.history_window_blocks <= 0 or args.history_window_blocks > 70:
+        raise ValueError("history-window-blocks must be in [1,70]")
+    if args.history_blocks < 0 or args.history_blocks > args.history_window_blocks:
+        raise ValueError(
+            "history-blocks must be in [0,history-window-blocks] for the "
+            "strict-window audit"
+        )
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.exists():
         raise FileNotFoundError(checkpoint)
@@ -762,7 +817,10 @@ def main() -> int:
                 "task=libero_leapbot_2cam224",
                 f"model.causal_mode={args.causal_mode}",
                 "model.training_exit_depths=[30]",
-                "model.history_training_mode=incremental_full_bptt",
+                "model.history_training_mode=strict_replay_window_bptt",
+                f"model.history_window_blocks={args.history_window_blocks}",
+                "data.train.history_sampling_mode=recent_window",
+                f"data.train.history_window_blocks={args.history_window_blocks}",
                 "model.history_vae_batch_chunk_size=1",
                 "batch_size=1",
             ],
@@ -789,7 +847,7 @@ def main() -> int:
         if selected_index is None:
             raise ValueError(
                 "dataset contains no complete, unpadded action target with "
-                f"full-prefix H={args.history_blocks}"
+                f"recent-window H={args.history_blocks}"
             )
     else:
         selected_index = int(args.dataset_index)
@@ -831,7 +889,7 @@ def main() -> int:
     )
     result.update(
         {
-            "kind": "real_6b_runtime_training_action_equivalence",
+            "kind": "real_6b_strict_window_runtime_training_equivalence",
             "checkpoint": str(checkpoint),
             "checkpoint_sha256": checkpoint_sha256,
             "weights_sha256": checkpoint_sha256,

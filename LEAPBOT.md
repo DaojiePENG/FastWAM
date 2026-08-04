@@ -1,243 +1,137 @@
 # LeapBot-VA
 
-LeapBot-VA is a FastWAM-derived world-action model whose persistent memory is
-made exclusively from real observations and commands actually sent to the
-controller. It keeps FastWAM's joint video/action flow-matching objective and
-adds LingBot-VA-style inverse-dynamics conditioning: ActionDiT reads the
-layer-wise K/V of an imagined future-video latent block. Online inference runs
-the video DiT/output projection to denoise those latents, but never VAE-decodes
-them and never writes their K/V into persistent episode memory.
+LeapBot-VA 是基于 FastWAM 的 causal world-action model。跨轮记忆只来自真实观测和实际下发动作；当前未来视频只作为 ActionDiT 的临时逐层 KV 条件，不 VAE decode，也不进入下一轮记忆。
 
-## Runtime contract
+当前正式架构是 `strict-window-v7`：每轮用一个可选真实 V0 anchor、最近 W 个真实 `observation -> executed action` 块和当前真实观测重新计算 causal KV。W 默认取 8、可按实验调整。它取代了旧版无限 episode-prefix KV 和“只删除最老 KV”的近似窗口。
 
-One episode owns one explicit `LeapMemoryState`:
+完整训练/集群操作见 [docs/TRAINING_AND_REPRODUCTION.md](docs/TRAINING_AND_REPRODUCTION.md)，信息流与三种 mask 见 [docs/CAUSAL_MEMORY_MODES.md](docs/CAUSAL_MEMORY_MODES.md)。
+
+## 运行时接口
 
 ```python
 memory = model.create_memory(
     exit_depth=30,
-    causal_mode="interleaved",
+    causal_mode="action_aggregator",
     max_history_blocks=70,
+    history_storage_mode="strict_replay",
+    history_window_blocks=8,
 )
+
 prediction = model.infer_action(
     prompt=prompt,
     input_image=current_real_image,
     proprio=current_proprio,
     action_horizon=32,
     num_video_frames=9,
-    # -1 means: use every configured scheduler step for video denoising.
-    future_video_denoise_steps=-1,
     memory=memory,
 )
 
-# Execute at most 10 commands after environment postprocessing. Convert those
-# exact commands back to normalized model space, then commit only that slice.
+# 环境后处理、裁剪、gripper 二值化后，只提交真正执行的 10 步；
+# 先转换回模型归一化空间，再写入 memory。
 model.commit_executed_actions(memory, executed_actions_model_space)
-model.reset_memory(memory)  # at episode end
+model.reset_memory(memory)
 ```
 
-The state machine rejects a second observation before an action commit,
-mid-episode prompt changes, depth changes, and history beyond the configured
-capacity. A checkpoint may use only exit depths recorded as actually trained;
-a D30-only checkpoint cannot silently run D8/16/24. `memory=None` retains the
-original FastWAM inference behavior.
+状态机强制 `真实观测 -> 预测 -> 提交恰好 10 个已执行动作 -> 下一真实观测`。以下情况会 fail-fast：漏提交、重复观测、episode 内切换 prompt/depth/mode/W、超过 70 blocks、checkpoint 与 evaluation 窗口不一致，或出现非有限动作。
 
-The LIBERO bridge canonicalizes each final command after any postprocessing:
-it clips to `env.action_spec`, applies deterministic gripper binarization, and
-passes the same array to both `env.step` and the memory commit conversion.
-Cross-replan action ensembling is rejected when memory is enabled, so the 22
-unexecuted predictions in a 32-step chunk cannot enter later history.
+`memory=None` 保留原 FastWAM 无记忆 inference。
 
-The causal modes are:
+## 严格真实窗口
 
-- `interleaved`: a new observation reads historical observation and action KV.
-- `vision_causal`: a new observation reads only historical observation KV.
-- `action_aggregator`: observations are encoded independently and ActionDiT
-  aggregates the complete history.
+默认信息范围：
 
-In all modes, current action queries read historical observations/actions, the
-current real observation, a same-block future-video condition, and the
-bidirectional current action block. The independently noised video
-flow-matching target remains invisible to ActionDiT.
+```text
+current block t <= 8:
+  [masked left padding] + all available recent real (V,A)
 
-The canonical 9-frame LIBERO clip becomes three VAE latent frames: the first is
-the already committed real observation and the remaining two form the future
-condition. During training that condition is clean/noised-GT teacher forcing;
-during rollout it is generated from noise. This train/runtime difference is
-intentional and is regularized by the 50% high-noise condition. The generated
-block is an ephemeral inverse-dynamics condition, not episode memory.
+current block t > 8:
+  one real V0 anchor + blocks [t-8, ..., t-1] real (V,A)
+```
 
-## Repository, environment, and assets
+在线 memory 保存最近真实单帧 VAE latent、对应 context/proprio 和实际执行动作。下一轮先清空上轮 KV，再按同一时间顺序 replay。这样被淘汰块不会继续通过较新 KV 隐式泄漏进窗口。
 
-LeapBot-VA development lives on the `leapbot-va` branch of
-[`DaojiePENG/FastWAM`](https://github.com/DaojiePENG/FastWAM). A new machine
-must clone that branch explicitly; cloning the default FastWAM branch does not
-produce a LeapBot-VA checkout.
+V0 只出现一次且为 video-only anchor；不会把第一帧复制成 W 个有效 token，也不会在 V0 离开窗口后重复 A0。早期 padding 永远不是 attention key。
+
+## 当前世界模型条件
+
+LIBERO 默认 9 个物理视频帧经 Wan VAE 变为一个当前真实 latent frame 和两个未来 latent frames。训练中未来条件采用课程：
+
+- step 0–199：100% clean GT future latent；
+- step 200–999：noised 条件概率线性升至 0.5；
+- 之后：50% clean、50% noised，`u in [0.5, 1.0]`。
+
+Action loss 通过 future-condition KV 回传到 VideoDiT。独立的 video flow target 噪声不进入动作 prefix。在线端从噪声经 VideoDiT 去噪未来 latent，做一次最终前推取得临时 KV，再进行动作去噪；该 KV 在调用结束后丢弃。
+
+## 三种模式
+
+- `action_aggregator`：每张视觉独立编码，ActionDiT 汇聚 V0、最近真实 V/A、当前真实 V、未来视频和当前 action；首个 v7 实验优先使用它。
+- `interleaved`：新视觉读取历史真实视觉和动作。
+- `vision_causal`：新视觉只读取历史视觉；ActionDiT 仍读取全部真实 V/A。
+
+三种模式下当前 action chunk 内部双向，历史不能读取当前/未来 token。
+
+## 获取代码
 
 ```bash
-mkdir -p /home/sheng/workspace
-cd /home/sheng/workspace
+mkdir -p "$HOME/workspace"
+cd "$HOME/workspace"
 git clone -b leapbot-va --single-branch \
-  https://github.com/DaojiePENG/FastWAM.git leapbot-va
-cd leapbot-va
-git branch --show-current  # must print: leapbot-va
-git remote -v              # origin must be DaojiePENG/FastWAM.git
+  https://github.com/DaojiePENG/FastWAM.git FastWAM
+cd FastWAM
+uv venv --python 3.10 .venv
+uv sync --dev
+uv run pytest -q
 ```
 
-The original FastWAM repository may be registered separately for read-only
-comparison and upstream synchronization:
+原 FastWAM 可作为只读 upstream：
 
 ```bash
 git remote add upstream https://github.com/yuantianyuan01/FastWAM.git
 ```
 
-Do not replace `origin` with the upstream repository, and do not train from
-`main`. Every formal run records the exact `leapbot-va` commit in its run
-contract.
+## 训练
 
-Commands in this workspace are intended to run as user `sheng`:
+单模式正式入口：
 
 ```bash
-cd /home/sheng/workspace/leapbot-va
-uv venv --python /usr/bin/python3.10 .venv
-uv sync --dev
-source .venv/bin/activate
-python scripts/download_leapbot_assets.py
-export LEAPBOT_DATASET_STATS="$PWD/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json"
-python scripts/precompute_text_embeds.py task=libero_leapbot_2cam224
+MODE=action_aggregator \
+NUM_PROCESSES=8 GPU_IDS_CSV=0,1,2,3,4,5,6,7 \
+BATCH_SIZE=20 GRAD_ACCUM=1 MAX_STEPS=5000 \
+LEARNING_RATE=1.0e-4 WANDB_ENABLED=true WANDB_MODE=online \
+bash scripts/train_leapbot.sh
 ```
 
-The downloader uses the official FastWAM Hugging Face repositories
-`yuanty/LIBERO-fastwam` and `yuanty/fastwam`; it does not read RLDS data.
-
-## Training phases
-
-The production training path is runtime-isomorphic causal attention with
-`incremental_full_bptt`: every real observation/action block before the current
-replan is executed chronologically and remains in the graph. There is no
-history gate and no detached prefix. For the current block, a separate future
-condition is clean ground-truth video with probability 0.5 and high-noise
-ground-truth video with probability 0.5 (`u in [0.5,1.0]` before scheduler
-shift), matching LingBot-VA's noisy-condition teacher forcing. Action loss
-backpropagates through this condition's K/V; video flow target noise does not.
-Native block-local RoPE is preserved, while a learned episode clock is expressed
-relative to those local coordinates; block zero is therefore an exact position
-no-op even after the clock parameters train. This does not freeze the shared
-DiT weights, so release-behavior retention is measured separately with paired
-H0 samples.
-All comparison runs use the same FastWAM release initialization, split, update
-count, global batch, scheduler, and seed. The launcher refuses a dirty worktree
-and binds every resumable state to a hash of the exact commit, release weights,
-data statistics, topology, optimizer, and temporal/history configuration.
-
-Formal training fixes the history-VAE chunk to 1. Every real observation uses
-the same batch-one, T=1 VAE call as rollout; the earlier chunk-2 approximation
-and all packed-attention runs are invalidated and are not used as results.
+三模式对比：
 
 ```bash
-# Paired screens are followed by fixed-observation, fixed-timestep, fixed-noise
-# audits with correct, masked, and cross-episode shuffled histories.
-bash scripts/screen_learning_rate.sh
-bash scripts/audit_learning_rate.sh
-LR_SELECTION_MANIFEST=<lr-selection.json> \
-  bash scripts/screen_h0_retention.sh
-LR_SELECTION_MANIFEST=<lr-selection.json> \
-  bash scripts/audit_h0_retention.sh
-
-# Phase 1: after the paired LR audit selects a learning rate, train all three
-# modes sequentially with the complete episode prefix, D30, BF16, the same
-# 8-GPU topology/global batch, and a 5% warmup + cosine schedule.
-LR_SELECTION_MANIFEST=<lr-selection.json> \
-  H0_SELECTION_MANIFEST=<h0-selection.json> \
-  bash scripts/train_causal_modes.sh
-
-# Phase 2: initialize from the winning D30 history checkpoint and train exits.
-SOURCE_TRAIN_ROOT=/path/to/d30_root MODE=<winner> SOURCE_STEP=<step> \
-  MAX_STEPS=<steps> \
-  bash scripts/train_multi_exit.sh
+MODES_CSV=action_aggregator,interleaved,vision_causal \
+MAX_STEPS=5000 LEARNING_RATE=1.0e-4 \
+bash scripts/train_causal_modes.sh
 ```
 
-Short 0-8 or 0-16 windows are code-supported controlled ablations, not the main
-recipe and not substitutes for complete-prefix training. The canonical
-production pipeline has no short-window launcher, and the current formal
-results do not run or report those ablations.
-The released LIBERO training episodes provide real prefixes through H=50. The
-70-block setting is a capacity and inference extrapolation bound; H=51..69 is
-not represented as observed training history and must be reported as such.
+启动 5000 steps 前必须在目标 GPU 上先做两步真实 6B smoke，并据 peak memory 调整 B/GA。默认使用 Accelerate + DeepSpeed ZeRO-2。训练器拒绝 dirty worktree，并把代码、资产、拓扑、W、课程和 checkpoint 绑定到 run contract。
 
-The inference ablations labelled `kvret0/8/16/32/full` cap the number of
-physically retained KV blocks. They are not strict information windows: a
-newer causal KV was computed while attending to its older prefix and therefore
-can still encode information from blocks whose tensors are later evicted.
-Strict last-N-information ablations would require replaying retained raw
-observations/actions after every eviction and are outside the online cache
-design. The default full-episode configuration performs no eviction.
-
-For phase 3 the objective is exactly
-`L30 + (L8 + L16 + L24) / 3`; every `Ld` contains video and action
-flow-matching losses.
-
-## Evaluation
+学校 HPC 单卡调试申请：
 
 ```bash
-python experiments/libero/eval_libero_single.py \
-  --config-name sim_leapbot_libero \
-  ckpt=/path/to/leapbot.pt \
-  model.training_strategy=video_lora_action_full \
-  model.video_lora.enabled=true \
-  EVALUATION.task_id=0 \
-  EVALUATION.num_trials=10 \
-  EVALUATION.memory.exit_depth=16
-
-python experiments/leapbot/pareto.py evaluate_results/leapbot
-
-# After training the winning four-exit checkpoint, run the complete
-# D={8,16,24,30} x H={0,8,16,32,full} grid with isolated result trees.
-TRAIN_ROOT=/path/to/multi_exit_run MODE=<winner> FINAL_STEP=<step> \
-  bash scripts/evaluate_pareto.sh
+srun -p i64m1tga800u -n 4 --mem=128G --gres=gpu:1 \
+  --time=24:00:00 --pty bash
 ```
 
-Run all 10 `libero_10` tasks with 10 trials for development, then 50 trials per
-task for the final table. Replan latency is a closed raw-observation-to-command
-measurement: input preprocessing, context conditioning, real-observation
-prefill, imagined-video setup/denoising/final-KV prefill, action-history
-materialization/setup, action denoising, command postprocessing, and
-executed-action KV commit are retained separately. Persistent cache peaks
-include the temporary post-observation/pre-commit state; persistent KV,
-transient future-video KV, and total CUDA peak are reported separately. The result
-fingerprint hashes the LeapBot worktree, LIBERO revision, simulator package
-versions, task BDDL, initial states, runtime configuration, and checkpoint.
+## 关键验证
 
-The Pareto tool keeps the overall non-dominated success/latency/memory frontier,
-including FastWAM as a comparator. The default LeapBot configuration is chosen
-only from memory-enabled LeapBot rows using the one-percentage-point plus
-overlapping-confidence-interval rule; FastWAM can never be mislabeled as the
-LeapBot default.
+仓库测试覆盖：
 
-## Verification
+- 三种 causal mask 和 future leakage；
+- 可配置 W 的 recent suffix、左 padding 和 V0 anchor；
+- strict replay 后 KV 中不存在窗口外块；
+- 未执行预测动作不进入 replay；
+- action 后处理对应的模型空间提交；
+- reset、容量、事务回滚、绝对位置和 checkpoint 合同；
+- D8/D16/D24/D30 保存加载。
 
 ```bash
-PYTHONPATH=src python -m pytest tests -q
+PYTHONPATH=src python -m pytest -q
 ```
 
-The optional real-6B acceptance tools are
-`scripts/validate_real_6b_runtime_training_equivalence.py` (training/runtime KV
-and fixed-noise loss equivalence) and `scripts/full_prefix_smoke.py` (real-prefix
-optimizer topology and capacity protection). They are cluster preflight tools,
-not alternate training entrypoints; their exact invocations and resource scope
-are documented in the
-[training and reproduction runbook](./docs/TRAINING_AND_REPRODUCTION.md).
-
-Unit coverage includes separation of future-video target and action condition,
-action-gradient flow through the condition, transient-KV lifecycle,
-action/observation state transitions,
-rollback/reset/capacity, exact context fingerprints, hierarchical positions,
-three-mode H=8 FP32/BF16 incremental-vs-one-shot KV equivalence, executed
-gripper re-normalization, deterministic pre-instantiation seeding, resume-run
-contracts, trained-exit enforcement, multi-depth outputs, and Pareto selection. Full 6B
-H800 training and 500-episode benchmark runs require the release assets and
-trained LeapBot checkpoints; unit tests do not fabricate those results.
-
-Pre-future-condition 6B measurements are retained only as a superseded
-historical report in [reports/SMOKE_H800.md](./reports/SMOKE_H800.md). They are
-not capacity, latency, or loss evidence for this architecture; the receiving
-cluster must rerun the documented probes from the committed code.
+GPU 验收还需要真实 6B 单步训练、默认 W8+V0 inference、profiler 和 OOM 防护。旧 `incremental_full_bptt` checkpoint 与 v7 不兼容，不能 resume 或混入正式曲线。

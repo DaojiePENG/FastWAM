@@ -13,9 +13,10 @@ skip_dit_load_from_pretrain: false
 causal_mode: interleaved
 exit_depths: [8, 16, 24, 30]
 training_exit_depths: [30]
-# Runtime-isomorphic training executes every real V/A block chronologically and
-# keeps every K/V tensor attached for full BPTT.
-history_training_mode: incremental_full_bptt
+# Runtime-isomorphic training replays the exact recent real-data window and
+# keeps every K/V tensor inside that bounded window attached for full BPTT.
+history_training_mode: strict_replay_window_bptt
+history_window_blocks: 8
 # Strict BF16 parity requires the same batch-one T=1 VAE call used at rollout.
 history_vae_batch_chunk_size: 1
 # These values define the learned local/absolute action clock and are persisted
@@ -33,6 +34,10 @@ future_video_conditioning: lingbot_teacher_forced_v1
 future_video_condition_noise_probability: 0.5
 future_video_condition_min_u: 0.5
 future_video_condition_max_u: 1.0
+# Stabilize the pretrained H0 factorization before introducing near-pure-noise
+# video conditions. This is a data curriculum, not an attention gate.
+future_video_condition_clean_warmup_steps: 200
+future_video_condition_noise_ramp_steps: 800
 future_video_denoise_steps: -1
 
 # The formal post-training run overrides this to video_lora_action_full.

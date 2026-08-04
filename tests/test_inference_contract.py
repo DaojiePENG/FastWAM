@@ -19,3 +19,5 @@ def test_prediction_is_transient_until_explicit_commit():
     commit_source = inspect.getsource(LeapBotVA.commit_executed_actions)
     assert "append_actions" not in inference_source
     assert "append_actions" in commit_source
+    assert "executed <= 0 or executed > memory.config.replan_steps" in commit_source
+    assert "executed != memory.config.replan_steps" not in commit_source

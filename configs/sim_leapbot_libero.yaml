@@ -40,8 +40,10 @@ EVALUATION:
     exit_depth: 30
     causal_mode: ${model.causal_mode}
     max_history_blocks: 70
-    # None keeps the complete episode. Set 0/8/16/32 only for retention ablations;
-    # max_history_blocks remains the independent 700-control-step hard capacity.
+    history_storage_mode: strict_replay
+    history_window_blocks: 8
+    # Legacy incremental checkpoints use this for KV-only retention ablations.
+    # Strict replay checkpoints ignore it and enforce their trained W.
     retained_history_blocks: null
 
 hydra:

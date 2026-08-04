@@ -85,6 +85,7 @@ class LeapBotVA(FastWAM):
         self.trained_exit_depths = (num_layers,)
         self.training_strategy = "full_dit"
         self.history_training_mode = "incremental_full_bptt"
+        self.training_history_window_blocks = 8
         self.video_lora_config = VideoLoRAConfig()
         self.video_lora_merged = False
         self.training_replan_steps: int | None = None
@@ -96,6 +97,9 @@ class LeapBotVA(FastWAM):
         self.future_video_condition_noise_probability = 0.5
         self.future_video_condition_min_u = 0.5
         self.future_video_condition_max_u = 1.0
+        self.future_video_condition_clean_warmup_steps = 0
+        self.future_video_condition_noise_ramp_steps = 0
+        self._training_step = 0
         self.training_num_video_frames: int | None = None
         # -1 means fully denoise on the schedule supplied to infer_action.
         # Positive values are an explicit speed/quality inference ablation.
@@ -195,12 +199,15 @@ class LeapBotVA(FastWAM):
         causal_mode: str = "interleaved",
         training_exit_depths: Sequence[int] = (30,),
         history_training_mode: str = "incremental_full_bptt",
+        history_window_blocks: int = 8,
         replan_steps: int | None = None,
         action_horizon: int | None = None,
         num_video_frames: int | None = None,
         future_video_condition_noise_probability: float = 0.5,
         future_video_condition_min_u: float = 0.5,
         future_video_condition_max_u: float = 1.0,
+        future_video_condition_clean_warmup_steps: int = 0,
+        future_video_condition_noise_ramp_steps: int = 0,
         future_video_denoise_steps: int = -1,
     ) -> None:
         if causal_mode not in VALID_CAUSAL_MODES:
@@ -214,13 +221,30 @@ class LeapBotVA(FastWAM):
             )
         self.causal_mode = causal_mode
         self.training_exit_depths = depths
-        if history_training_mode != "incremental_full_bptt":
+        valid_history_modes = {
+            "incremental_full_bptt",
+            "strict_replay_window_bptt",
+        }
+        if history_training_mode not in valid_history_modes:
+            if history_training_mode in {
+                "incremental_detached_prefix",
+                "packed_full_bptt",
+            }:
+                raise ValueError(
+                    "packed and detached-prefix history programs do not match "
+                    "runtime BF16 execution; use strict_replay_window_bptt or "
+                    "incremental_full_bptt"
+                )
             raise ValueError(
-                "LeapBot causal training requires incremental_full_bptt; packed and "
-                "detached-prefix programs do not match runtime BF16 execution, got "
-                f"{history_training_mode}"
+                "unsupported causal history training mode: "
+                f"{history_training_mode}; expected one of "
+                f"{sorted(valid_history_modes)}"
             )
         self.history_training_mode = history_training_mode
+        resolved_history_window = int(history_window_blocks)
+        if resolved_history_window <= 0:
+            raise ValueError("history_window_blocks must be positive")
+        self.training_history_window_blocks = resolved_history_window
         noise_probability = float(future_video_condition_noise_probability)
         min_u = float(future_video_condition_min_u)
         max_u = float(future_video_condition_max_u)
@@ -239,6 +263,12 @@ class LeapBotVA(FastWAM):
         self.future_video_condition_noise_probability = noise_probability
         self.future_video_condition_min_u = min_u
         self.future_video_condition_max_u = max_u
+        clean_warmup_steps = int(future_video_condition_clean_warmup_steps)
+        noise_ramp_steps = int(future_video_condition_noise_ramp_steps)
+        if clean_warmup_steps < 0 or noise_ramp_steps < 0:
+            raise ValueError("future-video curriculum steps must be non-negative")
+        self.future_video_condition_clean_warmup_steps = clean_warmup_steps
+        self.future_video_condition_noise_ramp_steps = noise_ramp_steps
         self.future_video_denoise_steps = denoise_steps
         if (replan_steps is None) != (action_horizon is None):
             raise ValueError(
@@ -274,6 +304,23 @@ class LeapBotVA(FastWAM):
                     "action_horizon must be divisible by num_video_frames-1"
                 )
             self.training_num_video_frames = resolved_video_frames
+
+    def set_training_step(self, step: int) -> None:
+        resolved = int(step)
+        if resolved < 0:
+            raise ValueError("training step must be non-negative")
+        self._training_step = resolved
+
+    def effective_future_video_condition_noise_probability(self) -> float:
+        target = float(self.future_video_condition_noise_probability)
+        warmup = int(self.future_video_condition_clean_warmup_steps)
+        ramp = int(self.future_video_condition_noise_ramp_steps)
+        if self._training_step < warmup:
+            return 0.0
+        if ramp <= 0:
+            return target
+        progress = min(1.0, (self._training_step - warmup) / float(ramp))
+        return target * progress
 
     def validate_temporal_contract(
         self, *, replan_steps: int, action_horizon: int
@@ -314,6 +361,8 @@ class LeapBotVA(FastWAM):
         causal_mode: str | None = None,
         max_history_blocks: int = 70,
         retained_history_blocks: int | None = None,
+        history_storage_mode: str | None = None,
+        history_window_blocks: int | None = None,
         action_horizon: int | None = None,
         replan_steps: int | None = None,
     ) -> LeapMemoryState:
@@ -351,12 +400,43 @@ class LeapBotVA(FastWAM):
             replan_steps=resolved_replan_steps,
             action_horizon=resolved_action_horizon,
         )
+        expected_storage_mode = (
+            "strict_replay"
+            if self.history_training_mode == "strict_replay_window_bptt"
+            else "incremental_kv"
+        )
+        resolved_storage_mode = (
+            expected_storage_mode
+            if history_storage_mode is None
+            else str(history_storage_mode)
+        )
+        if resolved_storage_mode != expected_storage_mode:
+            raise ValueError(
+                "memory storage mode differs from the training contract: "
+                f"expected={expected_storage_mode} got={resolved_storage_mode}"
+            )
+        resolved_history_window = (
+            self.training_history_window_blocks
+            if history_window_blocks is None
+            else int(history_window_blocks)
+        )
+        if (
+            resolved_storage_mode == "strict_replay"
+            and resolved_history_window != self.training_history_window_blocks
+        ):
+            raise ValueError(
+                "strict replay window differs from the training contract: "
+                f"expected={self.training_history_window_blocks} "
+                f"got={resolved_history_window}"
+            )
         return LeapMemoryState(
             config=LeapMemoryConfig(
                 exit_depth=exit_depth,
                 causal_mode=resolved_causal_mode,
                 max_history_blocks=max_history_blocks,
                 retained_history_blocks=retained_history_blocks,
+                history_storage_mode=resolved_storage_mode,
+                history_window_blocks=resolved_history_window,
                 action_horizon=resolved_action_horizon,
                 replan_steps=resolved_replan_steps,
             )
@@ -625,6 +705,122 @@ class LeapBotVA(FastWAM):
             pred_tokens, pre_state["meta"]["grid_size"]
         )
 
+    def _rebuild_strict_replay_history(
+        self, memory: LeapMemoryState
+    ) -> int:
+        """Recompute the exact bounded real-data prefix used during training."""
+
+        records = memory.begin_strict_replay_rebuild()
+        if not records:
+            return 0
+        replayed_segments = 0
+        for record in records:
+            context = record.context.to(
+                device=self.device, dtype=self.torch_dtype
+            )
+            context_mask = record.context_mask.to(
+                device=self.device, dtype=torch.bool
+            )
+            observation_latents = record.observation_latents.to(
+                device=self.device, dtype=self.torch_dtype
+            )
+            video_pre = self._prepare_real_observation_pre_dit(
+                latents=observation_latents,
+                context=context,
+                context_mask=context_mask,
+                block_index=record.block_index,
+            )
+            video_history = memory.materialize(
+                memory.selected_segments_for_video()
+            )
+            _, video_kv = self.mot.prefill_expert_segment(
+                expert_name="video",
+                tokens=video_pre["tokens"],
+                freqs=video_pre["freqs"],
+                t_mod=video_pre["t_mod"],
+                context_payload={
+                    "context": video_pre["context"],
+                    "mask": video_pre["context_mask"],
+                },
+                history_kv=video_history,
+                max_layers=memory.config.exit_depth,
+            )
+            video_seq_len = int(video_pre["tokens"].shape[1])
+            memory.segments.append(
+                KVSegment(
+                    modality="video",
+                    block_index=record.block_index,
+                    positions=torch.full(
+                        (video_seq_len,),
+                        record.block_index,
+                        dtype=torch.long,
+                        device=self.device,
+                    ),
+                    keys=[item["k"] for item in video_kv],
+                    values=[item["v"] for item in video_kv],
+                ).detached()
+            )
+            replayed_segments += 1
+
+            # Once V0 falls outside the recent window it remains as a video-only
+            # identity anchor. Its old action is intentionally not duplicated.
+            include_actions = any(
+                record is recent for recent in memory.replay_blocks
+            )
+            if not include_actions:
+                continue
+            actions = record.executed_actions.to(
+                device=self.device, dtype=self.torch_dtype
+            )
+            if int(actions.shape[1]) != memory.config.replan_steps:
+                raise RuntimeError(
+                    "strict replay requires a complete executed action block"
+                )
+            action_pre = self._prepare_action_segment_pre_dit(
+                actions=actions,
+                timestep=torch.zeros(
+                    (1,), device=self.device, dtype=actions.dtype
+                ),
+                context=context,
+                context_mask=context_mask,
+                absolute_start=record.block_index * memory.config.replan_steps,
+                block_index=record.block_index,
+            )
+            action_history = memory.materialize(
+                memory.selected_segments_for_action()
+            )
+            if action_history is None:
+                raise RuntimeError("strict replay action has no real video prefix")
+            _, action_kv = self.mot.prefill_expert_segment(
+                expert_name="action",
+                tokens=action_pre["tokens"],
+                freqs=action_pre["freqs"],
+                t_mod=action_pre["t_mod"],
+                context_payload={
+                    "context": action_pre["context"],
+                    "mask": action_pre["context_mask"],
+                },
+                history_kv=action_history,
+                max_layers=memory.config.exit_depth,
+            )
+            action_start = record.block_index * memory.config.replan_steps
+            memory.segments.append(
+                KVSegment(
+                    modality="action",
+                    block_index=record.block_index,
+                    positions=torch.arange(
+                        action_start,
+                        action_start + memory.config.replan_steps,
+                        dtype=torch.long,
+                        device=self.device,
+                    ),
+                    keys=[item["k"] for item in action_kv],
+                    values=[item["v"] for item in action_kv],
+                ).detached()
+            )
+            replayed_segments += 1
+        return replayed_segments
+
     @torch.no_grad()
     def infer_action(
         self,
@@ -699,6 +895,14 @@ class LeapBotVA(FastWAM):
                 torch.cuda.synchronize(self.device)
             timings["conditioning_s"] = time.perf_counter() - conditioning_start
 
+            replayed_segments = 0
+            if memory.config.history_storage_mode == "strict_replay":
+                replay_start = time.perf_counter()
+                replayed_segments = self._rebuild_strict_replay_history(memory)
+                if profile and self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                timings["history_replay_s"] = time.perf_counter() - replay_start
+
             t0 = time.perf_counter()
             input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
             first_frame_latents = self._encode_input_image_latents_tensor(
@@ -737,6 +941,11 @@ class LeapBotVA(FastWAM):
             )
             memory.append_observation(
                 video_segment,
+                context=context,
+                context_mask=context_mask,
+            )
+            memory.stage_replay_observation(
+                observation_latents=first_frame_latents,
                 context=context,
                 context_mask=context_mask,
             )
@@ -996,9 +1205,10 @@ class LeapBotVA(FastWAM):
             0.0,
             timings["causal_model_s"]
             - sum(
-                timings[name]
+                timings.get(name, 0.0)
                 for name in (
                     "conditioning_s",
+                    "history_replay_s",
                     "observation_prefill_s",
                     "future_video_setup_s",
                     "future_video_denoise_s",
@@ -1015,6 +1225,10 @@ class LeapBotVA(FastWAM):
                 "completed_blocks": memory.completed_blocks,
                 "retained_history_blocks": memory.retained_completed_blocks,
                 "cache_bytes": memory.cache_nbytes,
+                "replay_bytes": memory.replay_nbytes,
+                "history_storage_mode": memory.config.history_storage_mode,
+                "history_window_blocks": memory.config.history_window_blocks,
+                "replayed_segments": replayed_segments,
                 "transient_future_video_cache_bytes": transient_future_cache_bytes,
                 "token_counts": memory.token_counts,
                 "phase": memory.phase.value,
@@ -1106,6 +1320,7 @@ class LeapBotVA(FastWAM):
                     values=[item["v"] for item in action_kv],
                 )
             )
+            memory.commit_replay_block(actions)
             if profile and self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
         except Exception:
@@ -1117,6 +1332,8 @@ class LeapBotVA(FastWAM):
             "completed_blocks": memory.completed_blocks,
             "retained_history_blocks": memory.retained_completed_blocks,
             "cache_bytes": memory.cache_nbytes,
+            "replay_bytes": memory.replay_nbytes,
+            "history_storage_mode": memory.config.history_storage_mode,
             "commit_s": time.perf_counter() - t0,
         }
 
@@ -1133,6 +1350,7 @@ class LeapBotVA(FastWAM):
             "causal_mode": self.causal_mode,
             "training_strategy": self.training_strategy,
             "history_training_mode": self.history_training_mode,
+            "training_history_window_blocks": self.training_history_window_blocks,
             "training_replan_steps": self.training_replan_steps,
             "training_action_horizon": self.training_action_horizon,
             "training_num_video_frames": self.training_num_video_frames,
@@ -1142,6 +1360,12 @@ class LeapBotVA(FastWAM):
             ),
             "future_video_condition_min_u": self.future_video_condition_min_u,
             "future_video_condition_max_u": self.future_video_condition_max_u,
+            "future_video_condition_clean_warmup_steps": (
+                self.future_video_condition_clean_warmup_steps
+            ),
+            "future_video_condition_noise_ramp_steps": (
+                self.future_video_condition_noise_ramp_steps
+            ),
             "history_vae_batch_chunk_size": self.history_vae_batch_chunk_size,
             "video_lora_config": self.video_lora_config.__dict__,
             "step": step,
@@ -1378,6 +1602,24 @@ class LeapBotVA(FastWAM):
                 "checkpoint/model history training mode mismatch: "
                 f"checkpoint={checkpoint_history_mode} model={self.history_training_mode}"
             )
+        checkpoint_history_window = payload.get("training_history_window_blocks")
+        if (
+            checkpoint_history_window is not None
+            and int(checkpoint_history_window)
+            != int(self.training_history_window_blocks)
+        ):
+            raise ValueError(
+                "checkpoint/model strict history window mismatch: "
+                f"checkpoint={checkpoint_history_window} "
+                f"model={self.training_history_window_blocks}"
+            )
+        if (
+            str(checkpoint_history_mode) == "strict_replay_window_bptt"
+            and checkpoint_history_window is None
+        ):
+            raise ValueError(
+                "strict replay checkpoint is missing training_history_window_blocks"
+            )
         checkpoint_replan_steps = payload.get("training_replan_steps")
         checkpoint_action_horizon = payload.get("training_action_horizon")
         if (checkpoint_replan_steps is None) != (checkpoint_action_horizon is None):
@@ -1457,6 +1699,29 @@ class LeapBotVA(FastWAM):
                     f"{field} differs from the model contract: "
                     f"checkpoint={checkpoint_value} model={configured}"
                 )
+        for field, configured in (
+            (
+                "future_video_condition_clean_warmup_steps",
+                self.future_video_condition_clean_warmup_steps,
+            ),
+            (
+                "future_video_condition_noise_ramp_steps",
+                self.future_video_condition_noise_ramp_steps,
+            ),
+        ):
+            checkpoint_value = payload.get(field)
+            if checkpoint_value is not None and int(checkpoint_value) != int(
+                configured
+            ):
+                raise ValueError(
+                    f"{field} differs from the model contract: "
+                    f"checkpoint={checkpoint_value} model={configured}"
+                )
+            if (
+                str(checkpoint_history_mode) == "strict_replay_window_bptt"
+                and checkpoint_value is None
+            ):
+                raise ValueError(f"strict replay checkpoint is missing {field}")
         checkpoint_vae_chunk = payload.get("history_vae_batch_chunk_size")
         if (
             checkpoint_vae_chunk is not None

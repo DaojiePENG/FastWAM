@@ -4,8 +4,10 @@ set -euo pipefail
 
 # Evaluate one validated LeapBot checkpoint over all LIBERO-Long tasks.
 
-ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
-LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 EVAL_ROOT="${EVAL_ROOT:?EVAL_ROOT is required}"
 MODE="${MODE:-action_aggregator}"
@@ -17,7 +19,7 @@ VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-true}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-true}"
 MEMORY_ENABLED="${MEMORY_ENABLED:-true}"
 MAX_HISTORY_BLOCKS="${MAX_HISTORY_BLOCKS:-70}"
-RETAINED_HISTORY_BLOCKS="${RETAINED_HISTORY_BLOCKS:-full}"
+HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 EXIT_DEPTH="${EXIT_DEPTH:-30}"
 EXPECTED_TRAINED_EXIT_DEPTHS="${EXPECTED_TRAINED_EXIT_DEPTHS:-30}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
@@ -46,12 +48,16 @@ if [[ ! "$EXPECTED_RUN_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]] \
     exit 2
 fi
 mkdir -p "$EVAL_ROOT/.checkpoint_validation"
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
+"$PYTHON_BIN" "$ROOT_DIR/scripts/validate_leapbot_checkpoint.py" \
     "$CHECKPOINT" \
     --expected-step "$FINAL_STEP" \
     --expected-mode "$MODE" \
     --expected-trained-exit-depths "$EXPECTED_TRAINED_EXIT_DEPTHS" \
     --expected-history-vae-batch-chunk-size 1 \
+    --expected-history-training-mode strict_replay_window_bptt \
+    --expected-history-window-blocks "$HISTORY_WINDOW_BLOCKS" \
+    --expected-condition-clean-warmup-steps 200 \
+    --expected-condition-noise-ramp-steps 800 \
     --expected-run-contract-sha256 "$EXPECTED_RUN_CONTRACT_SHA256" \
     --expected-code-commit "$EXPECTED_CODE_COMMIT" \
     --state-dir "$TRAIN_ROOT/$MODE/checkpoints/state/$FINAL_STEP_TAG" \
@@ -67,16 +73,11 @@ esac
 CHECKPOINT_SHA256="$(sha256sum "$CHECKPOINT" | awk '{print $1}')"
 if [[ "$MEMORY_ENABLED" == "true" ]]; then
     FINGERPRINT_EPISODE_CAPACITY="$MAX_HISTORY_BLOCKS"
-    if [[ "$RETAINED_HISTORY_BLOCKS" == "full" ]]; then
-        MEMORY_RETENTION_OVERRIDE=null
-        FINGERPRINT_HISTORY_CAP="$MAX_HISTORY_BLOCKS"
-    elif [[ "$RETAINED_HISTORY_BLOCKS" =~ ^[0-9]+$ ]] \
-        && (( RETAINED_HISTORY_BLOCKS <= MAX_HISTORY_BLOCKS )); then
-        MEMORY_RETENTION_OVERRIDE="$RETAINED_HISTORY_BLOCKS"
-        FINGERPRINT_HISTORY_CAP="$RETAINED_HISTORY_BLOCKS"
-    else
-        printf 'RETAINED_HISTORY_BLOCKS must be full or an integer in [0,%s].\n' \
-            "$MAX_HISTORY_BLOCKS" >&2
+    MEMORY_RETENTION_OVERRIDE=null
+    FINGERPRINT_HISTORY_CAP="$HISTORY_WINDOW_BLOCKS"
+    if ! [[ "$HISTORY_WINDOW_BLOCKS" =~ ^[1-9][0-9]*$ ]] \
+        || (( HISTORY_WINDOW_BLOCKS > MAX_HISTORY_BLOCKS )); then
+        printf 'HISTORY_WINDOW_BLOCKS must be in [1,MAX_HISTORY_BLOCKS].\n' >&2
         exit 2
     fi
 else
@@ -102,7 +103,7 @@ build_task_fingerprint() {
 
     mkdir -p "$(dirname "$fingerprint_file")"
     PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
         --config-name sim_leapbot_libero \
         --output "$fingerprint_file" \
         --checkpoint-sha256 "$CHECKPOINT_SHA256" \
@@ -124,6 +125,8 @@ build_task_fingerprint() {
         "EVALUATION.memory.causal_mode=$MODE" \
         "EVALUATION.memory.exit_depth=$EXIT_DEPTH" \
         "EVALUATION.memory.max_history_blocks=$MAX_HISTORY_BLOCKS" \
+        EVALUATION.memory.history_storage_mode=strict_replay \
+        "EVALUATION.memory.history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
         "EVALUATION.memory.retained_history_blocks=$MEMORY_RETENTION_OVERRIDE" \
         >/dev/null
 }
@@ -132,7 +135,7 @@ result_matches_task() {
     local result="$1"
     local task_id="$2"
     [[ -s "$result" ]] && PYTHONPATH="$ROOT_DIR/src" \
-        "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+        "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
         "$result" \
         --expected "$(fingerprint_path "$task_id")"
 }
@@ -179,7 +182,7 @@ run_task() {
         PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
         --config-name sim_leapbot_libero \
         task=libero_leapbot_2cam224 \
         "ckpt=$CHECKPOINT" \
@@ -201,6 +204,8 @@ run_task() {
         "EVALUATION.memory.causal_mode=$MODE" \
         "EVALUATION.memory.exit_depth=$EXIT_DEPTH" \
         "EVALUATION.memory.max_history_blocks=$MAX_HISTORY_BLOCKS" \
+        EVALUATION.memory.history_storage_mode=strict_replay \
+        "EVALUATION.memory.history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
         "EVALUATION.memory.retained_history_blocks=$MEMORY_RETENTION_OVERRIDE" \
         "+EVALUATION.expected_fingerprint_path=$fingerprint_file" \
         >"$log_file" 2>&1; then
@@ -240,7 +245,7 @@ if (( failed )); then
     exit 1
 fi
 
-"$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/leapbot/pareto.py" \
+"$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/pareto.py" \
     "$EVAL_ROOT" \
     --output-dir "$EVAL_ROOT/pareto" \
     --expected-tasks 10 \
