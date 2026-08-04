@@ -176,7 +176,7 @@ def build_manifest(
     dataset_dirs: list[Path],
     text_embedding_cache: Path,
     vae_checkpoint: Path,
-    download_manifest: Path,
+    download_manifest: Path | None,
     text_encoder_checkpoint: Path,
     tokenizer_dir: Path,
     *,
@@ -225,10 +225,12 @@ def build_manifest(
     vae = vae_checkpoint.expanduser().resolve()
     if not vae.is_file():
         raise FileNotFoundError(vae)
-    download_identity = _validated_download_manifest(download_manifest)
+    download_identity = (
+        _validated_download_manifest(download_manifest)
+        if download_manifest is not None else None
+    )
     result = {
-        "schema_version": 2,
-        "download_manifest": download_identity,
+        "schema_version": 3,
         "datasets": datasets,
         "dataset_file_count": sum(item["file_count"] for item in datasets),
         "dataset_bytes": sum(item["bytes"] for item in datasets),
@@ -244,10 +246,6 @@ def build_manifest(
     result["manifest_sha256"] = _canonical_sha256(
         {
             "schema_version": result["schema_version"],
-            "download_manifest_file_sha256": download_identity["sha256"],
-            "download_manifest_payload_sha256": download_identity["payload"][
-                "manifest_sha256"
-            ],
             "dataset_content_sha256": result["dataset_content_sha256"],
             "dataset_file_count": result["dataset_file_count"],
             "dataset_bytes": result["dataset_bytes"],
@@ -267,6 +265,8 @@ def build_manifest(
             "vae_checkpoint_bytes": result["vae_checkpoint"]["bytes"],
         }
     )
+    if download_identity is not None:
+        result["download_manifest"] = download_identity
     return result
 
 
@@ -275,7 +275,7 @@ def main() -> None:
     parser.add_argument("--dataset-dir", action="append", type=Path, required=True)
     parser.add_argument("--text-embedding-cache", type=Path, required=True)
     parser.add_argument("--vae-checkpoint", type=Path, required=True)
-    parser.add_argument("--download-manifest", type=Path, required=True)
+    parser.add_argument("--download-manifest", type=Path)
     parser.add_argument("--model-id", default="Wan-AI/Wan2.2-TI2V-5B")
     parser.add_argument(
         "--tokenizer-model-id", default="Wan-AI/Wan2.1-T2V-1.3B"

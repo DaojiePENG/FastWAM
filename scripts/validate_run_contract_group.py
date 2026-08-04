@@ -23,7 +23,6 @@ _REQUIRED_FIELDS = (
     "release_checkpoint_sha256",
     "dataset_stats_sha256",
     "training_asset_manifest_sha256",
-    "asset_download_manifest_sha256",
     "dataset_content_sha256",
     "dataset_file_count",
     "dataset_bytes",
