@@ -203,8 +203,22 @@ python experiments/libero/run_libero_manager.py \
   task=libero_uncond_2cam224_1e-4 \
   ckpt=./checkpoints/fastwam_release/libero_uncond_2cam224.pt \
   EVALUATION.dataset_stats_path=./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json \
+  EVALUATION.compile_action_infer=true \
   MULTIRUN.num_gpus=8
 ```
+
+For a synthetic eager/compiled latency and memory benchmark, run:
+
+```bash
+python scripts/dryrun_fastwam.py \
+  task=libero_uncond_2cam224_1e-4 \
+  ckpt=./checkpoints/fastwam_release/libero_uncond_2cam224.pt \
+  +DRYRUN.benchmark_both=true
+```
+
+Inference uses complex RoPE and compiles the video-cache prefill and cached
+action denoise callables with Inductor using
+`mode="reduce-overhead", fullgraph=True`.
 
 Optional: evaluate released RoboTwin checkpoint:
 
@@ -252,9 +266,27 @@ You can then update `pretrained_norm_stats` to that file path for subsequent run
 # LIBERO
 bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
 
+# LIBERO optional IDM
+bash scripts/train_zero1.sh 8 task=libero_optional_idm_2cam224_1e-4
+
 # RoboTwin
 bash scripts/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
 ```
+
+Enable the compile-friendly training denoise core with
+`model.compile_training_denoise=true`. Wan MoT gradient checkpointing is disabled
+by default; set the compile option only after confirming the resulting memory
+usage for your batch shape. Training compiles one shared MoT layer callable with
+`fullgraph=True` using the default Inductor backend.
+The frozen Wan VAE encoder always processes the full training batch in one call
+and uses the lightweight `cudagraphs` backend with `fullgraph=True`.
+
+The optional IDM variant samples full-video action conditioning independently
+for each training sample with `model.action_idm_prob` (default `0.5`). Its
+conditioning video is noised with `model.video_cond_noise_prob` (default
+`0.5`). At inference, select either two-stage IDM conditioning or the original
+first-frame path with `+EVALUATION.action_infer_mode=idm` or
+`+EVALUATION.action_infer_mode=first_frame`.
 
 For LIBERO, we train on a single node with 8 GPUs. For RoboTwin, we use 64 GPUs to accelerate training. You can try reducing the GPU count or training epochs.
 

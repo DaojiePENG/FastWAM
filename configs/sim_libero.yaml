@@ -35,6 +35,7 @@ EVALUATION:
   negative_prompt: ""
   rand_device: cpu
   tiled: false
+  compile_action_infer: true
 
   # Optional external inputs
   dataset_stats_path: null

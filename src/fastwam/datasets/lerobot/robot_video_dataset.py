@@ -32,6 +32,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         camera_key=None,
         processor=None,
         text_embedding_cache_dir=None,
+        use_text_embed_cache=True,
         context_len=128,
         pretrained_norm_stats=None,
         val_set_proportion=0.05,
@@ -67,6 +68,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
 
         self.video_size = video_size
         self.text_embedding_cache_dir = text_embedding_cache_dir
+        self.use_text_embed_cache = bool(use_text_embed_cache)
         self.context_len = context_len
         self.skip_padding_as_possible = skip_padding_as_possible
         self.max_padding_retry = max_padding_retry
@@ -215,22 +217,21 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             task = self.override_instruction
         instruction = DEFAULT_PROMPT.format(task=task)
 
-        context, context_mask = self._get_cached_text_context(instruction)
-        # NOTE: to keep consistent with wan2.2's behavior
-        context[~context_mask] = 0.0
-        context_mask = torch.ones_like(context_mask)
-        
         data = {
             "video": video,
             "action": action,
             "proprio": proprio,
             "prompt": instruction,
-            "context": context,
-            "context_mask": context_mask,
             "image_is_pad": image_is_pad,
             "action_is_pad": sample["action_is_pad"],
             "proprio_is_pad": sample["proprio_is_pad"],
         }
+        if self.use_text_embed_cache:
+            context, context_mask = self._get_cached_text_context(instruction)
+            # NOTE: to keep consistent with wan2.2's behavior
+            context[~context_mask] = 0.0
+            data["context"] = context
+            data["context_mask"] = torch.ones_like(context_mask)
         return data
 
     def _get_cached_text_context(self, prompt: str):

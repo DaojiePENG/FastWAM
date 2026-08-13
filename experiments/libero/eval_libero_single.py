@@ -39,7 +39,7 @@ from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcess
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
 from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
-from libero.libero import benchmark
+from libero.libero import benchmark, get_libero_path
 from action_ensembler import ActionEnsembler
 
 OmegaConf.register_new_resolver("eval", eval)
@@ -410,12 +410,31 @@ def _predict_action_chunk(
     elif "num_video_frames" in inspect.signature(model.infer_action).parameters:
         infer_kwargs["num_video_frames"] = _get_num_video_frames(cfg)
 
+    compile_action_infer = bool(cfg.EVALUATION.get("compile_action_infer", False))
+    infer_method = model.infer_joint if visualize_future_video else model.infer_action
+    if not visualize_future_video and "action_infer_mode" in inspect.signature(infer_method).parameters:
+        infer_kwargs["action_infer_mode"] = str(
+            cfg.EVALUATION.get("action_infer_mode", "idm")
+        )
+    if compile_action_infer and (
+        "compile_action_infer" not in inspect.signature(infer_method).parameters
+    ):
+        raise ValueError(
+            f"{type(model).__name__}.{infer_method.__name__} does not support `compile_action_infer`."
+        )
+
     with torch.no_grad():
         if visualize_future_video:
-            pred = model.infer_joint(**infer_kwargs)
+            pred = model.infer_joint(
+                **infer_kwargs,
+                compile_action_infer=compile_action_infer,
+            )
             predicted_future_frames = _select_predicted_future_frames(pred["video"], cfg)
         else:
-            pred = model.infer_action(**infer_kwargs)
+            pred = model.infer_action(
+                **infer_kwargs,
+                compile_action_infer=compile_action_infer,
+            )
     action = pred["action"]  # [T, D]
 
     action = _denormalize_action(action, processor)[0]  # [T, D]
@@ -734,7 +753,12 @@ def eval_single_process(cfg: DictConfig):
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
     task = task_suite.get_task(cfg.EVALUATION.task_id)
-    initial_states = task_suite.get_task_init_states(cfg.EVALUATION.task_id)
+    init_states_path = (
+        Path(get_libero_path("init_states"))
+        / task.problem_folder
+        / task.init_states_file
+    )
+    initial_states = torch.load(init_states_path, weights_only=False)
 
     while len(initial_states) < int(cfg.EVALUATION.num_trials):
         initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
