@@ -112,6 +112,20 @@ data/libero_mujoco3.3.2/
 └── libero_spatial_no_noops_lerobot/
 ```
 
+FastWAM also supports local, read-only LeRobot v3.0 datasets. LeRobot v3.0
+uses chunked parquet and video files instead of one file per episode. Put the
+converted LIBERO suites under `data/lerobot3.0_512_mujoco3.3.2/` and select the
+v3 data config when training:
+
+```bash
+python scripts/train.py task=libero_uncond_2cam224_1e-4 \
+  data=libero_2cam_lerobot_v30
+```
+
+The v3 integration reuses the existing FastWAM processor and text-cache
+settings. It is intentionally read-only and does not include dataset writing,
+Hub upload, conversion, or mixture-dataset code.
+
 ### RoboTwin
 
 The preprocessed RoboTwin dataset used by Fast-WAM is available at:
