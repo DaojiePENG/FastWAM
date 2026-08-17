@@ -13,6 +13,94 @@
 
 本仓库包含 FastWAM 在 LIBERO / RoboTwin 上的训练与评估代码。
 
+## What's New
+
+FastWAM 现在更快、更适合大规模数据，也为研究提供了更灵活的模型选择。本次更新带来了显著的
+训练与推理加速、原生 LeRobot v3.0 支持，以及一个可以自由切换是否进行未来想象的新模型。
+
+### ⚡ 推理加速约 2 倍
+
+FastWAM 端到端推理速度提升约 **2 倍**，测速包含 text encoding 和 VAE encoding：
+
+- **NVIDIA H20：** 470 ms → 210 ms
+- **NVIDIA RTX 4090：** 190 ms → 110 ms
+
+LIBERO 默认通过 `EVALUATION.compile_action_infer=true` 启用加速路径。感谢
+[PR #43](https://github.com/yuantianyuan01/FastWAM/pull/43) 提出的优化思路，
+为本次推理加速工作提供了重要启发。
+
+### 🚀 训练加速约 10%
+
+在 NVIDIA H20 GPU 上，FastWAM 训练速度提升约 **10%**。新的训练路径结合了
+compiled denoising core、batch VAE encoding 和轻量 CUDA Graph backend。
+通过以下配置开启 denoise compilation：
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4 \
+  model.compile_training_denoise=true
+```
+
+同时支持缓存 text embedding 和在线 T5 encoding。
+
+### 📦 原生支持 LeRobot 2.1 和 3.0
+
+FastWAM 现在同时支持 **LeRobot 2.1 和 LeRobot 3.0** 数据集。LeRobot 3.0
+使用 chunked parquet 和 video layout，在数据规模增大时具有更快的数据加载和
+dataset statistics 计算速度，更适合大规模机器人数据训练。
+
+从 [Hugging Face](https://huggingface.co/datasets/yuanty/LIBERO-fastwam)
+下载已发布的 LeRobot 3.0 LIBERO 数据，并选择 v3.0 data config：
+
+```bash
+huggingface-cli download yuanty/LIBERO-fastwam \
+  --repo-type dataset \
+  --include "lerobot_v30/**" \
+  --local-dir ./data
+
+python scripts/train.py task=libero_uncond_2cam224_1e-4 \
+  data=libero_2cam_lerobot_v30
+```
+
+使用其他 LeRobot 3.0 数据集时，可以复制
+`configs/data/libero_2cam_lerobot_v30.yaml`，修改其中的
+`train.dataset_dirs`，再通过 `data=<config_name>` 选择新配置。原有 LeRobot
+2.1 配置无需修改，可以继续使用。
+
+### 🧠 Optional IDM：一个模型，两种 thinking mode
+
+Optional IDM 是一个新的 FastWAM variant，在**同一个模型中支持两种推理模式**：
+
+- **IDM mode：**先想象未来视频，再预测动作。
+- **First-frame mode：**不进行 test-time future imagination，直接根据当前观测预测动作。
+
+从 [Hugging Face](https://huggingface.co/yuanty/fastwam) 下载已发布的 Optional IDM 权重：
+
+```bash
+huggingface-cli download yuanty/fastwam \
+  libero_optional_idm_2cam224.pt \
+  libero_optional_idm_2cam224_dataset_stats.json \
+  --local-dir ./checkpoints/fastwam_release
+```
+
+只需要训练一次 optional-IDM：
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_optional_idm_2cam224_1e-4
+```
+
+之后即可在评测时自由切换两种模式，无需重新训练，方便研究和比较 future
+imagination 在什么情况下有效：
+
+```bash
++EVALUATION.action_infer_mode=idm
++EVALUATION.action_infer_mode=first_frame
+```
+
+### 其他改进
+
+- 训练和评测的 action scheduler shift 统一为 `1.0`。
+- LIBERO 评测升级为持久模型进程，并支持动态任务调度、坏卡隔离、失败恢复和断点续测。
+
 ## 目录
 
 - [File Structure](#file-structure)

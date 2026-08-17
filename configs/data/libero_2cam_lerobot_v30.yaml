@@ -1,10 +1,10 @@
 train:
   _target_: fastwam.datasets.lerobot3.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
-    - ./data/lerobot3.0_512_mujoco3.3.2/libero_spatial_no_noops_lerobot
-    - ./data/lerobot3.0_512_mujoco3.3.2/libero_object_no_noops_lerobot
-    - ./data/lerobot3.0_512_mujoco3.3.2/libero_goal_no_noops_lerobot
-    - ./data/lerobot3.0_512_mujoco3.3.2/libero_10_no_noops_lerobot
+    - ./data/lerobot_v30/libero_spatial_no_noops_lerobot
+    - ./data/lerobot_v30/libero_object_no_noops_lerobot
+    - ./data/lerobot_v30/libero_goal_no_noops_lerobot
+    - ./data/lerobot_v30/libero_10_no_noops_lerobot
   shape_meta:
     images:
       - key: image

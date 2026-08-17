@@ -13,6 +13,103 @@ Official codebase for **Fast-WAM: Do World Action Models Need Test-time Future I
 
 This repository contains the training and evaluation code for FastWAM on LIBERO / RoboTwin.
 
+## What's New
+
+FastWAM is now faster, better suited to large-scale datasets, and more flexible
+for research. This update brings substantially faster training and inference,
+native LeRobot v3.0 support, and a new model that can switch between acting with
+and without future imagination.
+
+### ⚡ Approximately 2x faster inference
+
+End-to-end FastWAM inference is now approximately **2x faster**, including text
+encoding and VAE encoding:
+
+- **NVIDIA H20:** 470 ms → 210 ms
+- **NVIDIA RTX 4090:** 190 ms → 110 ms
+
+The accelerated path is enabled by default for LIBERO with
+`EVALUATION.compile_action_infer=true`. We gratefully acknowledge
+[PR #43](https://github.com/yuantianyuan01/FastWAM/pull/43) for proposing the
+optimization ideas that inspired this work.
+
+### 🚀 Approximately 10% faster training
+
+FastWAM training is approximately **10% faster on NVIDIA H20 GPUs**. The new
+training path combines a compiled denoising core with batched VAE encoding and
+a lightweight CUDA Graph backend. Enable denoising compilation with:
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4 \
+  model.compile_training_denoise=true
+```
+
+Both cached text embeddings and on-the-fly T5 encoding are supported.
+
+### 📦 Native LeRobot 2.1 and 3.0 support
+
+FastWAM now supports both **LeRobot 2.1 and LeRobot 3.0** datasets. LeRobot 3.0's
+chunked parquet and video layout scales better to large datasets, with faster
+data loading and dataset-statistics computation as the dataset grows.
+
+Download the released LeRobot 3.0 LIBERO dataset from
+[Hugging Face](https://huggingface.co/datasets/yuanty/LIBERO-fastwam) and select
+the v3.0 data config:
+
+```bash
+huggingface-cli download yuanty/LIBERO-fastwam \
+  --repo-type dataset \
+  --include "lerobot_v30/**" \
+  --local-dir ./data
+
+python scripts/train.py task=libero_uncond_2cam224_1e-4 \
+  data=libero_2cam_lerobot_v30
+```
+
+For another LeRobot 3.0 dataset, copy
+`configs/data/libero_2cam_lerobot_v30.yaml`, update `train.dataset_dirs`, and
+select the new config with `data=<config_name>`. Existing LeRobot 2.1 configs
+continue to work unchanged.
+
+### 🧠 Optional IDM: one model, two thinking modes
+
+Optional IDM is a new FastWAM variant that supports **two inference modes in a
+single model**:
+
+- **IDM mode:** imagine the future video first, then predict actions.
+- **First-frame mode:** predict actions directly from the current observation,
+  without test-time future imagination.
+
+Download the released Optional IDM checkpoint from
+[Hugging Face](https://huggingface.co/yuanty/fastwam):
+
+```bash
+huggingface-cli download yuanty/fastwam \
+  libero_optional_idm_2cam224.pt \
+  libero_optional_idm_2cam224_dataset_stats.json \
+  --local-dir ./checkpoints/fastwam_release
+```
+
+Train the optional-IDM variant once:
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_optional_idm_2cam224_1e-4
+```
+
+Then switch between the two modes at evaluation time without retraining, making
+it easy to study when future imagination helps:
+
+```bash
++EVALUATION.action_infer_mode=idm
++EVALUATION.action_infer_mode=first_frame
+```
+
+### Other improvements
+
+- Unified the action scheduler shift to `1.0` for training and evaluation.
+- Upgraded LIBERO evaluation with persistent model workers, dynamic task
+  scheduling, bad-GPU quarantine, failure recovery, and resumable results.
+
 ## Index
 
 - [File Structure](#file-structure)
@@ -112,20 +209,6 @@ data/libero_mujoco3.3.2/
 └── libero_spatial_no_noops_lerobot/
 ```
 
-FastWAM also supports local, read-only LeRobot v3.0 datasets. LeRobot v3.0
-uses chunked parquet and video files instead of one file per episode. Put the
-converted LIBERO suites under `data/lerobot3.0_512_mujoco3.3.2/` and select the
-v3 data config when training:
-
-```bash
-python scripts/train.py task=libero_uncond_2cam224_1e-4 \
-  data=libero_2cam_lerobot_v30
-```
-
-The v3 integration reuses the existing FastWAM processor and text-cache
-settings. It is intentionally read-only and does not include dataset writing,
-Hub upload, conversion, or mixture-dataset code.
-
 ### RoboTwin
 
 The preprocessed RoboTwin dataset used by Fast-WAM is available at:
@@ -217,22 +300,8 @@ python experiments/libero/run_libero_manager.py \
   task=libero_uncond_2cam224_1e-4 \
   ckpt=./checkpoints/fastwam_release/libero_uncond_2cam224.pt \
   EVALUATION.dataset_stats_path=./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json \
-  EVALUATION.compile_action_infer=true \
   MULTIRUN.num_gpus=8
 ```
-
-For a synthetic eager/compiled latency and memory benchmark, run:
-
-```bash
-python scripts/dryrun_fastwam.py \
-  task=libero_uncond_2cam224_1e-4 \
-  ckpt=./checkpoints/fastwam_release/libero_uncond_2cam224.pt \
-  +DRYRUN.benchmark_both=true
-```
-
-Inference uses complex RoPE and compiles the video-cache prefill and cached
-action denoise callables with Inductor using
-`mode="reduce-overhead", fullgraph=True`.
 
 Optional: evaluate released RoboTwin checkpoint:
 
@@ -280,27 +349,9 @@ You can then update `pretrained_norm_stats` to that file path for subsequent run
 # LIBERO
 bash scripts/train_zero1.sh 8 task=libero_uncond_2cam224_1e-4
 
-# LIBERO optional IDM
-bash scripts/train_zero1.sh 8 task=libero_optional_idm_2cam224_1e-4
-
 # RoboTwin
 bash scripts/train_zero1.sh 8 task=robotwin_uncond_3cam_384_1e-4
 ```
-
-Enable the compile-friendly training denoise core with
-`model.compile_training_denoise=true`. Wan MoT gradient checkpointing is disabled
-by default; set the compile option only after confirming the resulting memory
-usage for your batch shape. Training compiles one shared MoT layer callable with
-`fullgraph=True` using the default Inductor backend.
-The frozen Wan VAE encoder always processes the full training batch in one call
-and uses the lightweight `cudagraphs` backend with `fullgraph=True`.
-
-The optional IDM variant samples full-video action conditioning independently
-for each training sample with `model.action_idm_prob` (default `0.5`). Its
-conditioning video is noised with `model.video_cond_noise_prob` (default
-`0.5`). At inference, select either two-stage IDM conditioning or the original
-first-frame path with `+EVALUATION.action_infer_mode=idm` or
-`+EVALUATION.action_infer_mode=first_frame`.
 
 For LIBERO, we train on a single node with 8 GPUs. For RoboTwin, we use 64 GPUs to accelerate training. You can try reducing the GPU count or training epochs.
 
