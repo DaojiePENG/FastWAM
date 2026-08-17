@@ -10,7 +10,6 @@ from typing import Any, Optional
 import hydra
 import numpy as np
 import torch
-from accelerate import PartialState
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
@@ -35,6 +34,7 @@ from experiments.libero.libero_utils import (
     save_prediction_video,
     save_rollout_video,
 )
+from experiments.libero.worker_pool import pop_task, write_worker_status
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 from fastwam.utils.pytorch_utils import set_global_seed
@@ -687,6 +687,10 @@ def run_single_task(
                     task_description=task_description,
                 )
 
+    close_fn = getattr(env, "close", None)
+    if close_fn is not None:
+        close_fn()
+
     if visualize_future_video:
         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
         if len(valid_episode_psnr) > 0:
@@ -694,12 +698,172 @@ def run_single_task(
     return results
 
 
+def _required_worker_path(name: str) -> Path:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        raise ValueError(f"{name} must be set in worker mode.")
+    return Path(os.path.expanduser(os.path.expandvars(value))).resolve()
+
+
+def _result_file(output_root: Path, suite_name: str, task_id: int) -> Path | None:
+    matches = sorted((output_root / suite_name).glob(f"gpu*_task{task_id}_results.json"))
+    return matches[0] if matches else None
+
+
+def _run_task_to_file(
+    *,
+    cfg: DictConfig,
+    suite_name: str,
+    task_id: int,
+    model: torch.nn.Module,
+    processor: FastWAMProcessor,
+    action_horizon: int,
+    input_w: int,
+    input_h: int,
+    model_device: str,
+    output_root: Path,
+    worker_id: str | None,
+) -> tuple[Path, dict]:
+    task_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    task_cfg.EVALUATION.task_suite_name = suite_name
+    task_cfg.EVALUATION.task_id = int(task_id)
+
+    task_suite = benchmark.get_benchmark_dict()[suite_name]()
+    task = task_suite.get_task(task_id)
+    init_states_path = (
+        Path(get_libero_path("init_states"))
+        / task.problem_folder
+        / task.init_states_file
+    )
+    initial_states = torch.load(init_states_path, weights_only=False)
+    while len(initial_states) < int(task_cfg.EVALUATION.num_trials):
+        initial_states.extend(
+            initial_states[: int(task_cfg.EVALUATION.num_trials) - len(initial_states)]
+        )
+
+    video_dir = output_root / suite_name / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    predicted_video_dir = output_root / suite_name / "predicted_videos"
+    if bool(task_cfg.EVALUATION.get("visualize_future_video", False)):
+        predicted_video_dir.mkdir(parents=True, exist_ok=True)
+
+    start_time = time.time()
+    results = {
+        "task_suite": suite_name,
+        "task_id": task_id,
+        "task_description": None,
+        "successes": 0,
+        "total_episodes": int(task_cfg.EVALUATION.num_trials),
+        "gpu_id": int(task_cfg.gpu_id),
+        "success_episodes": [],
+        "failure_episodes": [],
+        "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "duration": 0,
+    }
+    if worker_id is not None:
+        results["worker_id"] = worker_id
+    results.update(
+        run_single_task(
+            task=task,
+            initial_states=initial_states,
+            model=model,
+            processor=processor,
+            cfg=task_cfg,
+            video_dir=video_dir,
+            predicted_video_dir=predicted_video_dir,
+            action_horizon=action_horizon,
+            input_w=input_w,
+            input_h=input_h,
+            model_device=model_device,
+        )
+    )
+    results["duration"] = time.time() - start_time
+
+    result_dir = output_root / suite_name
+    result_dir.mkdir(parents=True, exist_ok=True)
+    output_file = result_dir / f"gpu{task_cfg.gpu_id}_task{task_id}_results.json"
+    temp_output_file = result_dir / f".{output_file.name}.{os.getpid()}.tmp"
+    temp_output_file.write_text(
+        json.dumps(results, indent=4, cls=NumpyEncoder),
+        encoding="utf-8",
+    )
+    os.replace(temp_output_file, output_file)
+    return output_file, results
+
+
+def _run_worker_loop(
+    *,
+    cfg: DictConfig,
+    model: torch.nn.Module,
+    processor: FastWAMProcessor,
+    action_horizon: int,
+    input_w: int,
+    input_h: int,
+    model_device: str,
+    output_root: Path,
+) -> None:
+    pending_file = _required_worker_path("LIBERO_WORKER_PENDING_FILE")
+    lock_file = _required_worker_path("LIBERO_WORKER_LOCK_FILE")
+    status_dir = _required_worker_path("LIBERO_WORKER_STATUS_DIR")
+    failed_file = _required_worker_path("LIBERO_WORKER_FAILED_FILE")
+    stop_file = _required_worker_path("LIBERO_WORKER_STOP_FILE")
+    worker_id = os.environ.get("LIBERO_WORKER_ID", str(cfg.gpu_id))
+
+    write_worker_status(status_dir, worker_id, "idle", "model loaded")
+    completed = 0
+    skipped = 0
+    while not stop_file.exists():
+        task = pop_task(pending_file, lock_file, status_dir, worker_id)
+        if task is None:
+            time.sleep(0.2)
+            continue
+
+        suite_name, task_id = task
+        if _result_file(output_root, suite_name, task_id) is not None:
+            skipped += 1
+            continue
+
+        try:
+            output_file, _ = _run_task_to_file(
+                cfg=cfg,
+                suite_name=suite_name,
+                task_id=task_id,
+                model=model,
+                processor=processor,
+                action_horizon=action_horizon,
+                input_w=input_w,
+                input_h=input_h,
+                model_device=model_device,
+                output_root=output_root,
+                worker_id=worker_id,
+            )
+            completed += 1
+            print(f"worker {worker_id} completed {suite_name},{task_id}: {output_file}")
+        except Exception as exc:
+            with failed_file.open("a", encoding="utf-8") as f:
+                f.write(
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')},{suite_name},{task_id},"
+                    f"gpu={cfg.gpu_id},error={exc!r}\n"
+                )
+            write_worker_status(
+                status_dir,
+                worker_id,
+                "failed",
+                f"{suite_name},{task_id}: {exc!r}",
+            )
+            raise
+
+    write_worker_status(
+        status_dir,
+        worker_id,
+        "done",
+        f"completed={completed} skipped={skipped}",
+    )
+    print(f"worker {worker_id} done: completed={completed} skipped={skipped}")
+
+
 @hydra.main(version_base="1.3", config_path="../../configs", config_name="sim_libero.yaml")
 def eval_single_process(cfg: DictConfig):
-    start_time = time.time()
-    partial_state = PartialState()
-    partial_state.config = cfg
-
     if cfg.get("seed") is not None:
         set_global_seed(int(cfg.seed), get_worker_init_fn=False)
 
@@ -711,7 +875,7 @@ def eval_single_process(cfg: DictConfig):
     if env_num != 1:
         raise ValueError(
             "Only env_num=1 is supported in eval_libero_single.py. "
-            "Use run_libero_manager/run_libero_parallel_test.sh for multi-GPU task parallelism."
+            "Use run_libero_manager.py for multi-GPU task parallelism."
         )
 
     model_device = _resolve_eval_device(cfg)
@@ -739,66 +903,35 @@ def eval_single_process(cfg: DictConfig):
         raise ValueError(f"data.train.video_size must be [H, W], got {video_size}")
     input_h = int(video_size[0])
     input_w = int(video_size[1])
-    concat_multi_camera = cfg.data.train.get("concat_multi_camera", None)
-    shape_meta_images = [meta["shape"] for meta in processor.shape_meta["images"]]
+    output_root = Path(
+        os.path.expanduser(os.path.expandvars(str(cfg.EVALUATION.output_dir)))
+    ).resolve()
+    if os.environ.get("LIBERO_WORKER_MODE") == "1":
+        _run_worker_loop(
+            cfg=cfg,
+            model=model,
+            processor=processor,
+            action_horizon=action_horizon,
+            input_w=input_w,
+            input_h=input_h,
+            model_device=model_device,
+            output_root=output_root,
+        )
+        return None
 
-    local_log_dir = Path(cfg.EVALUATION.output_dir)
-    local_log_dir.mkdir(parents=True, exist_ok=True)
-    video_dir = local_log_dir / cfg.EVALUATION.task_suite_name / "videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    predicted_video_dir = local_log_dir / cfg.EVALUATION.task_suite_name / "predicted_videos"
-    if bool(cfg.EVALUATION.get("visualize_future_video", False)):
-        predicted_video_dir.mkdir(parents=True, exist_ok=True)
-
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
-    task = task_suite.get_task(cfg.EVALUATION.task_id)
-    init_states_path = (
-        Path(get_libero_path("init_states"))
-        / task.problem_folder
-        / task.init_states_file
-    )
-    initial_states = torch.load(init_states_path, weights_only=False)
-
-    while len(initial_states) < int(cfg.EVALUATION.num_trials):
-        initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
-
-    results = {
-        "task_suite": cfg.EVALUATION.task_suite_name,
-        "task_id": cfg.EVALUATION.task_id,
-        "task_description": None,
-        "successes": 0,
-        "total_episodes": int(cfg.EVALUATION.num_trials),
-        "gpu_id": int(cfg.gpu_id),
-        "success_episodes": [],
-        "failure_episodes": [],
-        "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "duration": 0,
-    }
-
-    logging.info("Running LIBERO evaluation with env_num=1")
-    task_results = run_single_task(
-        task=task,
-        initial_states=initial_states,
+    _, results = _run_task_to_file(
+        cfg=cfg,
+        suite_name=str(cfg.EVALUATION.task_suite_name),
+        task_id=int(cfg.EVALUATION.task_id),
         model=model,
         processor=processor,
-        cfg=cfg,
-        video_dir=video_dir,
-        predicted_video_dir=predicted_video_dir,
         action_horizon=action_horizon,
         input_w=input_w,
         input_h=input_h,
         model_device=model_device,
+        output_root=output_root,
+        worker_id=None,
     )
-    results.update(task_results)
-
-    results["duration"] = time.time() - start_time
-    output_dir = Path(cfg.EVALUATION.output_dir) / cfg.EVALUATION.task_suite_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"gpu{cfg.gpu_id}_task{cfg.EVALUATION.task_id}_results.json"
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4, cls=NumpyEncoder)
 
     print(
         f"Task {cfg.EVALUATION.task_id} completed: "
