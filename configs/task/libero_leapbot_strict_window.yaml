@@ -1,0 +1,107 @@
+# @package _global_
+
+# Canonical config-driven counterpart of scripts/train_leapbot.sh.  The task
+# owns dataset/training policy while the model implementation remains in the
+# existing LeapBot model config.
+defaults:
+  - override /data: libero_2cam
+  - override /model: leapbot
+  - _self_
+
+output_dir: null  # Derived by scripts/train_leapbot_local.py when left null.
+
+# Edit this block to select the training forward implementation.  Model and
+# launcher fields below consume it, so a profile change is recorded in config.
+training_forward:
+  profile: strict_window
+  history_training_mode: strict_replay_window_bptt
+  history_vae_batch_chunk_size: 1
+  packed_history_attention_backend: dense
+  batch_size: 4
+  output_prefix: strict_window_v7
+
+batch_size: ${training_forward.batch_size}
+num_workers: 8
+gradient_accumulation_steps: 1
+max_steps: 5000
+num_epochs: 100
+learning_rate: 1.0e-4
+lr_scheduler_type: constant
+log_every: 1
+save_every: 500
+eval_every: 0
+seed: 42
+mixed_precision: bf16
+max_grad_norm: 1.0
+weight_decay: 1.0e-2
+resume: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
+
+data:
+  train:
+    _target_: leapbot_va.data.LeapRobotVideoDataset
+    dataset_dirs:
+      - ./data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_object_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+    max_history_blocks: 70
+    min_history_blocks: 0
+    history_window_blocks: 8
+    replan_steps: 10
+    history_seed: ${seed}
+    history_sampling_mode: recent_window
+    use_episode_anchor: true
+    initial_block_oversample: 4
+    pretrained_norm_stats: ./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json
+    text_embedding_cache_dir: ./data/text_embeds_cache/libero
+
+model:
+  causal_mode: interleaved
+  history_training_mode: ${training_forward.history_training_mode}
+  packed_history_attention_backend: ${training_forward.packed_history_attention_backend}
+  history_window_blocks: ${data.train.history_window_blocks}
+  history_vae_batch_chunk_size: ${training_forward.history_vae_batch_chunk_size}
+  future_video_conditioning: lingbot_teacher_forced_v1
+  num_video_frames: 9
+  future_video_condition_noise_probability: 0.5
+  future_video_condition_min_u: 0.5
+  future_video_condition_max_u: 1.0
+  future_video_condition_clean_warmup_steps: 200
+  future_video_condition_noise_ramp_steps: 800
+  training_strategy: video_lora_action_full
+  training_exit_depths: [30]
+  mot_checkpoint_mixed_attn: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+  video_lora:
+    enabled: true
+    rank: 16
+    alpha: 16.0
+    dropout: 0.0
+    learning_rate_multiplier: 1.0
+
+wandb:
+  enabled: true
+  workspace: pengdaojie-the-hong-kong-university-of-science-and-techn
+  project: leapbot-va
+  group: null  # Derived from the topology when left null.
+  name: null   # Derived from the topology when left null.
+  mode: offline
+
+# Launcher-only values are deliberately snapshotted into config.yaml together
+# with the resolved task/model config.  Training code ignores this section.
+launch:
+  accelerate_config: ./scripts/accelerate_configs/accelerate_zero2_ds.yaml
+  gpu_ids: [0, 1, 2, 3, 4, 5, 6, 7]
+  num_processes: 8
+  main_process_port: 29971
+  max_preflight_used_mib: 2048
+  output_prefix: ${training_forward.output_prefix}
+  allow_dirty: true
+  allow_cross_contract_resume: false
+  allow_existing_uncontracted: false
+  release_checkpoint: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
+  dataset_stats: ${data.train.pretrained_norm_stats}
+  text_embedding_cache: ${data.train.text_embedding_cache_dir}
+  vae_checkpoint: ./checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth
+

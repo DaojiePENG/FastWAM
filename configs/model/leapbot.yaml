@@ -17,6 +17,7 @@ training_exit_depths: [30]
 # Runtime-isomorphic training replays the exact recent real-data window and
 # keeps every K/V tensor inside that bounded window attached for full BPTT.
 history_training_mode: strict_replay_window_bptt
+packed_history_attention_backend: dense
 history_window_blocks: 8
 # Strict BF16 parity requires the same batch-one T=1 VAE call used at rollout.
 history_vae_batch_chunk_size: 1

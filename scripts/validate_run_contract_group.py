@@ -192,10 +192,17 @@ def _validate_semantics(contract: RunContract) -> None:
             "padding_attention_mask must be exactly 'true', got "
             f"{values['padding_attention_mask']!r}"
         )
-    if values["history_training_mode"] != "strict_replay_window_bptt":
-        raise ValueError(
-            "history_training_mode must be strict_replay_window_bptt"
-        )
+    history_mode = values["history_training_mode"]
+    if history_mode not in {
+        "strict_replay_window_bptt",
+        "packed_causal_history_bptt",
+    }:
+        raise ValueError("unsupported formal history_training_mode")
+    if history_mode == "packed_causal_history_bptt":
+        if values.get("history_execution_layout") != "fixed_padding":
+            raise ValueError("PCH requires history_execution_layout=fixed_padding")
+        if values.get("packed_history_attention_backend") not in {"dense", "flex"}:
+            raise ValueError("PCH contract requires dense or flex backend")
     if values["history_sampling_mode"] != "recent_window":
         raise ValueError("history_sampling_mode must be recent_window")
     if int(values["history_window_blocks"]) > int(values["max_history_blocks"]):

@@ -330,6 +330,8 @@ def result_matches_fingerprint(
                 ]
                 if memory_contract.get("history_storage_mode") == "strict_replay":
                     causal_components.insert(1, "history_replay_s")
+                elif memory_contract.get("history_storage_mode") == "packed_replay":
+                    causal_components.insert(1, "history_packed_rebuild_s")
                 if not _timing_group_closes(
                     timing,
                     total_field="causal_model_s",

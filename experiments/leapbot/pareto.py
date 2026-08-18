@@ -14,7 +14,10 @@ from leapbot_va.eval_contract import (
     KV_RETENTION_SEMANTICS,
     STRICT_REPLAY_SEMANTICS,
 )
-from leapbot_va.eval_fingerprint import normalize_evaluation_fingerprint
+from leapbot_va.eval_fingerprint import (
+    canonical_json_sha256,
+    normalize_evaluation_fingerprint,
+)
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -123,8 +126,15 @@ def wilson(successes: int, total: int, z: float = 1.959963984540054) -> tuple[fl
     return center - radius, center + radius
 
 
-def config_key(payload: dict, path: Path) -> str:
-    """Return a readable identity that cannot merge distinct run contracts."""
+def config_key(payload: dict, path: Path, *, ignore_source: bool = False) -> str:
+    """Return a readable identity that cannot merge distinct run contracts.
+
+    ``ignore_source`` drops the ``source`` (worktree/revision/dirty) block from
+    the runtime contract before hashing, so results produced from the same
+    checkpoint and model config but a dirty/changing worktree merge into one
+    group.  This only relaxes *identity*; per-file correctness checks in
+    :func:`validate_inputs` still run.
+    """
 
     try:
         fingerprint = normalize_evaluation_fingerprint(
@@ -141,7 +151,13 @@ def config_key(payload: dict, path: Path) -> str:
         memory,
         context=str(path),
     )
-    runtime_tag = fingerprint["runtime_contract_sha256"][:12]
+    if ignore_source:
+        runtime_for_hash = {
+            key: value for key, value in runtime.items() if key != "source"
+        }
+        runtime_tag = canonical_json_sha256(runtime_for_hash)[:12]
+    else:
+        runtime_tag = fingerprint["runtime_contract_sha256"][:12]
     checkpoint_tag = fingerprint["checkpoint_sha256"][:12]
     if memory["enabled"]:
         return "/".join(
@@ -173,6 +189,12 @@ def model_family(payload: dict) -> str:
     return "leapbot_no_memory"
 
 
+def task_identity(payload: dict) -> tuple[str, int]:
+    """Return the suite-qualified task identity used by multi-suite runs."""
+
+    return str(payload.get("task_suite", "")), int(payload.get("task_id", -1))
+
+
 def _new_group() -> dict:
     return {
         "model_family": None,
@@ -201,11 +223,11 @@ def _new_group() -> dict:
     }
 
 
-def aggregate(paths: list[Path]) -> list[dict]:
+def aggregate(paths: list[Path], *, ignore_source: bool = False) -> list[dict]:
     groups = defaultdict(_new_group)
     for path in paths:
         payload = json.loads(path.read_text())
-        key = config_key(payload, path)
+        key = config_key(payload, path, ignore_source=ignore_source)
         group = groups[key]
         family = model_family(payload)
         memory_enabled = family == "leapbot_memory"
@@ -342,14 +364,14 @@ def aggregate(paths: list[Path]) -> list[dict]:
     return sorted(rows, key=lambda row: row["config"])
 
 
-def aggregate_per_task(paths: list[Path]) -> list[dict]:
+def aggregate_per_task(paths: list[Path], *, ignore_source: bool = False) -> list[dict]:
     groups = defaultdict(_new_group)
     descriptions = {}
     for path in paths:
         payload = json.loads(path.read_text())
-        key = config_key(payload, path)
-        task_id = int(payload.get("task_id", -1))
-        group_key = (key, task_id)
+        key = config_key(payload, path, ignore_source=ignore_source)
+        task_suite, task_id = task_identity(payload)
+        group_key = (key, task_suite, task_id)
         group = groups[group_key]
         group["successes"] += int(payload.get("successes", 0))
         group["episodes"] += int(payload.get("total_episodes", 0))
@@ -359,14 +381,15 @@ def aggregate_per_task(paths: list[Path]) -> list[dict]:
         descriptions[group_key] = str(payload.get("task_description", ""))
 
     rows = []
-    for (key, task_id), values in groups.items():
+    for (key, task_suite, task_id), values in groups.items():
         rate = values["successes"] / values["episodes"] if values["episodes"] else 0.0
         ci_low, ci_high = wilson(values["successes"], values["episodes"])
         rows.append(
             {
                 "config": key,
+                "task_suite": task_suite,
                 "task_id": task_id,
-                "task_description": descriptions[(key, task_id)],
+                "task_description": descriptions[(key, task_suite, task_id)],
                 "successes": values["successes"],
                 "episodes": values["episodes"],
                 "success_rate": rate,
@@ -381,10 +404,13 @@ def aggregate_per_task(paths: list[Path]) -> list[dict]:
                 "p95_completion_steps": percentile(values["completion_steps"], 0.95),
             }
         )
-    return sorted(rows, key=lambda row: (row["config"], row["task_id"]))
+    return sorted(
+        rows,
+        key=lambda row: (row["config"], row["task_suite"], row["task_id"]),
+    )
 
 
-def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
+def aggregate_by_kv_retention(paths: list[Path], *, ignore_source: bool = False) -> list[dict]:
     """Aggregate against physically retained KV blocks, not an information window."""
     groups = defaultdict(
         lambda: {
@@ -410,7 +436,7 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
     )
     for path in paths:
         payload = json.loads(path.read_text())
-        key = config_key(payload, path)
+        key = config_key(payload, path, ignore_source=ignore_source)
         fingerprint = normalize_evaluation_fingerprint(
             payload["evaluation_fingerprint"]
         )
@@ -623,10 +649,10 @@ def aggregate_by_kv_retention(paths: list[Path]) -> list[dict]:
     )
 
 
-def aggregate_by_history(paths: list[Path]) -> list[dict]:
+def aggregate_by_history(paths: list[Path], *, ignore_source: bool = False) -> list[dict]:
     """Compatibility alias for :func:`aggregate_by_kv_retention`."""
 
-    return aggregate_by_kv_retention(paths)
+    return aggregate_by_kv_retention(paths, ignore_source=ignore_source)
 
 
 def validate_inputs(
@@ -634,9 +660,17 @@ def validate_inputs(
     expected_tasks: int | None = None,
     expected_trials_per_task: int | None = None,
     require_profiled: bool = False,
+    *,
+    ignore_source: bool = False,
 ) -> None:
-    """Reject incomplete/duplicated evaluation sets before model selection."""
-    groups: dict[str, dict[int, Path]] = defaultdict(dict)
+    """Reject incomplete/duplicated evaluation sets before model selection.
+
+    ``ignore_source`` keeps every per-file correctness check (fingerprint
+    parseability, latency closure, profile presence) but skips the
+    across-group completeness checks (``expected_tasks``/``expected_trials``)
+    that only make sense when a single runtime contract covers every task.
+    """
+    groups: dict[str, dict[tuple[str, int], Path]] = defaultdict(dict)
     errors: list[str] = []
     for path in paths:
         payload = json.loads(path.read_text())
@@ -644,17 +678,20 @@ def validate_inputs(
             fingerprint = normalize_evaluation_fingerprint(
                 payload["evaluation_fingerprint"]
             )
-            key = config_key(payload, path)
+            key = config_key(payload, path, ignore_source=ignore_source)
         except (KeyError, TypeError, ValueError) as error:
             key = f"invalid/{path.stem}"
             fingerprint = None
             errors.append(f"{path}: invalid or legacy evaluation fingerprint: {error}")
-        task_id = int(payload.get("task_id", -1))
-        if task_id in groups[key]:
+        task_suite, task_id = task_identity(payload)
+        identity = (task_suite, task_id)
+        task_label = f"{task_suite}/task{task_id}" if task_suite else f"task{task_id}"
+        if identity in groups[key]:
             errors.append(
-                f"{key}: duplicate task {task_id}: {groups[key][task_id]} and {path}"
+                f"{key}: duplicate task {task_label}: "
+                f"{groups[key][identity]} and {path}"
             )
-        groups[key][task_id] = path
+        groups[key][identity] = path
 
         episodes = int(payload.get("total_episodes", 0))
         if fingerprint is not None:
@@ -703,9 +740,13 @@ def validate_inputs(
                         f"{key}/task{task_id}: memory_config does not match fingerprint: "
                         f"actual={actual_memory} expected={expected_memory}"
                     )
-        if expected_trials_per_task is not None and episodes != expected_trials_per_task:
+        if (
+            not ignore_source
+            and expected_trials_per_task is not None
+            and episodes != expected_trials_per_task
+        ):
             errors.append(
-                f"{key}/task{task_id}: expected {expected_trials_per_task} episodes, got {episodes}"
+                f"{key}/{task_label}: expected {expected_trials_per_task} episodes, got {episodes}"
             )
         if len(payload.get("completion_steps", [])) != episodes:
             errors.append(
@@ -820,6 +861,15 @@ def validate_inputs(
                             )
                     for replan_index, replan in enumerate(replans):
                         timing = replan.get("timing", {})
+                        # ``history_replay_s`` / ``history_packed_rebuild_s`` are
+                        # optional causal sub-stages emitted only under the
+                        # matching history_storage_mode (see leapbot.py); treat
+                        # them as 0.0 when absent, mirroring the producer's
+                        # residual computation.
+                        optional_fields = (
+                            "history_replay_s",
+                            "history_packed_rebuild_s",
+                        )
                         causal_fields = (
                             "causal_model_s",
                             "conditioning_s",
@@ -835,6 +885,12 @@ def validate_inputs(
                             values = {
                                 field: float(timing[field]) for field in causal_fields
                             }
+                            values.update(
+                                {
+                                    field: float(timing.get(field, 0.0))
+                                    for field in optional_fields
+                                }
+                            )
                             if any(
                                 not math.isfinite(value) or value < 0
                                 for value in values.values()
@@ -846,7 +902,7 @@ def validate_inputs(
                             else:
                                 stage_sum = sum(
                                     values[field]
-                                    for field in causal_fields
+                                    for field in causal_fields + optional_fields
                                     if field != "causal_model_s"
                                 )
                                 tolerance = max(
@@ -876,14 +932,22 @@ def validate_inputs(
                         "peak transient future-video cache metric missing"
                     )
 
-    if expected_tasks is not None:
-        expected_ids = set(range(expected_tasks))
+    if not ignore_source and expected_tasks is not None:
         for key, task_paths in groups.items():
-            actual_ids = set(task_paths)
-            if actual_ids != expected_ids:
+            suites = {suite for suite, _ in task_paths}
+            if len(suites) <= 1:
+                expected_ids = set(range(expected_tasks))
+                actual_ids = {task_id for _, task_id in task_paths}
+                if actual_ids == expected_ids:
+                    continue
                 errors.append(
                     f"{key}: task ids mismatch; missing={sorted(expected_ids - actual_ids)} "
                     f"unexpected={sorted(actual_ids - expected_ids)}"
+                )
+            elif len(task_paths) != expected_tasks:
+                errors.append(
+                    f"{key}: task count mismatch; expected={expected_tasks} "
+                    f"actual={len(task_paths)}"
                 )
     if errors:
         preview = "\n".join(f"- {error}" for error in errors[:50])
@@ -944,6 +1008,14 @@ def main() -> None:
     parser.add_argument("--expected-tasks", type=int)
     parser.add_argument("--expected-trials-per-task", type=int)
     parser.add_argument("--require-profiled", action="store_true")
+    parser.add_argument(
+        "--ignore-source",
+        action="store_true",
+        help="Drop worktree/revision/dirty from the runtime contract when "
+        "grouping, merging results that share a checkpoint and model config "
+        "but were produced from a changing worktree. Skips across-group task "
+        "completeness checks; per-file correctness checks still run.",
+    )
     args = parser.parse_args()
     paths = []
     for item in args.inputs:
@@ -953,10 +1025,11 @@ def main() -> None:
         expected_tasks=args.expected_tasks,
         expected_trials_per_task=args.expected_trials_per_task,
         require_profiled=args.require_profiled,
+        ignore_source=args.ignore_source,
     )
-    rows = aggregate(paths)
-    per_task_rows = aggregate_per_task(paths)
-    kv_retention_rows = aggregate_by_kv_retention(paths)
+    rows = aggregate(paths, ignore_source=args.ignore_source)
+    per_task_rows = aggregate_per_task(paths, ignore_source=args.ignore_source)
+    kv_retention_rows = aggregate_by_kv_retention(paths, ignore_source=args.ignore_source)
     frontier = non_dominated(rows)
     leapbot_default = choose_leapbot_default(rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -967,7 +1040,11 @@ def main() -> None:
     with (args.output_dir / "per_task.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(
             stream,
-            fieldnames=list(per_task_rows[0]) if per_task_rows else ["config", "task_id"],
+            fieldnames=(
+                list(per_task_rows[0])
+                if per_task_rows
+                else ["config", "task_suite", "task_id"]
+            ),
         )
         writer.writeheader()
         writer.writerows(per_task_rows)

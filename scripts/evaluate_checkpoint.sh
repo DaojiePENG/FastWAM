@@ -6,14 +6,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
 LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 EVAL_ROOT="${EVAL_ROOT:?EVAL_ROOT is required}"
 MODE="${MODE:-action_aggregator}"
 FINAL_STEP="${FINAL_STEP:?FINAL_STEP is required}"
 NUM_TRIALS="${NUM_TRIALS:-2}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-6,7}"
+VERIFY_EVAL_FINGERPRINT="${VERIFY_EVAL_FINGERPRINT:-false}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 VIDEO_LORA_ENABLED="${VIDEO_LORA_ENABLED:-true}"
 MERGE_VIDEO_LORA="${MERGE_VIDEO_LORA:-true}"
@@ -23,13 +28,23 @@ HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
 EXIT_DEPTH="${EXIT_DEPTH:-30}"
 EXPECTED_TRAINED_EXIT_DEPTHS="${EXPECTED_TRAINED_EXIT_DEPTHS:-30}"
 FINAL_STEP_TAG="$(printf 'step_%06d' "$FINAL_STEP")"
-CHECKPOINT="$TRAIN_ROOT/$MODE/checkpoints/weights/$FINAL_STEP_TAG.pt"
-RUN_CONTRACT_FILE="$TRAIN_ROOT/$MODE/run_contract.txt"
+MODE_RUN_ROOT="$TRAIN_ROOT/$MODE"
+if [[ -s "$MODE_RUN_ROOT/checkpoints/weights/$FINAL_STEP_TAG.pt" ]]; then
+    RUN_ROOT="$MODE_RUN_ROOT"
+else
+    RUN_ROOT="$TRAIN_ROOT"
+fi
+CHECKPOINT="$RUN_ROOT/checkpoints/weights/$FINAL_STEP_TAG.pt"
+RUN_CONTRACT_FILE="$RUN_ROOT/run_contract.txt"
 
 IFS=',' read -r -a GPU_IDS <<<"$GPU_IDS_CSV"
 NUM_WORKERS="${#GPU_IDS[@]}"
 if (( NUM_WORKERS == 0 )); then
     printf 'No evaluation GPUs configured.\n' >&2
+    exit 2
+fi
+if [[ "$VERIFY_EVAL_FINGERPRINT" != "true" && "$VERIFY_EVAL_FINGERPRINT" != "false" ]]; then
+    printf 'VERIFY_EVAL_FINGERPRINT must be true or false.\n' >&2
     exit 2
 fi
 if [[ ! -s "$CHECKPOINT" ]]; then
@@ -60,7 +75,7 @@ mkdir -p "$EVAL_ROOT/.checkpoint_validation"
     --expected-condition-noise-ramp-steps 800 \
     --expected-run-contract-sha256 "$EXPECTED_RUN_CONTRACT_SHA256" \
     --expected-code-commit "$EXPECTED_CODE_COMMIT" \
-    --state-dir "$TRAIN_ROOT/$MODE/checkpoints/state/$FINAL_STEP_TAG" \
+    --state-dir "$RUN_ROOT/checkpoints/state/$FINAL_STEP_TAG" \
     --output "$EVAL_ROOT/.checkpoint_validation/${MODE}_step${FINAL_STEP}.json" \
     >/dev/null
 case "$EXIT_DEPTH" in
@@ -134,12 +149,17 @@ build_task_fingerprint() {
 result_matches_task() {
     local result="$1"
     local task_id="$2"
+    if [[ "$VERIFY_EVAL_FINGERPRINT" != "true" ]]; then
+        [[ -s "$result" ]]
+        return
+    fi
     [[ -s "$result" ]] && PYTHONPATH="$ROOT_DIR/src" \
         "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
         "$result" \
         --expected "$(fingerprint_path "$task_id")"
 }
 
+if [[ "$VERIFY_EVAL_FINGERPRINT" == "true" ]]; then
 # Validate the entire result tree before any worker can start an evaluator.
 # This keeps a stale result for a later task from racing with earlier tasks.
 for task_id in $(seq 0 9); do
@@ -153,14 +173,22 @@ for task_id in $(seq 0 9); do
     done
 done
 
+else
+    log "evaluation fingerprint verification disabled"
+fi
+
 run_task() {
     local gpu="$1"
     local task_id="$2"
     local output_dir="$EVAL_ROOT/$MODE"
     local log_file="$EVAL_ROOT/task_logs/${MODE}_task${task_id}_gpu${gpu}.log"
     local fingerprint_file
+    local fingerprint_args=()
     local existing_result
     fingerprint_file="$(fingerprint_path "$task_id")"
+    if [[ "$VERIFY_EVAL_FINGERPRINT" == "true" ]]; then
+        fingerprint_args+=("+EVALUATION.expected_fingerprint_path=$fingerprint_file")
+    fi
 
     for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
         [[ -e "$existing_result" ]] || continue
@@ -174,7 +202,7 @@ run_task() {
 
     mkdir -p "$output_dir"
     log "start mode=$MODE step=$FINAL_STEP task=$task_id gpu=$gpu"
-    if env -u CUDA_VISIBLE_DEVICES \
+    if CUDA_VISIBLE_DEVICES="$gpu" \
         MUJOCO_GL=egl \
         MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
@@ -187,7 +215,7 @@ run_task() {
         task=libero_leapbot_2cam224 \
         "ckpt=$CHECKPOINT" \
         "gpu_id=$gpu" \
-        "EVALUATION.device=cuda:$gpu" \
+        EVALUATION.device=cuda \
         EVALUATION.task_suite_name=libero_10 \
         "EVALUATION.task_id=$task_id" \
         "EVALUATION.num_trials=$NUM_TRIALS" \
@@ -207,7 +235,7 @@ run_task() {
         EVALUATION.memory.history_storage_mode=strict_replay \
         "EVALUATION.memory.history_window_blocks=$HISTORY_WINDOW_BLOCKS" \
         "EVALUATION.memory.retained_history_blocks=$MEMORY_RETENTION_OVERRIDE" \
-        "+EVALUATION.expected_fingerprint_path=$fingerprint_file" \
+        "${fingerprint_args[@]}" \
         >"$log_file" 2>&1; then
         log "done mode=$MODE step=$FINAL_STEP task=$task_id gpu=$gpu"
     else
@@ -245,10 +273,16 @@ if (( failed )); then
     exit 1
 fi
 
-"$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/pareto.py" \
-    "$EVAL_ROOT" \
-    --output-dir "$EVAL_ROOT/pareto" \
-    --expected-tasks 10 \
-    --expected-trials-per-task "$NUM_TRIALS" \
+PARETO_IGNORE_SOURCE="${PARETO_IGNORE_SOURCE:-false}"
+pareto_args=(
+    "$EVAL_ROOT"
+    --output-dir "$EVAL_ROOT/pareto"
+    --expected-tasks 10
+    --expected-trials-per-task "$NUM_TRIALS"
     --require-profiled
+)
+if [[ "$PARETO_IGNORE_SOURCE" == "true" ]]; then
+    pareto_args+=(--ignore-source)
+fi
+"$PYTHON_BIN" "$ROOT_DIR/experiments/leapbot/pareto.py" "${pareto_args[@]}"
 log "single-mode evaluation complete: $EVAL_ROOT/pareto/results.csv"

@@ -1,5 +1,7 @@
+import hashlib
 import os
 import shlex
+import sys
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +60,22 @@ def _resolve_worker_task_choice() -> str:
     return str(task_choice)
 
 
+def _save_manager_config_snapshot(
+    cfg: DictConfig,
+    path: Path,
+    *,
+    config_name: str,
+    task_choice: str,
+) -> str:
+    snapshot = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    snapshot["_evaluation_snapshot"] = {
+        "config_name": config_name,
+        "task_choice": task_choice,
+    }
+    OmegaConf.save(config=snapshot, f=str(path))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def run_evaluation(
     *,
     task_file: Path,
@@ -67,6 +85,8 @@ def run_evaluation(
     num_trials: int,
     max_tasks_per_gpu: int,
     output_dir: Path,
+    config_snapshot: Path,
+    config_snapshot_sha256: str,
     extra_overrides: list[str],
 ) -> None:
     script_path = Path("experiments/libero/run_libero_parallel_test.sh")
@@ -81,7 +101,9 @@ def run_evaluation(
     env = os.environ.copy()
     env.update(
         {
-            "CONFIG": task_choice,
+            "CONFIG_SNAPSHOT": str(config_snapshot.resolve()),
+            "CONFIG_SNAPSHOT_SHA256": config_snapshot_sha256,
+            "PYTHON_BIN": os.environ.get("PYTHON_BIN", sys.executable),
             "CKPT": ckpt,
             "NUM_GPUS": str(num_gpus),
             "NUM_TRIALS": str(num_trials),
@@ -101,6 +123,8 @@ def run_evaluation(
     print(f"Trials per task: {num_trials}")
     print(f"Max tasks per GPU: {max_tasks_per_gpu}")
     print(f"Output directory: {output_dir}")
+    print(f"Config snapshot: {config_snapshot}")
+    print(f"Config snapshot SHA256: {config_snapshot_sha256}")
     if extra_args:
         print(f"Forwarded overrides: {extra_args}")
 
@@ -129,6 +153,7 @@ def main(cfg: DictConfig):
         raise ValueError("EVALUATION.output_dir must not be None.")
 
     task_choice = _resolve_worker_task_choice()
+    config_name = str(HydraConfig.get().job.config_name)
     manager = cfg.MULTIRUN
 
     output_dir = Path(os.path.expanduser(os.path.expandvars(str(cfg.EVALUATION.output_dir))))
@@ -141,7 +166,13 @@ def main(cfg: DictConfig):
         task_file = output_dir / "tasks.txt"
     task_file = create_task_file(task_file, list(manager.task_suite_names))
 
-    OmegaConf.save(config=cfg, f=str(output_dir / "manager_config.yaml"))
+    manager_config_snapshot = output_dir / "manager_config.yaml"
+    manager_config_sha256 = _save_manager_config_snapshot(
+        cfg,
+        manager_config_snapshot,
+        config_name=config_name,
+        task_choice=task_choice,
+    )
 
     if bool(manager.get("create_only", False)):
         print("create_only=True, only create the task list and exit.")
@@ -155,6 +186,8 @@ def main(cfg: DictConfig):
         num_trials=int(cfg.EVALUATION.num_trials),
         max_tasks_per_gpu=int(manager.max_tasks_per_gpu),
         output_dir=output_dir,
+        config_snapshot=manager_config_snapshot,
+        config_snapshot_sha256=manager_config_sha256,
         extra_overrides=collect_worker_overrides(),
     )
 

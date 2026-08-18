@@ -407,15 +407,16 @@ def test_training_temporal_contract_is_checkpointed_and_enforced(tmp_path):
     with pytest.raises(ValueError, match="action_horizon differs"):
         incompatible.load_checkpoint(checkpoint)
 
-    wrong_vae_chunk = _model(layers=30)
-    wrong_vae_chunk.configure_causal_training(
+    different_vae_chunk = _model(layers=30)
+    different_vae_chunk.history_vae_batch_chunk_size = 1
+    different_vae_chunk.configure_causal_training(
         causal_mode="action_aggregator",
         training_exit_depths=(30,),
         replan_steps=1,
         action_horizon=2,
     )
-    with pytest.raises(ValueError, match="history VAE batch chunk mismatch"):
-        wrong_vae_chunk.load_checkpoint(checkpoint)
+    different_vae_chunk.load_checkpoint(checkpoint)
+    assert different_vae_chunk.history_vae_batch_chunk_size == 1
 
 
 @pytest.mark.parametrize(
@@ -602,6 +603,99 @@ def test_memory_runtime_uses_local_rope_and_absolute_additive_positions():
     assert memory.segments[1].positions.tolist() == [0]
     assert memory.segments[2].positions.tolist() == [1]
 
+
+
+def test_pch_checkpoint_defaults_to_packed_replay_and_allows_strict_fallback(monkeypatch):
+    torch.manual_seed(9020)
+    model = _model(
+        layers=8,
+        proprio_dim=2,
+        vae=_TinyVideoVAE(),
+        video_attention_mask_mode="first_frame_causal",
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(8,),
+        history_training_mode="packed_causal_history_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=2,
+        replan_steps=1,
+        action_horizon=2,
+        num_video_frames=3,
+    )
+    model.trained_exit_depths = (8,)
+    model.eval()
+    memory = model.create_memory(exit_depth=8, max_history_blocks=6)
+    assert memory.config.history_storage_mode == "packed_replay"
+    strict = model.create_memory(
+        exit_depth=8,
+        max_history_blocks=6,
+        history_storage_mode="strict_replay",
+    )
+    assert strict.config.history_storage_mode == "strict_replay"
+    with pytest.raises(ValueError, match="allowed"):
+        model.create_memory(
+            exit_depth=8,
+            max_history_blocks=6,
+            history_storage_mode="incremental_kv",
+        )
+
+    context = torch.randn(1, 3, 6)
+    context_mask = torch.ones(1, 3, dtype=torch.bool)
+    for block in range(3):
+        result = model.infer_action(
+            prompt=None,
+            input_image=torch.full((1, 3, 16, 16), float(block) / 10.0),
+            action_horizon=2,
+            num_video_frames=3,
+            proprio=torch.tensor([[float(block), -float(block)]]),
+            context=context,
+            context_mask=context_mask,
+            num_inference_steps=1,
+            seed=200 + block,
+            memory=memory,
+        )
+        action_prefills = 0
+        original = model.mot.prefill_expert_segment
+
+        def capture(*args, **kwargs):
+            nonlocal action_prefills
+            if kwargs.get("expert_name") == "action":
+                action_prefills += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(model.mot, "prefill_expert_segment", capture)
+        model.commit_executed_actions(memory, result["action"][:1])
+        monkeypatch.setattr(model.mot, "prefill_expert_segment", original)
+        assert action_prefills == 0
+        assert memory.segments == []
+
+    rebuilt = model.infer_action(
+        prompt=None,
+        input_image=torch.full((1, 3, 16, 16), 0.3),
+        action_horizon=2,
+        num_video_frames=3,
+        proprio=torch.tensor([[3.0, -3.0]]),
+        context=context,
+        context_mask=context_mask,
+        num_inference_steps=1,
+        seed=203,
+        memory=memory,
+        profile=True,
+    )
+    assert [(segment.block_index, segment.modality) for segment in memory.segments] == [
+        (0, "video"),
+        (1, "video"),
+        (1, "action"),
+        (2, "video"),
+        (2, "action"),
+        (3, "video"),
+    ]
+    assert rebuilt["memory"]["history_storage_mode"] == "packed_replay"
+    assert rebuilt["memory"]["history_attention_backend"] == "dense"
+    assert rebuilt["memory"]["history_valid_blocks"] == 3
+    assert rebuilt["memory"]["history_packed_tokens"] > 0
+    assert rebuilt["timing"]["history_packed_rebuild_s"] >= 0.0
 
 def test_strict_replay_rebuilds_recent_real_window_and_single_v0_anchor():
     torch.manual_seed(9021)

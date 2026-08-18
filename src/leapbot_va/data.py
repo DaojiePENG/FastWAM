@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from fastwam.datasets.lerobot.base_lerobot_dataset import BaseLerobotDataset
 from fastwam.datasets.lerobot.robot_video_dataset import RobotVideoDataset
 from leapbot_va.image_preprocessing import format_processed_camera_video
+from leapbot_va.pch import encode_pch_slot_validity_metadata
 from leapbot_va.training import history_window_indices
 
 
@@ -620,6 +621,10 @@ class LeapRobotVideoDataset(RobotVideoDataset):
             "history_action": history_action,
             "history_proprio": history_proprio,
             "history_valid_blocks": history_valid,
+            "pch_slot_validity": encode_pch_slot_validity_metadata(
+                history_valid[None],
+                torch.tensor([episode_anchor_valid], dtype=torch.bool),
+            ),
             "history_block_positions": history_positions,
             "episode_anchor_video": episode_anchor_video,
             "episode_anchor_proprio": episode_anchor_proprio,

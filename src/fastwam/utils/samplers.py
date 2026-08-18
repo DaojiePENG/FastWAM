@@ -120,6 +120,8 @@ class ResumableEpochSampler(Sampler[int]):
         if self._anchor_flags is None:
             return None
         global_batch_size = self.batch_size * self.num_processes
+        if global_batch_size < 2:
+            return None
         anchor_count = sum(self._anchor_flags)
         anchor_per_global_batch = int(
             round(global_batch_size * anchor_count / len(self._anchor_flags))
@@ -325,7 +327,10 @@ class ResumableEpochSampler(Sampler[int]):
         return ordered
 
     def _epoch_indices(self, generator: torch.Generator) -> list[int]:
-        if self._anchor_flags is not None:
+        if (
+            self._anchor_flags is not None
+            and self.batch_size * self.num_processes >= 2
+        ):
             return self._anchored_epoch_indices(generator)
         indices = torch.randperm(len(self.dataset), generator=generator).tolist()
         if self._grouping_lengths is None:
@@ -403,7 +408,10 @@ class ResumableEpochSampler(Sampler[int]):
         return iter(indices)
 
     def __len__(self) -> int:
-        if self._anchor_flags is not None:
+        if (
+            self._anchor_flags is not None
+            and self.batch_size * self.num_processes >= 2
+        ):
             global_batch_size = self.batch_size * self.num_processes
             anchor_count = sum(self._anchor_flags)
             anchor_per_global_batch = int(

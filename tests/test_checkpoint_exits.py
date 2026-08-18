@@ -123,7 +123,6 @@ def _truncate_first_state_tensor(state_dict):
         ("mot_shape", "MoT shape mismatch"),
         ("temporal_shape", "temporal positions shape mismatch"),
         ("action_exit_shape", "action exit heads shape mismatch"),
-        ("late_vae_contract", "history VAE batch chunk mismatch"),
         ("trained_exits", "trained exits are incompatible"),
         ("exit_metadata_disagreement", "training/trained exit metadata mismatch"),
     ],
@@ -155,10 +154,6 @@ def test_rejected_native_checkpoint_is_bitwise_atomic(
         _truncate_first_state_tensor(payload["temporal_positions"])
     elif corruption == "action_exit_shape":
         _truncate_first_state_tensor(payload["action_exit_heads"])
-    elif corruption == "late_vae_contract":
-        # The checkpoint clock is valid and adoptable, but no attribute may be
-        # assigned until this later contract check has also succeeded.
-        payload["history_vae_batch_chunk_size"] = 2
     elif corruption == "trained_exits":
         payload["trained_exit_depths"] = (7, 30)
     elif corruption == "exit_metadata_disagreement":

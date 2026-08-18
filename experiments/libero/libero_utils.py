@@ -2,6 +2,7 @@
 
 import importlib.util
 import math
+import os
 import pathlib
 import sys
 import time
@@ -30,6 +31,12 @@ from PIL import Image, ImageDraw
 import numpy as np
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv
+
+# robosuite validates the physical device id against CUDA_VISIBLE_DEVICES during
+# import. CUDA then remaps that single visible GPU to process-local device 0,
+# which is the id EGL must use when the environment is created.
+if os.environ.get("CUDA_VISIBLE_DEVICES"):
+    os.environ["MUJOCO_EGL_DEVICE_ID"] = "0"
 from fastwam.utils.video_io import save_mp4
 
 DATE = time.strftime("%Y_%m_%d")

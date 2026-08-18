@@ -4,9 +4,12 @@ set -euo pipefail
 
 # Evaluate the trained exit-depth x retained-KV grid and select the Pareto set.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
 FINAL_STEP="${FINAL_STEP:?FINAL_STEP is required}"

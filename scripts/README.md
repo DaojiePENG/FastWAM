@@ -6,6 +6,7 @@
 - `train_causal_modes.sh`：相同合同依次训练三个 causal mode；
 - `train_multi_exit.sh`：从获胜 D30 checkpoint 训练 D8/D16/D24/D30；
 - `evaluate_checkpoint.sh`：单 checkpoint 的 LIBERO-Long 评测；
+- `evaluate_pch_checkpoint.sh`：通过 `task=libero_leapbot_pch` 启动的 PCH 单 checkpoint 严格窗口评测；
 - `evaluate_causal_modes.sh`：三模式和 FastWAM baseline 对比；
 - `evaluate_pareto.sh`：固定为 checkpoint 训练 W 后比较出口深度并汇总 Pareto；
 - `evaluate_fastwam_baseline.sh`：原始 FastWAM release baseline；
@@ -31,3 +32,6 @@ export ACCELERATE_BIN=/path/to/accelerate
 ```
 
 详细顺序、Slurm 调试和 W&B 指标见 [TRAINING_AND_REPRODUCTION.md](../docs/TRAINING_AND_REPRODUCTION.md)。
+
+PCH 前向优化、checkpoint 兼容规则和 task-config 评测合同见
+[PCH_FORWARD_OPTIMIZATION_AND_TASK_CONFIG_EVALUATION.md](../docs/PCH_FORWARD_OPTIMIZATION_AND_TASK_CONFIG_EVALUATION.md)。

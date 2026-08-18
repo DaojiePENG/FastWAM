@@ -17,7 +17,7 @@ import torch
 
 CausalMode = Literal["interleaved", "vision_causal", "action_aggregator"]
 Modality = Literal["video", "action"]
-HistoryStorageMode = Literal["incremental_kv", "strict_replay"]
+HistoryStorageMode = Literal["incremental_kv", "strict_replay", "packed_replay"]
 
 VALID_CAUSAL_MODES: tuple[str, ...] = (
     "interleaved",
@@ -56,16 +56,20 @@ class LeapMemoryConfig:
             )
         if self.max_history_blocks <= 0:
             raise ValueError("max_history_blocks must be positive")
-        if self.history_storage_mode not in ("incremental_kv", "strict_replay"):
+        if self.history_storage_mode not in (
+            "incremental_kv",
+            "strict_replay",
+            "packed_replay",
+        ):
             raise ValueError(
-                "history_storage_mode must be incremental_kv or strict_replay"
+                "history_storage_mode must be incremental_kv, strict_replay, or packed_replay"
             )
         if (
             isinstance(self.history_window_blocks, bool)
             or not isinstance(self.history_window_blocks, int)
             or self.history_window_blocks <= 0
             or (
-                self.history_storage_mode == "strict_replay"
+                self.history_storage_mode in ("strict_replay", "packed_replay")
                 and self.history_window_blocks > self.max_history_blocks
             )
         ):
@@ -327,7 +331,7 @@ class LeapMemoryState:
         context: torch.Tensor,
         context_mask: torch.Tensor,
     ) -> None:
-        if self.config.history_storage_mode != "strict_replay":
+        if self.config.history_storage_mode not in ("strict_replay", "packed_replay"):
             return
         if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
             raise RuntimeError(
@@ -345,19 +349,20 @@ class LeapMemoryState:
         self.pending_replay_context = context.detach()
         self.pending_replay_context_mask = context_mask.detach()
 
-    def strict_replay_prefix(self) -> tuple[ReplayBlock, ...]:
+    def replay_prefix(self) -> tuple[ReplayBlock, ...]:
         """Return one optional V0 anchor plus the recent completed window."""
 
-        if self.config.history_storage_mode != "strict_replay":
+        if self.config.history_storage_mode not in ("strict_replay", "packed_replay"):
             return ()
         recent = tuple(self.replay_blocks[-self.config.history_window_blocks :])
-        if (
-            self.episode_anchor is not None
-            and recent
-            and recent[0].block_index > 0
-        ):
+        if self.episode_anchor is not None and recent and recent[0].block_index > 0:
             return (self.episode_anchor, *recent)
         return recent
+
+    def strict_replay_prefix(self) -> tuple[ReplayBlock, ...]:
+        if self.config.history_storage_mode != "strict_replay":
+            return ()
+        return self.replay_prefix()
 
     def begin_strict_replay_rebuild(self) -> tuple[ReplayBlock, ...]:
         if self.config.history_storage_mode != "strict_replay":
@@ -365,10 +370,18 @@ class LeapMemoryState:
         if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
             raise RuntimeError("strict replay rebuild requires a committed block")
         self.segments.clear()
-        return self.strict_replay_prefix()
+        return self.replay_prefix()
+
+    def begin_packed_replay_rebuild(self) -> tuple[ReplayBlock, ...]:
+        if self.config.history_storage_mode != "packed_replay":
+            return ()
+        if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
+            raise RuntimeError("packed replay rebuild requires a committed block")
+        self.segments.clear()
+        return self.replay_prefix()
 
     def commit_replay_block(self, executed_actions: torch.Tensor) -> None:
-        if self.config.history_storage_mode != "strict_replay":
+        if self.config.history_storage_mode not in ("strict_replay", "packed_replay"):
             return
         if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
             raise RuntimeError("replay block can only finalize after action commit")
@@ -393,6 +406,31 @@ class LeapMemoryState:
         self.pending_observation_latents = None
         self.pending_replay_context = None
         self.pending_replay_context_mask = None
+
+    def commit_packed_replay_actions(self, executed_actions: torch.Tensor) -> None:
+        """Commit real actions without an ActionDiT prefill in packed replay mode."""
+
+        if self.config.history_storage_mode != "packed_replay":
+            raise RuntimeError("commit_packed_replay_actions requires packed_replay")
+        if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
+            raise RuntimeError("an observation must be appended before executed actions")
+        if executed_actions.ndim != 3 or int(executed_actions.shape[0]) != 1:
+            raise ValueError("executed_actions must be [1,T,D]")
+        count = int(executed_actions.shape[1])
+        if count <= 0 or count > self.config.replan_steps:
+            raise ValueError(
+                f"executed action count must be in [1,{self.config.replan_steps}], got {count}"
+            )
+        self.next_action_position += count
+        self.completed_blocks += 1
+        self.pending_context = None
+        self.pending_context_mask = None
+        self.phase = MemoryPhase.EXPECT_OBSERVATION
+        if count == self.config.replan_steps:
+            self._evict_completed_history()
+        self.commit_replay_block(executed_actions)
+        # PCH K/V is an atomic rebuild product. Never mix it with the next block.
+        self.segments.clear()
 
     def append_actions(self, segment: KVSegment) -> None:
         if self.phase is not MemoryPhase.EXPECT_ACTION_COMMIT:
@@ -439,7 +477,7 @@ class LeapMemoryState:
 
         retained = (
             self.config.history_window_blocks
-            if self.config.history_storage_mode == "strict_replay"
+            if self.config.history_storage_mode in ("strict_replay", "packed_replay")
             else self.config.retained_history_blocks
         )
         if retained is None:

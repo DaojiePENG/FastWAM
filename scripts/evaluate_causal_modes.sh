@@ -4,10 +4,14 @@ set -euo pipefail
 
 # Evaluate the three controlled causal modes and optional FastWAM baseline.
 
+ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
+LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
 TRAIN_ROOT="${TRAIN_ROOT:?TRAIN_ROOT is required}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
@@ -272,7 +276,7 @@ run_task() {
     mkdir -p "$output_dir"
 
     log "start mode=$mode task=$task_id gpu=$gpu"
-    if env -u CUDA_VISIBLE_DEVICES \
+    if CUDA_VISIBLE_DEVICES="$gpu" \
         MUJOCO_GL=egl \
         MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
@@ -285,7 +289,7 @@ run_task() {
         "task=$task_choice" \
         "ckpt=$checkpoint" \
         "gpu_id=$gpu" \
-        "EVALUATION.device=cuda:$gpu" \
+        EVALUATION.device=cuda \
         EVALUATION.task_suite_name=libero_10 \
         "EVALUATION.task_id=$task_id" \
         "EVALUATION.num_trials=$NUM_TRIALS" \

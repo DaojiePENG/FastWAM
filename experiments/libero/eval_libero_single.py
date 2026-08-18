@@ -111,6 +111,11 @@ def _build_result_fingerprint(
         HydraConfig.get().runtime.choices, resolve=True
     )
     config_name = str(HydraConfig.get().job.config_name)
+    snapshot_identity = cfg.get("_evaluation_snapshot", None)
+    if snapshot_identity is not None:
+        config_name = str(snapshot_identity["config_name"])
+        hydra_choices = dict(hydra_choices)
+        hydra_choices["task"] = str(snapshot_identity["task_choice"])
     runtime_contract = build_runtime_contract(
         cfg,
         config_name=config_name,
@@ -611,7 +616,7 @@ def run_single_episode(
 
         executed_action = canonicalize_libero_env_action(
             pending_actions.pop(0),
-            env.action_spec,
+            env.action_spec if hasattr(env, "action_spec") else env.env.action_spec,
             binarize_gripper=bool(cfg.EVALUATION.get("binarize_gripper", False)),
         )
         committed_action = executed_action.copy()

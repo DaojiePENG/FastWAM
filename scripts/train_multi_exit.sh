@@ -4,10 +4,12 @@ set -euo pipefail
 
 # Train D8/D16/D24 exits from the selected, validated D30 causal checkpoint.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
-ACCELERATE_BIN="${ACCELERATE_BIN:-$ROOT_DIR/.venv/bin/accelerate}"
+ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
 SOURCE_TRAIN_ROOT="${SOURCE_TRAIN_ROOT:?SOURCE_TRAIN_ROOT is required}"
 MODE="${MODE:?MODE is required}"
 SOURCE_STEP="${SOURCE_STEP:?SOURCE_STEP is required}"
@@ -138,5 +140,4 @@ WANDB_ENABLED="$WANDB_ENABLED" \
 WANDB_MODE="$WANDB_MODE" \
 MAIN_PROCESS_PORT=29972 \
 PYTHON_BIN="$PYTHON_BIN" \
-ACCELERATE_BIN="$ACCELERATE_BIN" \
     bash "$ROOT_DIR/scripts/train_leapbot.sh"

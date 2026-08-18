@@ -224,6 +224,14 @@ MODE=action_aggregator EXIT_DEPTH=30 TRIALS=10 \
 bash scripts/evaluate_checkpoint.sh
 ```
 
+PCH checkpoint 的 config-driven 入口为：
+
+```bash
+CKPT=/path/to/step_005000.pt bash scripts/evaluate_pch_checkpoint.sh
+```
+
+PCH 的 causal mode、trial 数、严格 replay 合同、视频保存和每卡并发数均在 `sim_leapbot_libero_pch.yaml` 中配置。
+
 开发筛选每任务 10 次；最终每任务 50 次。记录逐任务/平均成功率、完成步数、P50/P95 重规划延迟、peak GPU memory、`cache_bytes`、`replay_bytes` 和上述各阶段耗时。Strict checkpoint 若被要求使用 `incremental_kv` 或不同 W，模型会 fail-fast，不能把不一致运行混入 Pareto 表。
 
 ## 9. 断点恢复与复现证据

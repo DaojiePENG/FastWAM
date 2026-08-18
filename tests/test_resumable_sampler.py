@@ -249,6 +249,23 @@ def test_anchor_mixing_is_deterministic_resumable_and_accumulation_aligned():
     assert list(sampler) != full
 
 
+def test_anchor_mixing_falls_back_for_single_sample_global_batch():
+    anchor_flags = [True, True, False, False, False, False]
+    dataset = _AnchoredLengthDataset([0, 0, 1, 2, 3, 4], anchor_flags)
+    sampler = ResumableEpochSampler(
+        dataset=dataset,
+        seed=41,
+        batch_size=1,
+        num_processes=1,
+    )
+
+    epoch = list(sampler)
+    assert len(epoch) == len(sampler) == len(dataset)
+    assert sorted(epoch) == list(range(len(dataset)))
+    assert epoch == list(sampler)
+    assert sampler.anchor_batch_contract() is None
+
+
 @pytest.mark.parametrize(
     "anchor_flags,match",
     (

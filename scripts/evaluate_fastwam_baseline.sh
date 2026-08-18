@@ -4,9 +4,13 @@ set -euo pipefail
 
 # Evaluate the pinned FastWAM release baseline over all LIBERO-Long tasks.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-LIBERO_ROOT="${LIBERO_ROOT:-$(cd "$ROOT_DIR/.." && pwd)/LIBERO}"
+ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
+LIBERO_ROOT="${LIBERO_ROOT:-/home/sheng/workspace/LIBERO}"
 EVAL_ROOT="${EVAL_ROOT:-$ROOT_DIR/evaluate_results/fastwam_release_dev10}"
 DATASET_STATS="${LEAPBOT_DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
@@ -39,7 +43,7 @@ build_task_fingerprint() {
     expected="$(fingerprint_path "$task_id")"
     mkdir -p "$(dirname "$expected")"
     PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/scripts/build_eval_fingerprint.py" \
         --config-name sim_libero \
         --output "$expected" \
         --checkpoint-sha256 "$CHECKPOINT_SHA256" \
@@ -63,7 +67,7 @@ for task_id in $(seq 0 9); do
     for existing_result in "$EVAL_ROOT/fastwam_release/libero_10"/gpu*_task"${task_id}"_results.json; do
         [[ -e "$existing_result" ]] || continue
         if ! PYTHONPATH="$ROOT_DIR/src" \
-            "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+            "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
             "$existing_result" \
             --expected "$(fingerprint_path "$task_id")"; then
             log "REFUSING mixed evaluation directory: stale or mismatched result=$existing_result"
@@ -84,7 +88,7 @@ run_task() {
     for existing_result in "$output_dir/libero_10"/gpu*_task"${task_id}"_results.json; do
         [[ -e "$existing_result" ]] || continue
         if PYTHONPATH="$ROOT_DIR/src" \
-            "$ROOT_DIR/.venv/bin/python" -m leapbot_va.eval_fingerprint matches \
+            "$PYTHON_BIN" -m leapbot_va.eval_fingerprint matches \
             "$existing_result" \
             --expected "$expected_fingerprint"; then
             log "skip exact completed baseline task=$task_id result=$existing_result"
@@ -96,7 +100,7 @@ run_task() {
 
     mkdir -p "$output_dir" "$log_dir" "$ROOT_DIR/.cache/matplotlib"
     log "start baseline task=$task_id gpu=$gpu"
-    env -u CUDA_VISIBLE_DEVICES \
+    CUDA_VISIBLE_DEVICES="$gpu" \
         MUJOCO_GL=egl \
         MUJOCO_EGL_DEVICE_ID="$gpu" \
         PYOPENGL_PLATFORM=egl \
@@ -104,12 +108,12 @@ run_task() {
         PYTHONPATH="$LIBERO_ROOT:$ROOT_DIR/experiments/libero" \
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
-        "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
+        "$PYTHON_BIN" "$ROOT_DIR/experiments/libero/eval_libero_single.py" \
         --config-name sim_libero \
         task=libero_uncond_2cam224_1e-4 \
         "ckpt=$RELEASE_CHECKPOINT" \
         "gpu_id=$gpu" \
-        "EVALUATION.device=cuda:$gpu" \
+        EVALUATION.device=cuda \
         EVALUATION.task_suite_name=libero_10 \
         "EVALUATION.task_id=$task_id" \
         "EVALUATION.num_trials=$NUM_TRIALS" \

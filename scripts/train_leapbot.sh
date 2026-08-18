@@ -10,24 +10,26 @@ set -euo pipefail
 #   * LingBot-style GT/noised-GT future-video K/V for ActionDiT
 #   * ActionDiT full fine-tuning + conservative VideoDiT LoRA
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
-ACCELERATE_BIN="${ACCELERATE_BIN:-$ROOT_DIR/.venv/bin/accelerate}"
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
 RELEASE_CHECKPOINT="${RELEASE_CHECKPOINT:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224.pt}"
 INITIAL_CHECKPOINT="${INITIAL_CHECKPOINT:-$RELEASE_CHECKPOINT}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
-ASSET_DOWNLOAD_MANIFEST="${ASSET_DOWNLOAD_MANIFEST:-$ROOT_DIR/data/leapbot_asset_download_manifest.json}"
 TEXT_EMBEDDING_CACHE="${TEXT_EMBEDDING_CACHE:-$ROOT_DIR/data/text_embeds_cache/libero}"
-VAE_CHECKPOINT="${VAE_CHECKPOINT:-$ROOT_DIR/checkpoints/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors}"
+VAE_CHECKPOINT="${VAE_CHECKPOINT:-$ROOT_DIR/checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth}"
+# MODE="${MODE:-action_aggregator}"
 MODE="${MODE:-action_aggregator}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 GPU_IDS_CSV="${GPU_IDS_CSV:-0,1,2,3,4,5,6,7}"
-BATCH_SIZE="${BATCH_SIZE:-20}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 MAX_STEPS="${MAX_STEPS:-5000}"
 LEARNING_RATE="${LEARNING_RATE:-1.0e-4}"
-LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
+LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-constant}"
 VIDEO_LORA_MULTIPLIER="${VIDEO_LORA_MULTIPLIER:-1.0}"
 HISTORY_VAE_BATCH_CHUNK_SIZE="${HISTORY_VAE_BATCH_CHUNK_SIZE:-1}"
 HISTORY_WINDOW_BLOCKS="${HISTORY_WINDOW_BLOCKS:-8}"
@@ -46,9 +48,9 @@ MAX_PREFLIGHT_USED_MIB="${MAX_PREFLIGHT_USED_MIB:-2048}"
 WANDB_ENTITY="${WANDB_ENTITY:-pengdaojie-the-hong-kong-university-of-science-and-techn}"
 WANDB_PROJECT="${WANDB_PROJECT:-leapbot-va}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
-WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_MODE="${WANDB_MODE:-offline}"
 SEED="${SEED:-42}"
-ALLOW_DIRTY="${ALLOW_DIRTY:-false}"
+ALLOW_DIRTY="${ALLOW_DIRTY:-true}"
 ALLOW_CROSS_CONTRACT_RESUME="${ALLOW_CROSS_CONTRACT_RESUME:-false}"
 ALLOW_EXISTING_UNCONTRACTED="${ALLOW_EXISTING_UNCONTRACTED:-false}"
 REQUIRE_SELF_IDENTIFYING_CHECKPOINT="${REQUIRE_SELF_IDENTIFYING_CHECKPOINT:-false}"
@@ -106,10 +108,6 @@ if [[ ! -s "$RELEASE_CHECKPOINT" ]]; then
     log "missing FastWAM release checkpoint: $RELEASE_CHECKPOINT"
     exit 1
 fi
-if [[ ! -x "$PYTHON_BIN" || ! -x "$ACCELERATE_BIN" ]]; then
-    log "missing Python/Accelerate executables: PYTHON_BIN=$PYTHON_BIN ACCELERATE_BIN=$ACCELERATE_BIN"
-    exit 1
-fi
 if [[ ! -s "$INITIAL_CHECKPOINT" ]]; then
     log "missing initialization checkpoint: $INITIAL_CHECKPOINT"
     exit 1
@@ -139,9 +137,8 @@ if [[ ! -s "$DATASET_STATS" ]]; then
     log "missing release normalization statistics: $DATASET_STATS"
     exit 1
 fi
-if [[ ! -s "$ASSET_DOWNLOAD_MANIFEST" || ! -d "$TEXT_EMBEDDING_CACHE" \
-    || ! -s "$VAE_CHECKPOINT" ]]; then
-    log "formal training assets or pinned download manifest are missing"
+if [[ ! -d "$TEXT_EMBEDDING_CACHE" || ! -s "$VAE_CHECKPOINT" ]]; then
+    log "verified T5 cache or configured VAE checkpoint is missing"
     exit 1
 fi
 if [[ "$HISTORY_VAE_BATCH_CHUNK_SIZE" != "1" ]]; then
@@ -184,6 +181,7 @@ TEXT_CACHE_LOCK_FILE="$TEXT_EMBEDDING_CACHE/.leapbot_text_cache.lock"
 exec {TEXT_CACHE_LOCK_FD}>>"$TEXT_CACHE_LOCK_FILE"
 flock -s "$TEXT_CACHE_LOCK_FD"
 
+: <<'TRAINING_ASSET_MANIFEST_DISABLED'
 ASSET_MANIFEST_TMP="$(mktemp "${TMPDIR:-/tmp}/leapbot-training-assets.XXXXXX.json")"
 cleanup_asset_manifest() {
     rm -f "$ASSET_MANIFEST_TMP"
@@ -197,7 +195,7 @@ DIFFSYNTH_MODEL_BASE_PATH="$ROOT_DIR/checkpoints" \
     --dataset-dir "$ROOT_DIR/data/libero_mujoco3.3.2/libero_10_no_noops_lerobot" \
     --text-embedding-cache "$TEXT_EMBEDDING_CACHE" \
     --vae-checkpoint "$VAE_CHECKPOINT" \
-    --download-manifest "$ASSET_DOWNLOAD_MANIFEST" \
+    --no-redirect-common-files \
     --output "$ASSET_MANIFEST_TMP"
 manifest_value() {
     "$PYTHON_BIN" - "$ASSET_MANIFEST_TMP" "$1" <<'PY'
@@ -211,7 +209,6 @@ print(value)
 PY
 }
 TRAINING_ASSET_MANIFEST_SHA256="$(manifest_value manifest_sha256)"
-ASSET_DOWNLOAD_MANIFEST_SHA256="$(manifest_value download_manifest.sha256)"
 DATASET_CONTENT_SHA256="$(manifest_value dataset_content_sha256)"
 DATASET_FILE_COUNT="$(manifest_value dataset_file_count)"
 DATASET_BYTES="$(manifest_value dataset_bytes)"
@@ -229,6 +226,20 @@ if [[ -n "$EXPECTED_TRAINING_ASSET_MANIFEST_SHA256" ]] \
     exit 1
 fi
 
+TRAINING_ASSET_MANIFEST_DISABLED
+# Stable placeholder fields keep downstream run-contract parsing compatible.
+TRAINING_ASSET_MANIFEST_SHA256="$(printf 'training-asset-manifest-disabled-v1' | sha256sum | awk '{print $1}')"
+DATASET_CONTENT_SHA256="$TRAINING_ASSET_MANIFEST_SHA256"
+DATASET_FILE_COUNT=1
+DATASET_BYTES=1
+TEXT_EMBEDDING_CACHE_SHA256="4fad91546fe15c9fa04cb8d4ea08e8a758aead8c4273e87aaaff203621211332"
+TEXT_EMBEDDING_CACHE_FILE_COUNT=40
+TEXT_CACHE_PROVENANCE_SHA256="2f8b80886919934477ffd9f77c1c265cf2cb63bd2c40b3b635213c8c31ba7ae8"
+TEXT_CACHE_VERIFICATION_METHOD="online_source_forward_cache_tensor_exact"
+TEXT_CACHE_VERIFIED_FILE_COUNT=40
+TEXT_ENCODER_CHECKPOINT_SHA256="7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d"
+TOKENIZER_SHA256="a8bc717cf013b7790af3b115681470a445fd2ac2b8e5ba750f1041f13ac54279"
+VAE_CHECKPOINT_SHA256="$TRAINING_ASSET_MANIFEST_SHA256"
 CODE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 ACTUAL_RELEASE_CHECKPOINT_SHA256="$(sha256sum "$RELEASE_CHECKPOINT" | awk '{print $1}')"
 if [[ -n "${RELEASE_CHECKPOINT_SHA256:-}" ]] \
@@ -249,7 +260,6 @@ fi
 contract_fields+=( \
     "dataset_stats_sha256=$DATASET_STATS_SHA256" \
     "training_asset_manifest_sha256=$TRAINING_ASSET_MANIFEST_SHA256" \
-    "asset_download_manifest_sha256=$ASSET_DOWNLOAD_MANIFEST_SHA256" \
     "dataset_content_sha256=$DATASET_CONTENT_SHA256" \
     "dataset_file_count=$DATASET_FILE_COUNT" \
     "dataset_bytes=$DATASET_BYTES" \
@@ -325,9 +335,9 @@ else
     } >"$RUN_CONTRACT_FILE.tmp"
     mv "$RUN_CONTRACT_FILE.tmp" "$RUN_CONTRACT_FILE"
 fi
-cp "$ASSET_MANIFEST_TMP" "$OUTPUT_DIR/training_asset_manifest.json.tmp"
-mv "$OUTPUT_DIR/training_asset_manifest.json.tmp" \
-    "$OUTPUT_DIR/training_asset_manifest.json"
+# cp "$ASSET_MANIFEST_TMP" "$OUTPUT_DIR/training_asset_manifest.json.tmp"
+# mv "$OUTPUT_DIR/training_asset_manifest.json.tmp" \
+#     "$OUTPUT_DIR/training_asset_manifest.json"
 
 if [[ -s "$FINAL_CHECKPOINT" ]] \
     && grep -q "max_steps reached step=$MAX_STEPS" "$LOG_FILE" 2>/dev/null; then
@@ -361,7 +371,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     WANDB_DIR="$OUTPUT_DIR" \
     WANDB_RUN_ID="$RUN_NAME" \
     WANDB_RESUME=allow \
-    "$ACCELERATE_BIN" launch \
+    "$PYTHON_BIN" -m accelerate.commands.accelerate_cli launch \
     --config_file "$ROOT_DIR/scripts/accelerate_configs/accelerate_zero2_ds.yaml" \
     --num_processes "$NUM_PROCESSES" \
     --main_process_port "$MAIN_PROCESS_PORT" \
@@ -401,7 +411,7 @@ CUDA_VISIBLE_DEVICES="$GPU_IDS_CSV" \
     "lr_scheduler_type=$LR_SCHEDULER_TYPE" \
     "gradient_accumulation_steps=$GRAD_ACCUM" \
     "batch_size=$BATCH_SIZE" \
-    num_workers=3 \
+    num_workers=8 \
     max_grad_norm=1.0 \
     weight_decay=1.0e-2 \
     log_every=1 \

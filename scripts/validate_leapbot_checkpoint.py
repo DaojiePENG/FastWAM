@@ -40,6 +40,7 @@ def validate_checkpoint(
     expected_mode: str,
     state_dir: Path | None = None,
     expected_history_training_mode: str = "incremental_full_bptt",
+    expected_packed_history_attention_backend: str | None = None,
     expected_training_strategy: str = "video_lora_action_full",
     expected_video_lora_multiplier: float = 1.0,
     expected_replan_steps: int = 10,
@@ -86,6 +87,14 @@ def validate_checkpoint(
             raise ValueError(
                 f"checkpoint metadata mismatch for {key}: expected={expected!r} "
                 f"actual={actual!r}"
+            )
+    if expected_packed_history_attention_backend is not None:
+        actual_backend = payload.get("training_packed_history_attention_backend")
+        if actual_backend != expected_packed_history_attention_backend:
+            raise ValueError(
+                "checkpoint packed-history backend mismatch: "
+                f"expected={expected_packed_history_attention_backend!r} "
+                f"actual={actual_backend!r}"
             )
     for key, expected in (
         ("training_history_window_blocks", expected_history_window_blocks),
@@ -226,6 +235,7 @@ def main() -> None:
     parser.add_argument(
         "--expected-history-training-mode", default="incremental_full_bptt"
     )
+    parser.add_argument("--expected-packed-history-attention-backend")
     parser.add_argument("--expected-training-strategy", default="video_lora_action_full")
     parser.add_argument("--expected-video-lora-multiplier", type=float, default=1.0)
     parser.add_argument("--expected-replan-steps", type=int, default=10)
@@ -251,6 +261,9 @@ def main() -> None:
         expected_mode=args.expected_mode,
         state_dir=args.state_dir,
         expected_history_training_mode=args.expected_history_training_mode,
+        expected_packed_history_attention_backend=(
+            args.expected_packed_history_attention_backend
+        ),
         expected_training_strategy=args.expected_training_strategy,
         expected_video_lora_multiplier=args.expected_video_lora_multiplier,
         expected_replan_steps=args.expected_replan_steps,

@@ -708,6 +708,124 @@ def test_strict_window_training_and_runtime_rebuild_the_same_prefix():
     assert result["bitwise_pass"]
 
 
+
+@pytest.mark.parametrize("causal_mode", CAUSAL_MODES)
+def test_pch_training_runs_one_real_batch_for_every_dit_stage(
+    causal_mode, monkeypatch
+):
+    model = _model(causal_mode)
+    model.configure_causal_training(
+        causal_mode=causal_mode,
+        training_exit_depths=(2,),
+        history_training_mode="packed_causal_history_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=2,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+    )
+    sample = _sample((0, 2))
+    sample["history_window_blocks"] = torch.tensor([2, 2])
+    sample["full_episode_history"] = torch.tensor([False, False])
+    sample["episode_anchor_video"] = torch.zeros(2, 3, 1, 16, 16)
+    sample["episode_anchor_proprio"] = torch.zeros(2, 2)
+    sample["episode_anchor_valid"] = torch.tensor([False, False])
+
+    packed_batches = []
+    segment_batches = []
+    action_batches = []
+    original_packed = model.mot.prefill_packed_history
+    original_segment = model.mot.prefill_expert_segment
+    original_action = model.mot.forward_action_with_history
+
+    def packed(*args, **kwargs):
+        packed_batches.append(int(kwargs["video_tokens"].shape[0]))
+        return original_packed(*args, **kwargs)
+
+    def segment(*args, **kwargs):
+        segment_batches.append(int(kwargs["tokens"].shape[0]))
+        return original_segment(*args, **kwargs)
+
+    def action(*args, **kwargs):
+        action_batches.append(int(kwargs["action_tokens"].shape[0]))
+        return original_action(*args, **kwargs)
+
+    monkeypatch.setattr(model.mot, "prefill_packed_history", packed)
+    monkeypatch.setattr(model.mot, "prefill_expert_segment", segment)
+    monkeypatch.setattr(model.mot, "forward_action_with_history", action)
+
+    loss, metrics = model.training_loss(sample)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert packed_batches == [2]
+    assert segment_batches == [2, 2, 2]
+    assert action_batches == [2]
+    assert metrics["pch_packed_tokens"] > metrics["pch_valid_tokens"]
+
+
+
+def test_pch_all_h0_skips_history_forward(monkeypatch):
+    model = _model("interleaved")
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(2,),
+        history_training_mode="packed_causal_history_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=2,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+    )
+    sample = _sample((0,))
+    sample["history_video"] = torch.zeros(1, 3, 2, 16, 16)
+    sample["history_action"] = torch.zeros(1, 2, REPLAN_STEPS, 3)
+    sample["history_proprio"] = torch.zeros(1, 2, 2)
+    sample["history_valid_blocks"] = torch.zeros(1, 2, dtype=torch.bool)
+    sample["history_block_positions"] = torch.full((1, 2), -1, dtype=torch.long)
+    sample["history_window_blocks"] = torch.tensor([2])
+    sample["full_episode_history"] = torch.tensor([False])
+    sample["episode_anchor_video"] = torch.zeros(1, 3, 1, 16, 16)
+    sample["episode_anchor_proprio"] = torch.zeros(1, 2)
+    sample["episode_anchor_valid"] = torch.tensor([False])
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("all-H0 batch must skip packed history MoT")
+
+    monkeypatch.setattr(model.mot, "prefill_packed_history", forbidden)
+    loss, metrics = model.training_loss(sample)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert metrics["history_blocks_max"] == 0
+
+def test_pch_multi_exit_trains_shallow_action_and_video_heads():
+    model = _model(
+        "interleaved",
+        layers=2,
+        exit_depths=(1, 2),
+        training_exit_depths=(1, 2),
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(1, 2),
+        history_training_mode="packed_causal_history_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=1,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+    )
+    sample = _sample((1,))
+    sample["history_window_blocks"] = torch.tensor([1])
+    sample["full_episode_history"] = torch.tensor([False])
+    sample["episode_anchor_video"] = torch.zeros(1, 3, 1, 16, 16)
+    sample["episode_anchor_proprio"] = torch.zeros(1, 2)
+    sample["episode_anchor_valid"] = torch.tensor([False])
+    loss, metrics = model.training_loss(sample)
+    loss.backward()
+    assert "loss_action_d1" in metrics and "loss_video_d1" in metrics
+    assert any(parameter.grad is not None for parameter in model.action_exit_heads["1"].parameters())
+    assert any(parameter.grad is not None for parameter in model.video_exit_heads["1"].parameters())
+
 def test_runtime_equivalence_rejects_padded_action_target_contract():
     model = _model("interleaved")
     sample = _sample((1,))

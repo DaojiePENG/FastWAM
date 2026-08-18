@@ -1,0 +1,44 @@
+# @package _global_
+
+# PCH evaluation is config-driven. The launcher only supplies the checkpoint;
+# evaluation behavior and per-GPU concurrency are defined here.
+defaults:
+  - sim_leapbot_libero
+  - _self_
+
+model:
+  causal_mode: interleaved
+  # causal_mode: vision_causal
+  # causal_mode: action_aggregator
+  history_training_mode: packed_causal_history_bptt
+  packed_history_attention_backend: flex
+  history_window_blocks: 8
+  history_vae_batch_chunk_size: 4
+
+EVALUATION:
+  task_suite_name: libero_10
+  num_trials: 10
+  output_dir: ./evaluate_results/pch_task_config/${model.causal_mode}/${now:%Y%m%d_%H%M%S}
+  replan_steps: 10
+  action_horizon: 32
+  num_inference_steps: 10
+  save_rollout_video: false
+  merge_video_lora: true
+  dataset_stats_path: ./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json
+  memory:
+    enabled: true
+    exit_depth: 30
+    causal_mode: ${model.causal_mode}
+    max_history_blocks: 70
+    history_storage_mode: strict_replay
+    history_window_blocks: ${model.history_window_blocks}
+    retained_history_blocks: null
+
+MULTIRUN:
+  task_suite_names:
+    - libero_10
+    - libero_goal
+    - libero_spatial
+    - libero_object
+  num_gpus: 1
+  max_tasks_per_gpu: 3

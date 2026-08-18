@@ -241,20 +241,37 @@ run_libero_eval() {
         echo "$timestamp,$suite,$task_id,gpu=$gpu_id,rc=$return_code,log=$log_file" >> "$FAILED_TASKS_FILE"
     }
     
-    # Checkpoint and config
+    # Checkpoint and frozen config snapshot
     CKPT=${CKPT:-""}
     export CKPT
-    CONFIG=${CONFIG:-""}
+    CONFIG_SNAPSHOT=${CONFIG_SNAPSHOT:-""}
+    CONFIG_SNAPSHOT_SHA256=${CONFIG_SNAPSHOT_SHA256:-""}
+    PYTHON_BIN=${PYTHON_BIN:-python}
     require_non_empty "CKPT"
-    require_non_empty "CONFIG"
-    # Normalize CONFIG to task/config_name.yaml
-    CONFIG="${CONFIG#configs/}" # delete prefix configs/
-    CONFIG="${CONFIG#task/}" # delete prefix task/
-    CONFIG="${CONFIG%.yaml}" # delete suffix .yaml
-    export CONFIG
+    require_non_empty "CONFIG_SNAPSHOT"
+    require_non_empty "CONFIG_SNAPSHOT_SHA256"
+    if [ ! -f "$CONFIG_SNAPSHOT" ]; then
+        echo "Error: config snapshot does not exist: $CONFIG_SNAPSHOT"
+        exit 1
+    fi
+    snapshot_dir=$(dirname "$CONFIG_SNAPSHOT")
+    snapshot_name=$(basename "${CONFIG_SNAPSHOT%.*}")
+    WORKER_CONFIG_ARGS="--config-path $(printf '%q' "$snapshot_dir") --config-name $(printf '%q' "$snapshot_name")"
+    export CONFIG_SNAPSHOT CONFIG_SNAPSHOT_SHA256 WORKER_CONFIG_ARGS
+
+    verify_config_snapshot() {
+        local actual_sha256
+        actual_sha256=$(sha256sum "$CONFIG_SNAPSHOT" | awk '{print $1}')
+        if [ "$actual_sha256" != "$CONFIG_SNAPSHOT_SHA256" ]; then
+            echo "Error: config snapshot changed during evaluation: $CONFIG_SNAPSHOT"
+            return 2
+        fi
+    }
+    verify_config_snapshot
 
     echo "CKPT: $CKPT"
-    echo "CONFIG: $CONFIG"
+    echo "CONFIG_SNAPSHOT: $CONFIG_SNAPSHOT"
+    echo "CONFIG_SNAPSHOT_SHA256: $CONFIG_SNAPSHOT_SHA256"
     echo "ROOT_DIR: $ROOT_DIR"
     echo "NUM_GPUS: $NUM_GPUS"
     echo "MAX_TASKS_PER_GPU: $MAX_TASKS_PER_GPU"
@@ -327,7 +344,8 @@ run_libero_eval() {
         local status_file="$TASK_STATUS_DIR/${suite}_task${task_id}.status"
         local result_file="$OUTPUT_DIR/$suite/gpu${gpu_id}_task${task_id}_results.json"
         local log_file="$TASK_LOG_DIR/${suite}_task${task_id}_gpu${gpu_id}.log"
-        
+
+        verify_config_snapshot || return $?
         rm -f "$status_file"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching task: $suite task_id=$task_id on GPU$gpu_id pane $pane_info"
         
@@ -337,8 +355,8 @@ run_libero_eval() {
         tmux send-keys -t $SESSION_NAME:$pane_info "clear" C-m 2>/dev/null
         tmux send-keys -t $SESSION_NAME:$pane_info "source ~/.bashrc && cd $ROOT_DIR && export EXP_NAME=$EXP_NAME && \
             STATUS_FILE='$status_file' LOG_FILE='$log_file' RESULT_FILE='$result_file' && \
-            CUDA_VISIBLE_DEVICES=$gpu_id python experiments/libero/eval_libero_single.py \
-            task=$CONFIG ckpt=$CKPT \
+            CUDA_VISIBLE_DEVICES=$gpu_id MUJOCO_GL=egl MUJOCO_EGL_DEVICE_ID=$gpu_id PYOPENGL_PLATFORM=egl $PYTHON_BIN experiments/libero/eval_libero_single.py \
+            $WORKER_CONFIG_ARGS ckpt=$CKPT \
             EVALUATION.task_suite_name=$suite EVALUATION.task_id=$task_id gpu_id=$gpu_id \
             EVALUATION.num_trials=$NUM_TRIALS EVALUATION.output_dir=$OUTPUT_DIR $EXTRA_ARGS > \"\$LOG_FILE\" 2>&1; \
             rc=\$?; \
@@ -351,6 +369,7 @@ run_libero_eval() {
     }
 
     launch_task() {
+        verify_config_snapshot || exit 2
         local suite=$1
         local task_id=$2
         local gpu_id=$3
@@ -625,7 +644,21 @@ run_libero_eval() {
     echo "All tasks completed successfully!"
     # Run the result summarization script
     echo "Generating evaluation report..."
-    python experiments/libero/summarize_results.py --output_dir="$OUTPUT_DIR"
+    "$PYTHON_BIN" experiments/libero/summarize_results.py --output_dir="$OUTPUT_DIR"
+
+    echo "Generating Pareto statistics..."
+    pareto_args=(
+        "$OUTPUT_DIR"
+        --output-dir "$OUTPUT_DIR/pareto"
+        --expected-tasks "$total_tasks"
+        --expected-trials-per-task "$NUM_TRIALS"
+        --require-profiled
+    )
+    if [ "${PARETO_IGNORE_SOURCE:-false}" = "true" ]; then
+        pareto_args+=(--ignore-source)
+    fi
+    "$PYTHON_BIN" experiments/leapbot/pareto.py "${pareto_args[@]}"
+    echo "Pareto statistics complete: $OUTPUT_DIR/pareto/results.csv"
 }
 
 

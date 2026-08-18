@@ -9,6 +9,13 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from leapbot_va.memory import VALID_CAUSAL_MODES
+from leapbot_va.pch import (
+    PCHLayout,
+    build_pch_attention_mask,
+    build_pch_context_masks,
+    build_pch_validity_signature,
+    combine_packed_history_kv,
+)
 
 if TYPE_CHECKING:
     from leapbot_va.models.leapbot import LeapBotVA
@@ -968,40 +975,23 @@ def future_video_token_valid_mask(
 def sample_lingbot_future_video_condition(
     model: "LeapBotVA",
     clean_future_latents: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, bool]:
-    """Build the teacher-forced video condition consumed by ActionDiT.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sample independent clean/noised future conditions for every batch row."""
 
-    LingBot-VA uses clean ground-truth video half of the time and independently
-    noised ground-truth frames for the other half.  Its timestep-index interval
-    [0.5, 1.0] is sampled before the flow scheduler's shift, so we preserve the
-    same convention here.  The returned timesteps are per latent frame and are
-    passed to Wan's separated-timestep embedding.
-    """
-
-    if clean_future_latents.ndim != 5 or int(clean_future_latents.shape[0]) != 1:
-        raise ValueError("future-video condition must be [1,C,F,H,W]")
+    if clean_future_latents.ndim != 5:
+        raise ValueError("future-video condition must be [B,C,F,H,W]")
+    batch = int(clean_future_latents.shape[0])
     num_frames = int(clean_future_latents.shape[2])
-    if num_frames <= 0:
-        raise ValueError("future-video condition must contain at least one frame")
+    if batch <= 0 or num_frames <= 0:
+        raise ValueError("future-video condition batch and frames must be positive")
     probability = float(
         model.effective_future_video_condition_noise_probability()
     )
-    add_noise = bool(
-        torch.rand((), device=clean_future_latents.device).item() < probability
-    )
-    if not add_noise:
-        return (
-            clean_future_latents,
-            torch.zeros(
-                (1, num_frames),
-                device=clean_future_latents.device,
-                dtype=clean_future_latents.dtype,
-            ),
-            False,
-        )
-
+    condition_noised = torch.rand(
+        (batch,), device=clean_future_latents.device
+    ) < probability
     u = torch.rand(
-        (1, num_frames),
+        (batch, num_frames),
         device=clean_future_latents.device,
         dtype=torch.float32,
     )
@@ -1011,16 +1001,21 @@ def sample_lingbot_future_video_condition(
     sigma = model.train_video_scheduler._phi(
         u, float(model.train_video_scheduler.shift)
     )
+    sigma = sigma * condition_noised[:, None]
     sigma_latent = sigma.to(
         device=clean_future_latents.device,
         dtype=clean_future_latents.dtype,
-    ).view(1, 1, num_frames, 1, 1)
+    ).view(batch, 1, num_frames, 1, 1)
     condition = (
         (1.0 - sigma_latent) * clean_future_latents
         + sigma_latent * torch.randn_like(clean_future_latents)
     )
     timesteps = sigma * float(model.train_video_scheduler.num_train_timesteps)
-    return condition, timesteps.to(dtype=clean_future_latents.dtype), True
+    return (
+        condition,
+        timesteps.to(dtype=clean_future_latents.dtype),
+        condition_noised,
+    )
 
 
 def _runtime_single_observation_latents(
@@ -1375,6 +1370,605 @@ def _packed_causal_history_reference_loss(
     return total, metrics
 
 
+def _packed_causal_history_bptt_loss(
+    model: "LeapBotVA", sample, tiled: bool = False
+):
+    """PCH training: one history forward and batched downstream DiT stages."""
+
+    if int(model.video_expert.patch_size[0]) != 1:
+        raise ValueError("PCH requires a temporal video patch size of 1")
+    if bool(getattr(model.video_expert, "action_conditioned", False)):
+        raise ValueError("PCH future decomposition requires action_conditioned=false")
+    history_vae_chunk = int(getattr(model, "history_vae_batch_chunk_size", 1))
+    if history_vae_chunk <= 0:
+        raise ValueError("PCH history_vae_batch_chunk_size must be positive")
+
+    inputs = model.build_inputs(sample, tiled=tiled, append_proprio=False)
+    current_latents = inputs["input_latents"]
+    action = inputs["action"]
+    batch = int(current_latents.shape[0])
+    window = int(model.training_history_window_blocks)
+    final_depth = int(model.mot.num_layers)
+    training_depths = tuple(int(depth) for depth in model.training_exit_depths)
+    if not training_depths or training_depths[-1] != final_depth:
+        raise ValueError("PCH training exits must include the final MoT depth")
+
+    history_valid = sample["history_valid_blocks"].to(
+        model.device, dtype=torch.bool
+    )
+    history_positions = sample["history_block_positions"].to(
+        model.device, dtype=torch.long
+    )
+    current_blocks = sample["current_block_position"].to(
+        model.device, dtype=torch.long
+    )
+    episode_steps = sample["episode_step"].to(model.device, dtype=torch.long)
+    if tuple(history_valid.shape) != (batch, window):
+        raise ValueError(f"PCH history must use fixed [B,W] slots with W={window}")
+    replan_steps = int(sample["history_action"].shape[2])
+    action_horizon = int(action.shape[1])
+    model.validate_temporal_contract(
+        replan_steps=replan_steps, action_horizon=action_horizon
+    )
+    full_episode_history = resolve_full_episode_history_batch(
+        sample.get("full_episode_history"),
+        batch_size=batch,
+        device=model.device,
+    )
+    history_counts = validate_packed_history_metadata(
+        history_valid,
+        history_positions,
+        current_blocks,
+        episode_steps,
+        replan_steps=replan_steps,
+        full_episode_history=full_episode_history,
+    )
+    declared_window = torch.as_tensor(
+        sample.get("history_window_blocks", window),
+        device=model.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    if declared_window.numel() == 1:
+        declared_window = declared_window.expand(batch)
+    if tuple(declared_window.shape) != (batch,) or bool(
+        (declared_window != window).any().item()
+    ):
+        raise ValueError("PCH dataset/model history_window_blocks mismatch")
+    expected_counts = torch.minimum(
+        current_blocks, torch.full_like(current_blocks, window)
+    )
+    if not torch.equal(history_counts, expected_counts):
+        raise ValueError("PCH requires the complete recent_window history suffix")
+    slots = torch.arange(window, device=model.device)[None, :]
+    expected_valid = slots >= (window - history_counts[:, None])
+    if not torch.equal(history_valid, expected_valid):
+        raise ValueError("PCH history must be right aligned with left padding")
+
+    anchor_valid = torch.as_tensor(
+        sample.get("episode_anchor_valid", torch.zeros(batch, dtype=torch.bool)),
+        device=model.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    if tuple(anchor_valid.shape) != (batch,):
+        raise ValueError("episode_anchor_valid must be [B]")
+    expected_anchor = current_blocks > window
+    if not torch.equal(anchor_valid, expected_anchor):
+        raise ValueError(
+            "PCH must add V0 exactly when it is outside the recent window"
+        )
+    if bool(anchor_valid.any().item()) and (
+        "episode_anchor_video" not in sample
+        or "episode_anchor_proprio" not in sample
+    ):
+        raise ValueError("valid PCH anchors require video and proprio tensors")
+    if model.proprio_encoder is None:
+        raise ValueError("PCH requires proprio_encoder")
+
+    history_video = sample["history_video"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    history_latents = encode_independent_history_video_latents(
+        model,
+        history_video,
+        history_valid,
+        empty_latent_reference=current_latents[:, :, :1],
+        tiled=tiled,
+        chunk_size=history_vae_chunk,
+    )
+    if "episode_anchor_video" in sample:
+        anchor_video = sample["episode_anchor_video"].to(
+            model.device, dtype=model.torch_dtype, non_blocking=True
+        )
+        if anchor_video.ndim == 4:
+            anchor_video = anchor_video.unsqueeze(2)
+    else:
+        anchor_video = history_video[:, :, :1].new_zeros(
+            (batch, *history_video.shape[1:2], 1, *history_video.shape[3:])
+        )
+    anchor_latents = encode_independent_history_video_latents(
+        model,
+        anchor_video,
+        anchor_valid[:, None],
+        empty_latent_reference=current_latents[:, :, :1],
+        tiled=tiled,
+        chunk_size=history_vae_chunk,
+    )
+    packed_history_latents = torch.cat([anchor_latents, history_latents], dim=2)
+
+    current_real_latents = encode_independent_history_video_latents(
+        model,
+        sample["video"][:, :, :1].to(
+            model.device, dtype=model.torch_dtype, non_blocking=True
+        ),
+        torch.ones((batch, 1), dtype=torch.bool, device=model.device),
+        empty_latent_reference=current_latents[:, :, :1],
+        tiled=tiled,
+        chunk_size=history_vae_chunk,
+    )
+
+    base_context = inputs["context"]
+    base_context_mask = inputs["context_mask"]
+    history_proprio = sample["history_proprio"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    current_proprio = sample["proprio"][:, 0].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    )
+    if "episode_anchor_proprio" in sample:
+        anchor_proprio = sample["episode_anchor_proprio"].to(
+            model.device, dtype=model.torch_dtype, non_blocking=True
+        ).reshape(batch, -1)
+    else:
+        anchor_proprio = current_proprio.new_zeros(current_proprio.shape)
+    slot_proprio = torch.cat(
+        [anchor_proprio[:, None], history_proprio], dim=1
+    )
+    proprio_tokens = model.proprio_encoder(slot_proprio).to(base_context.dtype)
+    packed_context = torch.cat([base_context, proprio_tokens], dim=1)
+    slot_valid = torch.cat([anchor_valid[:, None], history_valid], dim=1)
+    packed_context_mask = torch.cat([base_context_mask, slot_valid], dim=1)
+
+    zero_video_t = current_latents.new_zeros((batch,))
+    video_pre = model.video_expert.pre_dit(
+        x=packed_history_latents,
+        timestep=zero_video_t,
+        context=packed_context,
+        context_mask=packed_context_mask,
+        action=None,
+        fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+        frame_position_ids=torch.zeros(
+            (batch, window + 1), dtype=torch.long, device=model.device
+        ),
+        frame_timesteps=current_latents.new_zeros((batch, window + 1)),
+    )
+    safe_history_positions = history_positions.clamp_min(0)
+    packed_video_blocks = torch.cat(
+        [torch.zeros((batch, 1), dtype=torch.long, device=model.device),
+         safe_history_positions],
+        dim=1,
+    )
+    video_pre = model.temporal_positions.apply_video_pre_dit(
+        video_pre, packed_video_blocks
+    )
+
+    history_actions = sample["history_action"].to(
+        model.device, dtype=model.torch_dtype, non_blocking=True
+    ).reshape(batch, window * replan_steps, int(action.shape[-1]))
+    local_action_ids = torch.arange(
+        replan_steps, device=model.device, dtype=torch.long
+    ).repeat(window)
+    action_block_ids = safe_history_positions.repeat_interleave(
+        replan_steps, dim=1
+    )
+    absolute_action_ids = (
+        safe_history_positions[:, :, None] * replan_steps
+        + torch.arange(replan_steps, device=model.device)[None, None, :]
+    ).reshape(batch, window * replan_steps)
+    action_pre = model.action_expert.pre_dit(
+        action_tokens=history_actions,
+        timestep=action.new_zeros((batch,)),
+        context=packed_context,
+        context_mask=packed_context_mask,
+        position_ids=local_action_ids,
+        token_timesteps=action.new_zeros((batch, window * replan_steps)),
+    )
+    action_pre = model.temporal_positions.apply_action_pre_dit(
+        action_pre, absolute_action_ids, action_block_ids
+    )
+
+    validity_signature = None
+    if model.packed_history_attention_backend == "flex":
+        slot_metadata = sample.get("pch_slot_validity")
+        if slot_metadata is None:
+            raise ValueError("PCH Flex training requires CPU pch_slot_validity metadata")
+        validity_signature = build_pch_validity_signature(
+            slot_metadata,
+            batch_size=batch,
+            window_blocks=window,
+            video_tokens_per_slot=int(video_pre["meta"]["tokens_per_frame"]),
+            action_tokens_per_slot=replan_steps,
+        )
+
+    layout = PCHLayout(
+        history_valid_blocks=history_valid,
+        anchor_valid=anchor_valid,
+        history_block_positions=safe_history_positions,
+        anchor_block_positions=torch.zeros(
+            (batch,), dtype=torch.long, device=model.device
+        ),
+        video_tokens_per_slot=int(video_pre["meta"]["tokens_per_frame"]),
+        action_tokens_per_slot=replan_steps,
+        validity_signature=validity_signature,
+    )
+    video_context_mask, action_context_mask = build_pch_context_masks(
+        base_context_mask, layout
+    )
+    packed_cache = None
+    has_packed_history = (
+        any(validity_signature)
+        if validity_signature is not None
+        else bool(layout.key_valid_mask.any().item())
+    )
+    if has_packed_history:
+        pch_attention_mask = build_pch_attention_mask(
+            layout,
+            model.causal_mode,
+            model.packed_history_attention_backend,
+        )
+        packed_cache = model.mot.prefill_packed_history(
+            video_tokens=video_pre["tokens"],
+            action_tokens=action_pre["tokens"],
+            video_freqs=video_pre["freqs"],
+            action_freqs=action_pre["freqs"],
+            video_t_mod=video_pre["t_mod"],
+            action_t_mod=action_pre["t_mod"],
+            video_context={"context": video_pre["context"], "mask": video_context_mask},
+            action_context={"context": action_pre["context"], "mask": action_context_mask},
+            layout=layout,
+            attention_mask=pch_attention_mask,
+            attention_backend=model.packed_history_attention_backend,
+            max_layers=final_depth,
+        )
+
+    def select_history(query_kind: str):
+        if packed_cache is None:
+            return None, None
+        return combine_packed_history_kv(
+            packed_cache,
+            causal_mode=model.causal_mode,
+            query_kind=query_kind,
+        )
+
+    def append_prefix(prefix_kv, prefix_valid, segment_kv, segment_valid):
+        if prefix_kv is None:
+            return segment_kv, segment_valid
+        return (
+            [
+                {
+                    "k": torch.cat([old["k"], new["k"]], dim=1),
+                    "v": torch.cat([old["v"], new["v"]], dim=1),
+                }
+                for old, new in zip(prefix_kv, segment_kv)
+            ],
+            torch.cat([prefix_valid, segment_valid], dim=1),
+        )
+
+    current_context, current_context_mask = _context_for_proprio(
+        model, base_context, base_context_mask, current_proprio
+    )
+    current_real_pre = model.video_expert.pre_dit(
+        x=current_real_latents,
+        timestep=current_latents.new_zeros((batch,)),
+        context=current_context,
+        context_mask=current_context_mask,
+        action=None,
+        fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+        frame_position_ids=torch.zeros((1,), dtype=torch.long, device=model.device),
+        frame_timesteps=current_latents.new_zeros((batch, 1)),
+    )
+    current_real_pre = model.temporal_positions.apply_video_pre_dit(
+        current_real_pre, current_blocks[:, None]
+    )
+    video_history_kv, video_history_valid = select_history("video")
+    _, current_real_kv = model.mot.prefill_expert_segment(
+        expert_name="video",
+        tokens=current_real_pre["tokens"],
+        freqs=current_real_pre["freqs"],
+        t_mod=current_real_pre["t_mod"],
+        context_payload={
+            "context": current_real_pre["context"],
+            "mask": current_real_pre["context_mask"],
+        },
+        history_kv=video_history_kv,
+        history_valid_mask=video_history_valid,
+        max_layers=final_depth,
+        segment_attention_mask=current_video_segment_attention_mask(
+            tokens_per_frame=int(current_real_pre["meta"]["tokens_per_frame"]),
+            num_frames=1,
+            device=model.device,
+        ),
+    )
+    current_real_valid = torch.ones(
+        (batch, int(current_real_pre["tokens"].shape[1])),
+        dtype=torch.bool,
+        device=model.device,
+    )
+
+    clean_future = current_latents[:, :, 1:]
+    num_future_frames = int(clean_future.shape[2])
+    if num_future_frames <= 0:
+        raise ValueError("PCH training requires future latent frames")
+    condition_latents, condition_frame_t, condition_noised = (
+        sample_lingbot_future_video_condition(model, clean_future)
+    )
+    condition_pre = model.video_expert.pre_dit(
+        x=condition_latents,
+        timestep=condition_frame_t[:, 0],
+        context=current_context,
+        context_mask=current_context_mask,
+        action=None,
+        fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+        frame_position_ids=torch.arange(
+            1, num_future_frames + 1, device=model.device, dtype=torch.long
+        ),
+        frame_timesteps=condition_frame_t,
+    )
+    condition_pre = model.temporal_positions.apply_video_pre_dit(
+        condition_pre, current_blocks[:, None].expand(-1, num_future_frames)
+    )
+    condition_valid = future_video_token_valid_mask(
+        inputs["image_is_pad"],
+        temporal_downsample_factor=int(model.vae.temporal_downsample_factor),
+        num_future_latent_frames=num_future_frames,
+        tokens_per_frame=int(condition_pre["meta"]["tokens_per_frame"]),
+        device=model.device,
+    )
+    if condition_valid is None:
+        condition_valid = torch.ones(
+            (batch, int(condition_pre["tokens"].shape[1])),
+            dtype=torch.bool,
+            device=model.device,
+        )
+    future_prefix_kv, future_prefix_valid = select_history("video")
+    future_prefix_kv, future_prefix_valid = append_prefix(
+        future_prefix_kv, future_prefix_valid, current_real_kv, current_real_valid
+    )
+    _, condition_kv = model.mot.prefill_expert_segment(
+        expert_name="video",
+        tokens=condition_pre["tokens"],
+        freqs=condition_pre["freqs"],
+        t_mod=condition_pre["t_mod"],
+        context_payload={
+            "context": condition_pre["context"],
+            "mask": condition_pre["context_mask"],
+        },
+        history_kv=future_prefix_kv,
+        history_valid_mask=future_prefix_valid,
+        max_layers=final_depth,
+        segment_valid_mask=condition_valid,
+    )
+
+    noise_action = torch.randn_like(action)
+    timestep_action = model.train_action_scheduler.sample_training_t(
+        batch, model.device, action.dtype
+    )
+    noisy_action = model.train_action_scheduler.add_noise(
+        action, noise_action, timestep_action
+    )
+    target_action = model.train_action_scheduler.training_target(
+        action, noise_action, timestep_action
+    )
+    action_pre_current = model.action_expert.pre_dit(
+        action_tokens=noisy_action,
+        timestep=timestep_action,
+        context=current_context,
+        context_mask=current_context_mask,
+        position_ids=torch.arange(action_horizon, device=model.device),
+    )
+    current_action_blocks = current_blocks[:, None].expand(-1, action_horizon)
+    current_action_abs = episode_steps[:, None] + torch.arange(
+        action_horizon, device=model.device
+    )[None, :]
+    action_pre_current = model.temporal_positions.apply_action_pre_dit(
+        action_pre_current, current_action_abs, current_action_blocks
+    )
+    action_prefix_kv, action_prefix_valid = select_history("action")
+    action_prefix_kv, action_prefix_valid = append_prefix(
+        action_prefix_kv, action_prefix_valid, current_real_kv, current_real_valid
+    )
+    action_prefix_kv, action_prefix_valid = append_prefix(
+        action_prefix_kv, action_prefix_valid, condition_kv, condition_valid
+    )
+    action_valid = (
+        None
+        if inputs["action_is_pad"] is None
+        else ~inputs["action_is_pad"].to(model.device)
+    )
+    action_hidden = model.mot.forward_action_with_history(
+        action_tokens=action_pre_current["tokens"],
+        action_freqs=action_pre_current["freqs"],
+        action_t_mod=action_pre_current["t_mod"],
+        action_context_payload={
+            "context": action_pre_current["context"],
+            "mask": action_pre_current["context_mask"],
+        },
+        history_kv=action_prefix_kv,
+        history_valid_mask=action_prefix_valid,
+        max_layers=final_depth,
+        exit_depths=training_depths,
+        action_valid_mask=action_valid,
+    )
+    if not isinstance(action_hidden, dict):
+        raise RuntimeError("PCH multi-exit ActionDiT did not return depth outputs")
+
+    noise_video = torch.randn_like(current_latents)
+    timestep_video = model.train_video_scheduler.sample_training_t(
+        batch, model.device, current_latents.dtype
+    )
+    noisy_video = model.train_video_scheduler.add_noise(
+        current_latents, noise_video, timestep_video
+    )
+    target_video = model.train_video_scheduler.training_target(
+        current_latents, noise_video, timestep_video
+    )
+    supervision_frame_t = timestep_video[:, None].expand(
+        -1, num_future_frames
+    )
+    supervision_pre = model.video_expert.pre_dit(
+        x=noisy_video[:, :, 1:],
+        timestep=timestep_video,
+        context=current_context,
+        context_mask=current_context_mask,
+        action=None,
+        fuse_vae_embedding_in_latents=inputs["fuse_vae_embedding_in_latents"],
+        frame_position_ids=torch.arange(
+            1, num_future_frames + 1, device=model.device, dtype=torch.long
+        ),
+        frame_timesteps=supervision_frame_t,
+    )
+    supervision_pre = model.temporal_positions.apply_video_pre_dit(
+        supervision_pre, current_blocks[:, None].expand(-1, num_future_frames)
+    )
+    supervision_valid = future_video_token_valid_mask(
+        inputs["image_is_pad"],
+        temporal_downsample_factor=int(model.vae.temporal_downsample_factor),
+        num_future_latent_frames=num_future_frames,
+        tokens_per_frame=int(supervision_pre["meta"]["tokens_per_frame"]),
+        device=model.device,
+    )
+    video_hidden, _ = model.mot.prefill_expert_segment(
+        expert_name="video",
+        tokens=supervision_pre["tokens"],
+        freqs=supervision_pre["freqs"],
+        t_mod=supervision_pre["t_mod"],
+        context_payload={
+            "context": supervision_pre["context"],
+            "mask": supervision_pre["context_mask"],
+        },
+        history_kv=future_prefix_kv,
+        history_valid_mask=future_prefix_valid,
+        max_layers=final_depth,
+        segment_valid_mask=supervision_valid,
+        exit_depths=training_depths,
+    )
+    if not isinstance(video_hidden, dict):
+        raise RuntimeError("PCH multi-exit VideoDiT did not return depth outputs")
+
+    losses: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    action_values_by_depth: dict[int, torch.Tensor] = {}
+    for depth in training_depths:
+        pred_action = _action_prediction_at_depth(
+            model,
+            depth=depth,
+            hidden=action_hidden[depth],
+            pre_state=action_pre_current,
+        )
+        action_token_loss = F.mse_loss(
+            pred_action.float(), target_action.float(), reduction="none"
+        ).mean(dim=2)
+        if action_valid is None:
+            action_per_sample = action_token_loss.mean(dim=1)
+        else:
+            valid = action_valid.to(action_token_loss.dtype)
+            action_per_sample = (
+                (action_token_loss * valid).sum(dim=1)
+                / valid.sum(dim=1).clamp_min(1)
+            )
+        action_per_sample = action_per_sample * model.train_action_scheduler.training_weight(
+            timestep_action
+        ).to(action_per_sample.device, dtype=action_per_sample.dtype)
+        action_values_by_depth[depth] = action_per_sample
+        loss_action = action_per_sample.mean()
+
+        pred_video = _video_prediction_at_depth(
+            model,
+            depth=depth,
+            hidden=video_hidden[depth],
+            pre_state=supervision_pre,
+        )
+        video_per_sample = model._compute_video_loss_per_sample(
+            pred_video,
+            target_video[:, :, 1:],
+            inputs["image_is_pad"],
+            include_initial_video_step=False,
+        )
+        video_per_sample = video_per_sample * model.train_video_scheduler.training_weight(
+            timestep_video
+        ).to(video_per_sample.device, dtype=video_per_sample.dtype)
+        loss_video = video_per_sample.mean()
+        losses[depth] = (
+            model.loss_lambda_video * loss_video
+            + model.loss_lambda_action * loss_action,
+            loss_video,
+            loss_action,
+        )
+
+    if training_depths == (final_depth,):
+        total = losses[final_depth][0]
+    else:
+        shallow = [
+            losses[depth][0] for depth in training_depths if depth != final_depth
+        ]
+        total = losses[final_depth][0] + torch.stack(shallow).mean()
+
+    metrics: dict[str, Any] = {}
+    metric_weights: dict[str, float] = {}
+    history_bins = {
+        "h0": history_counts == 0,
+        "h1_4": (history_counts >= 1) & (history_counts <= 4),
+        "h5_8": (history_counts >= 5) & (history_counts <= 8),
+        "h9_16": (history_counts >= 9) & (history_counts <= 16),
+        "h17_plus": history_counts >= 17,
+    }
+    condition_bins = {
+        "condition_clean": ~condition_noised,
+        "condition_noised": condition_noised,
+    }
+    for depth, (_, video_loss, action_loss) in losses.items():
+        metrics[f"loss_video_d{depth}"] = model.loss_lambda_video * float(
+            video_loss.detach()
+        )
+        metrics[f"loss_action_d{depth}"] = model.loss_lambda_action * float(
+            action_loss.detach()
+        )
+        action_values = action_values_by_depth[depth]
+        for bin_name, mask in {**history_bins, **condition_bins}.items():
+            name = f"loss_action_d{depth}_{bin_name}"
+            count = int(mask.sum().item())
+            metric_weights[name] = float(count)
+            metrics[name] = (
+                model.loss_lambda_action
+                * float(action_values[mask].mean().detach())
+                if count
+                else 0.0
+            )
+    metrics.update(
+        {
+            "history_blocks_mean": float(history_counts.float().mean().detach()),
+            "history_blocks_max": float(history_counts.max().detach()),
+            "history_h0_fraction": float((history_counts == 0).float().mean().detach()),
+            "episode_anchor_fraction": float(anchor_valid.float().mean().detach()),
+            "future_video_condition_noised_fraction": float(
+                condition_noised.float().mean().detach()
+            ),
+            "future_video_condition_noise_probability": float(
+                model.effective_future_video_condition_noise_probability()
+            ),
+            "future_video_condition_sigma_mean": float(
+                (
+                    condition_frame_t.float()
+                    / float(model.train_video_scheduler.num_train_timesteps)
+                ).mean().detach()
+            ),
+            "pch_valid_tokens": float(layout.key_valid_mask.sum().detach()),
+            "pch_packed_tokens": float(layout.packed_tokens * batch),
+        }
+    )
+    for name, weight in metric_weights.items():
+        metrics[f"__metric_weight__{name}"] = weight
+    return total, metrics
+
+
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
     """Full-gradient causal training with LingBot-style video conditioning.
 
@@ -1385,6 +1979,9 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     flow supervision uses another noisy target branch, so target noise cannot
     leak into the action while action gradients do train the condition branch.
     """
+
+    if model.history_training_mode == "packed_causal_history_bptt":
+        return _packed_causal_history_bptt_loss(model, sample, tiled=tiled)
 
     if int(model.video_expert.patch_size[0]) != 1:
         raise ValueError(
@@ -1779,7 +2376,7 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
             model,
             clean_future_latents,
         )
-        condition_noise_flags.append(condition_was_noised)
+        condition_noise_flags.append(bool(condition_was_noised[0]))
         condition_sigma_means.append(
             (
                 future_condition_frame_timesteps.float()

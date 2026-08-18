@@ -35,6 +35,7 @@ def create_leapbot(
     causal_mode: str = "interleaved",
     training_exit_depths=(30,),
     history_training_mode: str = "incremental_full_bptt",
+    packed_history_attention_backend: str = "dense",
     history_window_blocks: int = 8,
     history_vae_batch_chunk_size: int = 1,
     replan_steps: int = 10,
@@ -112,6 +113,7 @@ def create_leapbot(
         causal_mode=str(causal_mode),
         training_exit_depths=tuple(int(depth) for depth in training_exit_depths),
         history_training_mode=str(history_training_mode),
+        packed_history_attention_backend=str(packed_history_attention_backend),
         history_window_blocks=int(history_window_blocks),
         replan_steps=int(replan_steps),
         action_horizon=int(action_horizon),
@@ -135,9 +137,7 @@ def create_leapbot(
             f"{future_video_conditioning}"
         )
     resolved_history_vae_chunk = int(history_vae_batch_chunk_size)
-    if resolved_history_vae_chunk != 1:
-        raise ValueError(
-            "runtime-isomorphic training requires history_vae_batch_chunk_size=1"
-        )
+    if resolved_history_vae_chunk <= 0:
+        raise ValueError("history_vae_batch_chunk_size must be positive")
     model.history_vae_batch_chunk_size = resolved_history_vae_chunk
     return model

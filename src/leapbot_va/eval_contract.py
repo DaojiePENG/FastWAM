@@ -18,6 +18,7 @@ from leapbot_va.eval_fingerprint import normalize_json_value, sha256_file
 
 KV_RETENTION_SEMANTICS = "physical_kv_blocks_recursive_prefix"
 STRICT_REPLAY_SEMANTICS = "strict_replay_real_window_plus_optional_v0_anchor"
+PACKED_REPLAY_SEMANTICS = "packed_replay_fixed_window_plus_optional_v0_anchor"
 
 
 def _to_resolved_container(value: Any) -> Any:
@@ -205,16 +206,21 @@ def build_runtime_contract(
         raise ValueError("memory capacity/retention must be non-negative")
     if retained is not None and retained > episode_capacity:
         raise ValueError("retained_history_blocks cannot exceed max_history_blocks")
-    if history_storage_mode not in ("incremental_kv", "strict_replay", "disabled"):
+    if history_storage_mode not in (
+        "incremental_kv", "strict_replay", "packed_replay", "disabled"
+    ):
         raise ValueError(f"unsupported memory history_storage_mode: {history_storage_mode}")
-    if history_storage_mode == "strict_replay":
+    if history_storage_mode in ("strict_replay", "packed_replay"):
         if history_window_blocks <= 0 or history_window_blocks > episode_capacity:
             raise ValueError(
-                "strict replay history_window_blocks must be in "
-                "[1,max_history_blocks]"
+                "replay history_window_blocks must be in [1,max_history_blocks]"
             )
         effective_kv_retention_cap = history_window_blocks
-        retention_semantics = STRICT_REPLAY_SEMANTICS
+        retention_semantics = (
+            PACKED_REPLAY_SEMANTICS
+            if history_storage_mode == "packed_replay"
+            else STRICT_REPLAY_SEMANTICS
+        )
     else:
         effective_kv_retention_cap = (
             episode_capacity if retained is None else int(retained)
@@ -314,8 +320,15 @@ def build_runtime_contract(
             "retained_history_blocks": retained,
             "history_storage_mode": history_storage_mode,
             "history_window_blocks": history_window_blocks,
+            "packed_history_attention_backend": (
+                str(cfg.model.get("packed_history_attention_backend", "dense"))
+                if history_storage_mode == "packed_replay"
+                else None
+            ),
             "episode_anchor": (
-                "single_real_v0" if history_storage_mode == "strict_replay" else None
+                "single_real_v0"
+                if history_storage_mode in ("strict_replay", "packed_replay")
+                else None
             ),
             "retention_semantics": retention_semantics,
             "effective_kv_retention_cap": effective_kv_retention_cap,

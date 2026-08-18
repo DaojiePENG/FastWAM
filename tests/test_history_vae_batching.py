@@ -92,6 +92,43 @@ def test_history_vae_batches_only_valid_t1_frames_and_restores_bch_order():
     torch.testing.assert_close(latents, expected)
 
 
+def test_history_vae_chunk_one_and_four_are_semantically_identical():
+    history = _history_with_identifiers(batch=4, history=4)
+    valid = torch.tensor([
+        [True, True, True, True],
+        [False, True, True, True],
+        [False, False, True, True],
+        [False, False, False, True],
+    ])
+    outputs = []
+    call_batches = []
+    for chunk_size in (1, 4):
+        model = _FakeModel()
+        outputs.append(encode_independent_history_video_latents(
+            model,
+            history,
+            valid,
+            empty_latent_reference=torch.empty(4, 2, 1, 1, 1),
+            chunk_size=chunk_size,
+        ))
+        call_batches.append([call["shape"][0] for call in model.vae.calls])
+    torch.testing.assert_close(outputs[0], outputs[1])
+    assert call_batches == [[1] * 10, [4, 4, 2]]
+
+
+def test_pch_b4_w8_chunk_four_reduces_independent_vae_calls_to_ten():
+    model = _FakeModel()
+    history = _history_with_identifiers(batch=4, history=8)
+    valid = torch.ones(4, 8, dtype=torch.bool)
+    reference = torch.empty(4, 2, 1, 1, 1)
+    encode_independent_history_video_latents(model, history, valid, empty_latent_reference=reference, chunk_size=4)
+    anchor = _history_with_identifiers(batch=4, history=1)
+    encode_independent_history_video_latents(model, anchor, torch.ones(4, 1, dtype=torch.bool), empty_latent_reference=reference, chunk_size=4)
+    encode_independent_history_video_latents(model, anchor, torch.ones(4, 1, dtype=torch.bool), empty_latent_reference=reference, chunk_size=4)
+    assert len(model.vae.calls) == 10
+    assert all(call["shape"][2] == 1 for call in model.vae.calls)
+
+
 def test_history_vae_chunk_tail_is_bounded_and_keeps_t_equal_to_one():
     model = _FakeModel()
     history = _history_with_identifiers(batch=2, history=5)

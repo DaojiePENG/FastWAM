@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -9,6 +10,55 @@ from .wan_video_dit import flash_attention, modulate, rope_apply
 from fastwam.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+_COMPILED_FLEX_ATTENTION = None
+
+
+def _get_compiled_flex_attention():
+    """Return one process-wide compiled FlexAttention callable.
+
+    Calling the public ``flex_attention`` function eagerly makes PyTorch build
+    a temporary ``torch.compile`` wrapper on every invocation. PCH invokes
+    attention once per MoT layer, so a stable compiled callable avoids
+    retaining repeated compilation graphs and kernels across training steps.
+    """
+
+    global _COMPILED_FLEX_ATTENTION
+    if _COMPILED_FLEX_ATTENTION is None:
+        try:
+            from torch.nn.attention.flex_attention import flex_attention
+        except Exception as exc:  # pragma: no cover - depends on torch build
+            raise RuntimeError(
+                "PCH FlexAttention is unavailable; use "
+                "packed_history_attention_backend=dense for debugging"
+            ) from exc
+        try:
+            _COMPILED_FLEX_ATTENTION = torch.compile(
+                flex_attention,
+                dynamic=False,
+            )
+        except Exception as exc:  # pragma: no cover - depends on torch build
+            raise RuntimeError(
+                "PCH FlexAttention compilation failed; set "
+                "packed_history_attention_backend=dense to run the dense reference"
+            ) from exc
+    return _COMPILED_FLEX_ATTENTION
+
+
+@dataclass
+class PackedHistoryCache:
+    """Per-layer fixed-shape history K/V produced by one packed forward."""
+
+    video_kv: list[dict[str, torch.Tensor]]
+    action_kv: list[dict[str, torch.Tensor]]
+    video_valid_mask: torch.Tensor
+    action_valid_mask: torch.Tensor
+    layout: Any
+
+    @property
+    def num_layers(self) -> int:
+        return len(self.video_kv)
 
 
 class MoT(nn.Module):
@@ -79,15 +129,61 @@ class MoT(nn.Module):
         q_cat: torch.Tensor,
         k_cat: torch.Tensor,
         v_cat: torch.Tensor,
-        attention_mask: torch.Tensor,
+        attention_mask: Any,
         checkpoint_attention: Optional[bool] = None,
     ) -> torch.Tensor:
-        attn_mask = attention_mask.to(device=q_cat.device)
-        if attn_mask.dim() == 3:
-            attn_mask = attn_mask.unsqueeze(1)
+        if isinstance(attention_mask, torch.Tensor):
+            attn_mask = attention_mask.to(device=q_cat.device)
+            if attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
 
-        def _forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-            return flash_attention(q=q, k=k, v=v, num_heads=self.num_heads, ctx_mask=attn_mask)
+            def _forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+                return flash_attention(
+                    q=q, k=k, v=v, num_heads=self.num_heads, ctx_mask=attn_mask
+                )
+        else:
+            try:
+                from torch.nn.attention.flex_attention import BlockMask
+            except Exception as exc:
+                raise RuntimeError(
+                    "PCH FlexAttention is unavailable; use "
+                    "packed_history_attention_backend=dense for debugging"
+                ) from exc
+            if not isinstance(attention_mask, BlockMask):
+                raise TypeError(
+                    "attention_mask must be a dense Tensor or FlexAttention BlockMask"
+                )
+
+            def _forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+                batch, q_len, _ = q.shape
+                k_len = int(k.shape[1])
+                q_heads = q.view(
+                    batch, q_len, self.num_heads, self.attn_head_dim
+                ).transpose(1, 2)
+                k_heads = k.view(
+                    batch, k_len, self.num_heads, self.attn_head_dim
+                ).transpose(1, 2)
+                v_heads = v.view(
+                    batch, k_len, self.num_heads, self.attn_head_dim
+                ).transpose(1, 2)
+                try:
+                    output = _get_compiled_flex_attention()(
+                        q_heads, k_heads, v_heads, block_mask=attention_mask
+                    )
+                except Exception as exc:
+                    # Non-reentrant activation checkpointing intentionally uses
+                    # this private control-flow exception to stop recomputation
+                    # once all required tensors have been regenerated. It is
+                    # not a FlexAttention failure and must pass through intact.
+                    if exc.__class__.__name__ == "_StopRecomputationError":
+                        raise
+                    raise RuntimeError(
+                        "PCH FlexAttention execution failed; set "
+                        "packed_history_attention_backend=dense to run the dense reference"
+                    ) from exc
+                return output.transpose(1, 2).reshape(
+                    batch, q_len, self.num_heads * self.attn_head_dim
+                )
 
         should_checkpoint = (
             self.mot_checkpoint_mixed_attn
@@ -348,6 +444,139 @@ class MoT(nn.Module):
             kv_cache.append({"k": k, "v": v})
         return kv_cache
 
+    def prefill_packed_history(
+        self,
+        *,
+        video_tokens: torch.Tensor,
+        action_tokens: torch.Tensor,
+        video_freqs: torch.Tensor,
+        action_freqs: torch.Tensor,
+        video_t_mod: torch.Tensor,
+        action_t_mod: torch.Tensor,
+        video_context: Optional[dict],
+        action_context: Optional[dict],
+        layout: Any,
+        attention_mask: Any,
+        attention_backend: str,
+        max_layers: Optional[int] = None,
+        checkpoint_internal: bool = True,
+    ) -> PackedHistoryCache:
+        """Encode all fixed-padding history slots in one block-causal forward."""
+
+        if attention_backend not in {"dense", "flex"}:
+            raise ValueError("attention_backend must be dense or flex")
+        if attention_backend == "dense" and not isinstance(attention_mask, torch.Tensor):
+            raise TypeError("dense PCH requires a Tensor attention mask")
+        if max_layers is None:
+            max_layers = self.num_layers
+        max_layers = int(max_layers)
+        if max_layers <= 0 or max_layers > self.num_layers:
+            raise ValueError(
+                f"max_layers must be in [1,{self.num_layers}], got {max_layers}"
+            )
+        batch = int(video_tokens.shape[0])
+        if int(action_tokens.shape[0]) != batch:
+            raise ValueError("packed video/action batches must match")
+        expected_video = tuple(layout.video_key_valid_mask.shape)
+        expected_action = tuple(layout.action_key_valid_mask.shape)
+        if tuple(video_tokens.shape[:2]) != expected_video:
+            raise ValueError(
+                f"video tokens {tuple(video_tokens.shape[:2])} do not match layout {expected_video}"
+            )
+        if tuple(action_tokens.shape[:2]) != expected_action:
+            raise ValueError(
+                f"action tokens {tuple(action_tokens.shape[:2])} do not match layout {expected_action}"
+            )
+
+        tokens = {"video": video_tokens, "action": action_tokens}
+        freqs = {"video": video_freqs, "action": action_freqs}
+        t_mods = {"video": video_t_mod, "action": action_t_mod}
+        contexts = {"video": video_context, "action": action_context}
+        video_kv: list[dict[str, torch.Tensor]] = []
+        action_kv: list[dict[str, torch.Tensor]] = []
+
+        for layer_idx in range(max_layers):
+            q_chunks: list[torch.Tensor] = []
+            k_chunks: list[torch.Tensor] = []
+            v_chunks: list[torch.Tensor] = []
+            layer_state: dict[str, dict[str, Any]] = {}
+            for expert_name in ("video", "action"):
+                expert = self.mixtures[expert_name]
+                block = expert.blocks[layer_idx]
+                (
+                    q,
+                    k,
+                    v,
+                    residual_x,
+                    gate_msa,
+                    shift_mlp,
+                    scale_mlp,
+                    gate_mlp,
+                    use_gradient_checkpointing,
+                ) = self._build_expert_attention_io(
+                    expert=expert,
+                    block=block,
+                    x=tokens[expert_name],
+                    freqs=freqs[expert_name],
+                    t_mod=t_mods[expert_name],
+                )
+                q_chunks.append(q)
+                k_chunks.append(k)
+                v_chunks.append(v)
+                layer_state[expert_name] = {
+                    "block": block,
+                    "k": k,
+                    "v": v,
+                    "residual_x": residual_x,
+                    "gate_msa": gate_msa,
+                    "shift_mlp": shift_mlp,
+                    "scale_mlp": scale_mlp,
+                    "gate_mlp": gate_mlp,
+                    "checkpoint": use_gradient_checkpointing,
+                }
+
+            mixed = self._mixed_attention(
+                q_cat=torch.cat(q_chunks, dim=1),
+                k_cat=torch.cat(k_chunks, dim=1),
+                v_cat=torch.cat(v_chunks, dim=1),
+                attention_mask=attention_mask,
+                checkpoint_attention=None if checkpoint_internal else False,
+            )
+            split = int(video_tokens.shape[1])
+            mixed_chunks = {
+                "video": mixed[:, :split],
+                "action": mixed[:, split:],
+            }
+            for expert_name in ("video", "action"):
+                state = layer_state[expert_name]
+                tokens[expert_name] = self._apply_post_with_optional_checkpoint(
+                    block=state["block"],
+                    residual_x=state["residual_x"],
+                    gate_msa=state["gate_msa"],
+                    shift_mlp=state["shift_mlp"],
+                    scale_mlp=state["scale_mlp"],
+                    gate_mlp=state["gate_mlp"],
+                    use_gradient_checkpointing=(
+                        state["checkpoint"] and checkpoint_internal
+                    ),
+                    mixed_slice=mixed_chunks[expert_name],
+                    context_payload=contexts[expert_name],
+                )
+            video_kv.append(
+                {"k": layer_state["video"]["k"], "v": layer_state["video"]["v"]}
+            )
+            action_kv.append(
+                {"k": layer_state["action"]["k"], "v": layer_state["action"]["v"]}
+            )
+
+        return PackedHistoryCache(
+            video_kv=video_kv,
+            action_kv=action_kv,
+            video_valid_mask=layout.video_key_valid_mask,
+            action_valid_mask=layout.action_key_valid_mask,
+            layout=layout,
+        )
+
     def prefill_expert_segment(
         self,
         *,
@@ -357,6 +586,7 @@ class MoT(nn.Module):
         t_mod: torch.Tensor,
         context_payload: Optional[dict],
         history_kv: Optional[list[dict[str, torch.Tensor]]] = None,
+        history_valid_mask: Optional[torch.Tensor] = None,
         max_layers: Optional[int] = None,
         segment_attention_mask: Optional[torch.Tensor] = None,
         segment_valid_mask: Optional[torch.Tensor] = None,
@@ -388,6 +618,21 @@ class MoT(nn.Module):
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
             )
+        if history_valid_mask is not None:
+            if history_kv is None:
+                raise ValueError("history_valid_mask requires history_kv")
+            expected = (
+                int(tokens.shape[0]),
+                int(history_kv[0]["k"].shape[1]),
+            )
+            if history_valid_mask.dtype != torch.bool or tuple(
+                history_valid_mask.shape
+            ) != expected:
+                raise ValueError(
+                    "history_valid_mask must be bool [batch,history], "
+                    f"got {tuple(history_valid_mask.shape)} expected {expected}"
+                )
+            history_valid_mask = history_valid_mask.to(device=tokens.device)
         requested_exits: set[int] | None = None
         if exit_depths is not None:
             requested_exits = {int(depth) for depth in exit_depths}
@@ -460,7 +705,7 @@ class MoT(nn.Module):
                     (q.shape[1], q.shape[1]), dtype=torch.bool, device=q.device
                 )
             )
-            if segment_valid_mask is None:
+            if segment_valid_mask is None and history_valid_mask is None:
                 if history_kv is None:
                     attention_mask = current_mask
                 else:
@@ -471,7 +716,13 @@ class MoT(nn.Module):
                     )
                     attention_mask = torch.cat([history_mask, current_mask], dim=1)
             else:
-                query_valid = segment_valid_mask
+                query_valid = (
+                    segment_valid_mask
+                    if segment_valid_mask is not None
+                    else torch.ones(
+                        (q.shape[0], q.shape[1]), dtype=torch.bool, device=q.device
+                    )
+                )
                 current_mask = (
                     current_mask.unsqueeze(0)
                     & query_valid.unsqueeze(2)
@@ -484,10 +735,17 @@ class MoT(nn.Module):
                 if history_kv is None:
                     attention_mask = current_mask
                 else:
-                    history_mask = query_valid.unsqueeze(2).expand(
-                        -1,
-                        -1,
-                        k_all.shape[1] - q.shape[1],
+                    history_valid = (
+                        history_valid_mask
+                        if history_valid_mask is not None
+                        else torch.ones(
+                            (q.shape[0], k_all.shape[1] - q.shape[1]),
+                            dtype=torch.bool,
+                            device=q.device,
+                        )
+                    )
+                    history_mask = (
+                        query_valid.unsqueeze(2) & history_valid.unsqueeze(1)
                     )
                     attention_mask = torch.cat([history_mask, current_mask], dim=2)
             mixed = self._mixed_attention(
@@ -528,6 +786,7 @@ class MoT(nn.Module):
         action_t_mod: torch.Tensor,
         action_context_payload: Optional[dict],
         history_kv: list[dict[str, torch.Tensor]],
+        history_valid_mask: Optional[torch.Tensor] = None,
         max_layers: Optional[int] = None,
         exit_depths: Optional[Sequence[int]] = None,
         action_valid_mask: Optional[torch.Tensor] = None,
@@ -546,6 +805,19 @@ class MoT(nn.Module):
             raise ValueError(
                 f"history_kv contains {len(history_kv)} layers, expected at least {max_layers}"
             )
+        if history_valid_mask is not None:
+            expected = (
+                int(action_tokens.shape[0]),
+                int(history_kv[0]["k"].shape[1]),
+            )
+            if history_valid_mask.dtype != torch.bool or tuple(
+                history_valid_mask.shape
+            ) != expected:
+                raise ValueError(
+                    "history_valid_mask must be bool [batch,history], "
+                    f"got {tuple(history_valid_mask.shape)} expected {expected}"
+                )
+            history_valid_mask = history_valid_mask.to(device=action_tokens.device)
         if action_valid_mask is not None:
             expected = (int(action_tokens.shape[0]), int(action_tokens.shape[1]))
             if action_valid_mask.dtype != torch.bool or tuple(
@@ -594,7 +866,7 @@ class MoT(nn.Module):
             layer_history = history_kv[layer_idx]
             k_all = torch.cat([layer_history["k"], k_action], dim=1)
             v_all = torch.cat([layer_history["v"], v_action], dim=1)
-            if action_valid_mask is None:
+            if action_valid_mask is None and history_valid_mask is None:
                 attention_mask = torch.ones(
                     (q_action.shape[1], k_all.shape[1]),
                     dtype=torch.bool,
@@ -602,10 +874,25 @@ class MoT(nn.Module):
                 )
             else:
                 history_length = k_all.shape[1] - q_action.shape[1]
-                query_valid = action_valid_mask
-                history_mask = query_valid.unsqueeze(2).expand(
-                    -1, -1, history_length
+                query_valid = (
+                    action_valid_mask
+                    if action_valid_mask is not None
+                    else torch.ones(
+                        (q_action.shape[0], q_action.shape[1]),
+                        dtype=torch.bool,
+                        device=q_action.device,
+                    )
                 )
+                history_valid = (
+                    history_valid_mask
+                    if history_valid_mask is not None
+                    else torch.ones(
+                        (q_action.shape[0], history_length),
+                        dtype=torch.bool,
+                        device=q_action.device,
+                    )
+                )
+                history_mask = query_valid.unsqueeze(2) & history_valid.unsqueeze(1)
                 current_mask = (
                     query_valid.unsqueeze(2) & query_valid.unsqueeze(1)
                 )

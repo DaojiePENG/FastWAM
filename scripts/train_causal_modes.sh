@@ -9,10 +9,12 @@ set -euo pipefail
 # permits an effect audit between expensive stages; invoking the remaining modes
 # later with the same TRAIN_ROOT preserves identical per-mode run contracts.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
-ACCELERATE_BIN="${ACCELERATE_BIN:-$ROOT_DIR/.venv/bin/accelerate}"
+ROOT_DIR="${ROOT_DIR:-/home/sheng/workspace/leapbot-va}"
+PYTHON_BIN="${LEAPBOT_PYTHON:-$(command -v python 2>/dev/null || true)}"
+if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+    printf 'Python is unavailable; activate Conda/uv or set LEAPBOT_PYTHON.\n' >&2
+    exit 2
+fi
 SELECTED_LR="${LEARNING_RATE:-1.0e-4}"
 INITIAL_BLOCK_OVERSAMPLE="${INITIAL_BLOCK_OVERSAMPLE:-4}"
 DATASET_STATS="${DATASET_STATS:-$ROOT_DIR/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json}"
@@ -178,7 +180,6 @@ for mode in "${MODES[@]}"; do
     SEED="$SEED" \
     OUTPUT_DIR="$output_dir" \
     PYTHON_BIN="$PYTHON_BIN" \
-    ACCELERATE_BIN="$ACCELERATE_BIN" \
     RUN_NAME="causal-strict-window-v7-w${HISTORY_WINDOW_BLOCKS}-b20-ga1-d30-s${MAX_STEPS}-${mode//_/-}-bs160-cosine-lr${LR_TAG}-seed${SEED}" \
     WANDB_ENABLED="$WANDB_ENABLED" \
     WANDB_MODE="$WANDB_MODE" \

@@ -191,6 +191,7 @@ def test_aggregate_reports_latency_completion_and_per_task(tmp_path):
     assert row["peak_gpu_gib"] == 3
 
     task_row = pareto.aggregate_per_task([path])[0]
+    assert task_row["task_suite"] == "libero_10"
     assert task_row["task_id"] == 3
     assert task_row["success_rate"] == 0.5
     assert task_row["mean_completion_steps"] == 150
@@ -456,6 +457,32 @@ def test_validate_inputs_rejects_incomplete_or_unprofiled_results(tmp_path):
         assert "peak GPU metric missing" in message
     else:
         raise AssertionError("incomplete evaluation unexpectedly passed validation")
+
+
+def test_multi_suite_tasks_with_same_numeric_id_are_distinct(tmp_path):
+    paths = []
+    for suite in ("libero_10", "libero_goal"):
+        payload = _attach_fingerprint(
+            {
+                "task_suite": suite,
+                "task_id": 0,
+                "successes": 1,
+                "total_episodes": 1,
+                "completion_steps": [10],
+                "memory_metrics": [{}],
+                "memory_config": {"enabled": False},
+            }
+        )
+        path = tmp_path / f"{suite}_task0_results.json"
+        path.write_text(json.dumps(payload))
+        paths.append(path)
+
+    pareto.validate_inputs(paths, expected_tasks=2, expected_trials_per_task=1)
+    rows = pareto.aggregate_per_task(paths)
+    assert {(row["task_suite"], row["task_id"]) for row in rows} == {
+        ("libero_10", 0),
+        ("libero_goal", 0),
+    }
 
 
 def test_validate_inputs_requires_causal_latency_breakdown(tmp_path):
