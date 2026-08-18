@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING, Any, Iterable
 import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
+from leapbot_va.episode_memory import (
+    build_episode_prefix_states,
+    prediction_correction_loss,
+)
 
 from leapbot_va.memory import VALID_CAUSAL_MODES
 from leapbot_va.pch import (
@@ -1387,7 +1391,12 @@ def _packed_causal_history_bptt_loss(
     current_latents = inputs["input_latents"]
     action = inputs["action"]
     batch = int(current_latents.shape[0])
-    window = int(model.training_history_window_blocks)
+    episode_mode = model.history_training_mode == "episode_memory_scan_bptt"
+    window = (
+        int(sample["history_valid_blocks"].shape[1])
+        if episode_mode
+        else int(model.training_history_window_blocks)
+    )
     final_depth = int(model.mot.num_layers)
     training_depths = tuple(int(depth) for depth in model.training_exit_depths)
     if not training_depths or training_depths[-1] != final_depth:
@@ -1410,10 +1419,14 @@ def _packed_causal_history_bptt_loss(
     model.validate_temporal_contract(
         replan_steps=replan_steps, action_horizon=action_horizon
     )
-    full_episode_history = resolve_full_episode_history_batch(
-        sample.get("full_episode_history"),
-        batch_size=batch,
-        device=model.device,
+    full_episode_history = (
+        False
+        if episode_mode
+        else resolve_full_episode_history_batch(
+            sample.get("full_episode_history"),
+            batch_size=batch,
+            device=model.device,
+        )
     )
     history_counts = validate_packed_history_metadata(
         history_valid,
@@ -1434,11 +1447,12 @@ def _packed_causal_history_bptt_loss(
         (declared_window != window).any().item()
     ):
         raise ValueError("PCH dataset/model history_window_blocks mismatch")
-    expected_counts = torch.minimum(
-        current_blocks, torch.full_like(current_blocks, window)
-    )
-    if not torch.equal(history_counts, expected_counts):
-        raise ValueError("PCH requires the complete recent_window history suffix")
+    if not episode_mode:
+        expected_counts = torch.minimum(
+            current_blocks, torch.full_like(current_blocks, window)
+        )
+        if not torch.equal(history_counts, expected_counts):
+            raise ValueError("PCH requires the complete recent_window history suffix")
     slots = torch.arange(window, device=model.device)[None, :]
     expected_valid = slots >= (window - history_counts[:, None])
     if not torch.equal(history_valid, expected_valid):
@@ -1451,7 +1465,11 @@ def _packed_causal_history_bptt_loss(
     ).reshape(-1)
     if tuple(anchor_valid.shape) != (batch,):
         raise ValueError("episode_anchor_valid must be [B]")
-    expected_anchor = current_blocks > window
+    expected_anchor = (
+        torch.zeros_like(current_blocks, dtype=torch.bool)
+        if episode_mode
+        else current_blocks > window
+    )
     if not torch.equal(anchor_valid, expected_anchor):
         raise ValueError(
             "PCH must add V0 exactly when it is outside the recent window"
@@ -1463,6 +1481,28 @@ def _packed_causal_history_bptt_loss(
         raise ValueError("valid PCH anchors require video and proprio tensors")
     if model.proprio_encoder is None:
         raise ValueError("PCH requires proprio_encoder")
+    episode_state = sample.get("_episode_state")
+    if episode_mode:
+        if not isinstance(episode_state, torch.Tensor):
+            raise ValueError("episode-memory training sample is missing scanned H")
+        episode_state = episode_state.to(
+            device=model.device, dtype=model.torch_dtype
+        )
+
+    def memory_reader_kwargs(modality: str) -> dict[str, Any]:
+        if not episode_mode:
+            return {}
+        if modality == "video":
+            configured = model.episode_memory_config.video_reads
+            allowed = model.causal_mode == "interleaved" if configured is None else bool(configured)
+        else:
+            allowed = bool(model.episode_memory_config.action_reads)
+        if not allowed:
+            return {}
+        return {
+            "episode_state": episode_state,
+            "episode_memory_reader": model.episode_memory.reader,
+        }
 
     history_video = sample["history_video"].to(
         model.device, dtype=model.torch_dtype, non_blocking=True
@@ -1687,6 +1727,7 @@ def _packed_causal_history_bptt_loss(
             num_frames=1,
             device=model.device,
         ),
+        **memory_reader_kwargs("video"),
     )
     current_real_valid = torch.ones(
         (batch, int(current_real_pre["tokens"].shape[1])),
@@ -1746,6 +1787,7 @@ def _packed_causal_history_bptt_loss(
         history_valid_mask=future_prefix_valid,
         max_layers=final_depth,
         segment_valid_mask=condition_valid,
+        **memory_reader_kwargs("video"),
     )
 
     noise_action = torch.randn_like(action)
@@ -1797,6 +1839,7 @@ def _packed_causal_history_bptt_loss(
         max_layers=final_depth,
         exit_depths=training_depths,
         action_valid_mask=action_valid,
+        **memory_reader_kwargs("action"),
     )
     if not isinstance(action_hidden, dict):
         raise RuntimeError("PCH multi-exit ActionDiT did not return depth outputs")
@@ -1850,6 +1893,7 @@ def _packed_causal_history_bptt_loss(
         max_layers=final_depth,
         segment_valid_mask=supervision_valid,
         exit_depths=training_depths,
+        **memory_reader_kwargs("video"),
     )
     if not isinstance(video_hidden, dict):
         raise RuntimeError("PCH multi-exit VideoDiT did not return depth outputs")
@@ -1910,8 +1954,15 @@ def _packed_causal_history_bptt_loss(
             losses[depth][0] for depth in training_depths if depth != final_depth
         ]
         total = losses[final_depth][0] + torch.stack(shallow).mean()
+    episode_aux_loss = sample.get("_episode_memory_aux_loss")
+    if episode_aux_loss is not None:
+        if not isinstance(episode_aux_loss, torch.Tensor):
+            raise TypeError("_episode_memory_aux_loss must be a Tensor")
+        total = total + episode_aux_loss
 
     metrics: dict[str, Any] = {}
+    if episode_aux_loss is not None:
+        metrics["loss_episode_memory_aux"] = float(episode_aux_loss.detach())
     metric_weights: dict[str, float] = {}
     history_bins = {
         "h0": history_counts == 0,
@@ -1969,6 +2020,227 @@ def _packed_causal_history_bptt_loss(
     return total, metrics
 
 
+def _episode_memory_scan_bptt_loss(
+    model: "LeapBotVA", sample, tiled: bool = False
+):
+    """Build H with an exact prefix scan, then run the Q+PCH target loss."""
+
+    config = model.episode_memory_config
+    if not config.enabled:
+        raise RuntimeError("episode_memory_scan_bptt requires enabled episode memory")
+    if model.proprio_encoder is None:
+        raise ValueError("episode memory training requires proprio_encoder")
+
+    inputs = model.build_inputs(sample, tiled=tiled, append_proprio=False)
+    batch = int(inputs["input_latents"].shape[0])
+    source_valid = sample["history_valid_blocks"].to(
+        model.device, dtype=torch.bool
+    )
+    source_positions = sample["history_block_positions"].to(
+        model.device, dtype=torch.long
+    )
+    current_blocks = sample["current_block_position"].to(
+        model.device, dtype=torch.long
+    )
+    episode_steps = sample["episode_step"].to(model.device, dtype=torch.long)
+    replan_steps = int(sample["history_action"].shape[2])
+    if not resolve_full_episode_history_batch(
+        sample.get("full_episode_history"),
+        batch_size=batch,
+        device=model.device,
+    ):
+        raise ValueError("episode-memory scan requires a full episode prefix")
+    validate_packed_history_metadata(
+        source_valid,
+        source_positions,
+        current_blocks,
+        episode_steps,
+        replan_steps=replan_steps,
+        full_episode_history=True,
+    )
+
+    e = torch.clamp(current_blocks - config.window_blocks, min=0)
+    q = config.chunk_blocks * torch.div(
+        e, config.chunk_blocks, rounding_mode="floor"
+    )
+    chunk_counts = torch.div(q, config.chunk_blocks, rounding_mode="floor")
+    max_chunks = int(chunk_counts.max().item())
+    initial_state = model.episode_memory.initial_state(
+        batch, device=model.device, dtype=torch.float32
+    )
+    aux_loss = initial_state.sum() * 0.0
+
+    if max_chunks:
+        max_blocks = max_chunks * config.chunk_blocks
+        history_video = sample["history_video"].to(
+            model.device, dtype=model.torch_dtype, non_blocking=True
+        )
+        history_latents = encode_independent_history_video_latents(
+            model,
+            history_video,
+            source_valid,
+            empty_latent_reference=inputs["input_latents"][:, :, :1],
+            tiled=tiled,
+            chunk_size=int(model.history_vae_batch_chunk_size),
+        )
+        observations = history_latents[:, :, : max_blocks + 1]
+        base_context = inputs["context"]
+        base_context_mask = inputs["context_mask"]
+        with torch.no_grad():
+            video_pre = model.video_expert.pre_dit(
+                x=observations,
+                timestep=observations.new_zeros((batch,)),
+                context=base_context,
+                context_mask=base_context_mask,
+                action=None,
+                fuse_vae_embedding_in_latents=inputs[
+                    "fuse_vae_embedding_in_latents"
+                ],
+                frame_position_ids=torch.zeros(
+                    (batch, max_blocks + 1),
+                    dtype=torch.long,
+                    device=model.device,
+                ),
+                frame_timesteps=observations.new_zeros(
+                    (batch, max_blocks + 1)
+                ),
+            )
+            observation_ids = torch.arange(
+                max_blocks + 1, device=model.device
+            )[None].expand(batch, -1)
+            video_pre = model.temporal_positions.apply_video_pre_dit(
+                video_pre, observation_ids
+            )
+            tokens_per_frame = int(video_pre["meta"]["tokens_per_frame"])
+            clean_video_tokens = video_pre["tokens"].reshape(
+                batch,
+                max_blocks + 1,
+                tokens_per_frame,
+                int(video_pre["tokens"].shape[-1]),
+            ).detach()
+
+            history_actions = sample["history_action"][:, :max_blocks].to(
+                model.device, dtype=model.torch_dtype, non_blocking=True
+            )
+            action_dim = int(history_actions.shape[-1])
+            flat_actions = history_actions.reshape(
+                batch, max_blocks * replan_steps, action_dim
+            )
+            local_ids = torch.arange(
+                replan_steps, device=model.device
+            ).repeat(max_blocks)
+            action_pre = model.action_expert.pre_dit(
+                action_tokens=flat_actions,
+                timestep=flat_actions.new_zeros((batch,)),
+                context=base_context,
+                context_mask=base_context_mask,
+                position_ids=local_ids,
+                token_timesteps=flat_actions.new_zeros(
+                    (batch, max_blocks * replan_steps)
+                ),
+            )
+            action_blocks = torch.arange(
+                max_blocks, device=model.device
+            )[None, :, None].expand(batch, -1, replan_steps).reshape(
+                batch, -1
+            )
+            action_absolute = torch.arange(
+                max_blocks * replan_steps, device=model.device
+            )[None].expand(batch, -1)
+            action_pre = model.temporal_positions.apply_action_pre_dit(
+                action_pre, action_absolute, action_blocks
+            )
+            clean_action_tokens = action_pre["tokens"].reshape(
+                batch,
+                max_blocks,
+                replan_steps,
+                int(action_pre["tokens"].shape[-1]),
+            ).detach()
+
+        prefix_states, _, diagnostics = build_episode_prefix_states(
+            model.episode_memory.updater,
+            initial_state,
+            clean_video_tokens,
+            clean_action_tokens,
+        )
+        selected_state = initial_state.clone()
+        for row in range(batch):
+            count = int(chunk_counts[row].item())
+            if count:
+                selected_state[row] = prefix_states[row, count - 1]
+        chunk_input_states = torch.cat(
+            [initial_state[:, None], prefix_states[:, :-1]], dim=1
+        ).reshape(
+            batch * max_chunks, config.num_slots, config.state_dim
+        )
+        aux_loss = prediction_correction_loss(
+            diagnostics,
+            input_state=chunk_input_states,
+            prediction_weight=0.1,
+            correction_weight=0.1,
+        )
+    else:
+        selected_state = initial_state
+
+    exact_slots = config.window_blocks + config.chunk_blocks - 1
+    exact_sample = dict(sample)
+    source_video = sample["history_video"]
+    source_action = sample["history_action"]
+    source_proprio = sample["history_proprio"]
+    exact_video = source_video.new_zeros(
+        source_video.shape[0],
+        source_video.shape[1],
+        exact_slots,
+        *source_video.shape[3:],
+    )
+    exact_action = source_action.new_zeros(
+        source_action.shape[0], exact_slots, *source_action.shape[2:]
+    )
+    exact_proprio = source_proprio.new_zeros(
+        source_proprio.shape[0], exact_slots, *source_proprio.shape[2:]
+    )
+    exact_valid = torch.zeros(batch, exact_slots, dtype=torch.bool)
+    exact_positions = torch.full(
+        (batch, exact_slots), -1, dtype=torch.long
+    )
+    current_cpu = current_blocks.detach().cpu()
+    q_cpu = q.detach().cpu()
+    for row in range(batch):
+        stop = int(current_cpu[row].item())
+        start = int(q_cpu[row].item())
+        count = stop - start
+        if count > exact_slots:
+            raise RuntimeError("Q+PCH exceeded fixed W+C-1 capacity")
+        destination = slice(exact_slots - count, exact_slots)
+        exact_video[row, :, destination] = source_video[row, :, start:stop]
+        exact_action[row, destination] = source_action[row, start:stop]
+        exact_proprio[row, destination] = source_proprio[row, start:stop]
+        exact_valid[row, destination] = True
+        exact_positions[row, destination] = torch.arange(start, stop)
+    from leapbot_va.pch import encode_pch_slot_validity_metadata
+
+    exact_sample.update(
+        {
+            "history_video": exact_video,
+            "history_action": exact_action,
+            "history_proprio": exact_proprio,
+            "history_valid_blocks": exact_valid,
+            "history_block_positions": exact_positions,
+            "history_window_blocks": torch.full(
+                (batch,), exact_slots, dtype=torch.long
+            ),
+            "episode_anchor_valid": torch.zeros(batch, dtype=torch.bool),
+            "full_episode_history": torch.zeros(batch, dtype=torch.bool),
+            "pch_slot_validity": encode_pch_slot_validity_metadata(
+                exact_valid, torch.zeros(batch, dtype=torch.bool)
+            ),
+            "_episode_state": selected_state.to(dtype=model.torch_dtype),
+            "_episode_memory_aux_loss": aux_loss,
+        }
+    )
+    return _packed_causal_history_bptt_loss(
+        model, exact_sample, tiled=tiled
+    )
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
     """Full-gradient causal training with LingBot-style video conditioning.
 
@@ -1980,6 +2252,8 @@ def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False
     leak into the action while action gradients do train the condition branch.
     """
 
+    if model.history_training_mode == "episode_memory_scan_bptt":
+        return _episode_memory_scan_bptt_loss(model, sample, tiled=tiled)
     if model.history_training_mode == "packed_causal_history_bptt":
         return _packed_causal_history_bptt_loss(model, sample, tiled=tiled)
 

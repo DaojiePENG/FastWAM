@@ -1,0 +1,116 @@
+# @package _global_
+
+# Fixed-capacity episode memory training over a complete real interaction prefix.
+# H is built by affine prefix scan; the target reads H plus exact Q+PCH.
+defaults:
+  - override /data: libero_2cam
+  - override /model: leapbot
+  - _self_
+
+output_dir: null
+
+# Edit this block to select the training forward implementation.  Model and
+# launcher fields below consume it, so a profile change is recorded in config.
+training_forward:
+  profile: episode_memory
+  history_training_mode: episode_memory_scan_bptt
+  history_vae_batch_chunk_size: 8
+  packed_history_attention_backend: flex
+  batch_size: 1
+  output_prefix: episode_memory_joint_v1
+
+batch_size: ${training_forward.batch_size}
+num_workers: 16
+gradient_accumulation_steps: 1
+max_steps: 100000
+num_epochs: 100
+learning_rate: 1.0e-4
+# lr_scheduler_type: constant
+lr_scheduler_type: cosine
+log_every: 1
+save_every: 20000
+eval_every: 0
+seed: 42
+mixed_precision: bf16
+max_grad_norm: 1.0
+weight_decay: 1.0e-2
+resume: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
+
+data:
+  train:
+    _target_: leapbot_va.data.LeapRobotVideoDataset
+    dataset_dirs:
+      - ./data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_object_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_goal_no_noops_lerobot
+      - ./data/libero_mujoco3.3.2/libero_10_no_noops_lerobot
+    max_history_blocks: 70
+    min_history_blocks: 0
+    history_window_blocks: null
+    replan_steps: 10
+    history_seed: ${seed}
+    history_sampling_mode: full_prefix
+    use_episode_anchor: false
+    initial_block_oversample: 1
+    pretrained_norm_stats: ./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json
+    text_embedding_cache_dir: ./data/text_embeds_cache/libero
+
+model:
+  causal_mode: interleaved  
+  # causal_mode: action_aggregator
+  # causal_mode: vision_causal
+  history_training_mode: ${training_forward.history_training_mode}
+  packed_history_attention_backend: ${training_forward.packed_history_attention_backend}
+  history_window_blocks: 8
+  history_vae_batch_chunk_size: ${training_forward.history_vae_batch_chunk_size}
+  future_video_conditioning: lingbot_teacher_forced_v1
+  num_video_frames: 9
+  future_video_condition_noise_probability: 0.5
+  future_video_condition_min_u: 0.5
+  future_video_condition_max_u: 1.0
+  future_video_condition_clean_warmup_steps: 200
+  future_video_condition_noise_ramp_steps: 800
+  training_strategy: video_lora_action_full
+  episode_memory:
+    enabled: true
+    window_blocks: 8
+    chunk_blocks: 4
+    num_slots: 32
+    state_dim: 1024
+    group_dim: 16
+    updater_dim: 256
+    updater_heads: 8
+    reader_rank: 64
+    video_reads: null
+    action_reads: true
+  training_exit_depths: [30]
+  mot_checkpoint_mixed_attn: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+  video_lora:
+    enabled: true
+    rank: 16
+    alpha: 16.0
+    dropout: 0.0
+    learning_rate_multiplier: 1.0
+
+wandb:
+  enabled: true
+  workspace: pengdaojie-the-hong-kong-university-of-science-and-techn
+  project: leapbot-va
+  group: null
+  name: null
+  mode: offline
+
+launch:
+  accelerate_config: ./scripts/accelerate_configs/accelerate_zero2_ds.yaml
+  main_process_port: 29971
+  max_preflight_used_mib: 2048
+  output_prefix: ${training_forward.output_prefix}
+  allow_dirty: true
+  allow_cross_contract_resume: false
+  allow_existing_uncontracted: false
+  release_checkpoint: ./checkpoints/fastwam_release/libero_uncond_2cam224.pt
+  dataset_stats: ${data.train.pretrained_norm_stats}
+  text_embedding_cache: ${data.train.text_embedding_cache_dir}
+  vae_checkpoint: ./checkpoints/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth

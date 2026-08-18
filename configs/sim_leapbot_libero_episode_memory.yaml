@@ -1,0 +1,56 @@
+# @package _global_
+
+# Fixed-capacity episode-memory evaluation; the launcher supplies the checkpoint.
+# H is updated only by closed executed-action/real-observation chunks.
+defaults:
+  - sim_leapbot_libero
+  - _self_
+
+model:
+  causal_mode: interleaved
+  # causal_mode: vision_causal
+  # causal_mode: action_aggregator
+  history_training_mode: episode_memory_scan_bptt
+  episode_memory:
+    enabled: true
+    window_blocks: 8
+    chunk_blocks: 4
+    num_slots: 32
+    state_dim: 1024
+    group_dim: 16
+    updater_dim: 256
+    updater_heads: 8
+    reader_rank: 64
+    video_reads: null
+    action_reads: true
+  packed_history_attention_backend: flex
+  history_window_blocks: 8
+  history_vae_batch_chunk_size: 4
+
+EVALUATION:
+  task_suite_name: libero_10
+  num_trials: 10
+  output_dir: ./evaluate_results/episode_memory/${model.causal_mode}/${now:%Y%m%d_%H%M%S}
+  replan_steps: 10
+  action_horizon: 32
+  num_inference_steps: 10
+  save_rollout_video: false
+  merge_video_lora: true
+  dataset_stats_path: ./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json
+  memory:
+    enabled: true
+    exit_depth: 30
+    causal_mode: ${model.causal_mode}
+    max_history_blocks: 70
+    history_storage_mode: packed_replay
+    history_window_blocks: ${model.history_window_blocks}
+    retained_history_blocks: null
+
+MULTIRUN:
+  task_suite_names:
+    - libero_10
+    - libero_goal
+    - libero_spatial
+    - libero_object
+  num_gpus: 1
+  max_tasks_per_gpu: 3

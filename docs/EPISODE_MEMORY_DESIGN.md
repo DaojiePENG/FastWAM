@@ -217,3 +217,16 @@ scan 消除了原先 $H_0\rightarrow H_1\rightarrow\cdots$ 的顺序前向和顺
 ## 设计结论
 
 完整方案不是“PCH 加递归摘要”。PCH 和 Q 保存有界的精确闭环轨迹，负责局部控制和 chunk 交接；$H$ 保存固定容量的 episode world state。每个四-transition chunk 独立产生一个可组合的“动作推进—观测预测—真实残差校正”算子，训练用 associative prefix scan 并行恢复所有长期状态，推理用同一算子在线更新。复杂推理留在 VideoDiT/ActionDiT 的注意力读取路径，长期写入被刻意约束成稳定、可组合且具有明确世界状态校正含义的状态滤波器。
+
+## 当前实现
+
+实现位于 src/leapbot_va/episode_memory.py，并已接入 LeapMemoryState、LeapBot 推理事务、MoT 逐层 forward、checkpoint 和 causal-history training dispatch。训练配置为：
+
+    python scripts/train_leapbot_local.py --task libero_leapbot_episode_memory
+    python scripts/train_leapbot_local.py --task libero_leapbot_episode_memory_joint
+
+第一条只训练 episode memory；第二条联合训练 VideoDiT LoRA、ActionDiT 与 memory。评估入口为：
+
+    CKPT=/path/to/checkpoint.pt LEAPBOT_PYTHON=/home/myuser/miniconda3/envs/leapbot-va/bin/python bash scripts/evaluate_episode_memory_checkpoint.sh
+
+训练样本仍从 episode 起点提供完整真实前缀，但进入主 WAM forward 的精确历史只包含互斥的 $Q+PCH$，固定为最多 11 个 block；更早前缀只通过扫描得到的 32×1024 状态 $H$ 进入模型。历史 clean pre-DiT 特征停止梯度，updater、FP32 scan、learned-empty state 和逐层 reader 保持梯度。

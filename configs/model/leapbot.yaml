@@ -19,6 +19,19 @@ training_exit_depths: [30]
 history_training_mode: strict_replay_window_bptt
 packed_history_attention_backend: dense
 history_window_blocks: 8
+episode_memory:
+  enabled: false
+  window_blocks: 8
+  chunk_blocks: 4
+  num_slots: 32
+  state_dim: 1024
+  group_dim: 16
+  updater_dim: 256
+  updater_heads: 8
+  reader_rank: 64
+  # null follows the causal-mode default: only interleaved exposes H to VideoDiT.
+  video_reads: null
+  action_reads: true
 # Strict BF16 parity requires the same batch-one T=1 VAE call used at rollout.
 history_vae_batch_chunk_size: 1
 # These values define the learned local/absolute action clock and are persisted

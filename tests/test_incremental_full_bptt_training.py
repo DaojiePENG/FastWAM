@@ -9,6 +9,7 @@ from torch import nn
 from fastwam.models.wan22.action_dit import ActionDiT
 from fastwam.models.wan22.mot import MoT
 from fastwam.models.wan22.wan_video_dit import WanVideoDiT
+from leapbot_va.episode_memory import EpisodeMemoryConfig
 from leapbot_va.models.leapbot import LeapBotVA
 from leapbot_va.training import (
     _packed_causal_history_reference_loss,
@@ -1064,3 +1065,123 @@ def test_strict_window_accepts_only_right_aligned_recent_suffix_and_v0_anchor():
     broken["history_block_positions"] = torch.tensor([[0, 1, -1, -1]])
     with pytest.raises(ValueError, match="left padding"):
         model.training_loss(broken)
+
+def test_episode_memory_scan_training_step_backpropagates_through_h():
+    model = _model("interleaved")
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=8,
+        chunk_blocks=4,
+        num_slots=4,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=2,
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(2,),
+        history_training_mode="episode_memory_scan_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=8,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+        episode_memory_config=config,
+    )
+    sample = _sample((12,))
+    loss, metrics = model.training_loss(sample)
+    assert torch.isfinite(loss)
+    assert metrics["loss_episode_memory_aux"] >= 0
+    loss.backward()
+    updater_grad = sum(
+        float(parameter.grad.abs().sum())
+        for parameter in model.episode_memory.updater.parameters()
+        if parameter.grad is not None
+    )
+    assert updater_grad > 0
+    assert model.episode_memory.reader.gates["action"].grad is not None
+    assert model.episode_memory.reader.gates["action"].grad.abs().sum() > 0
+
+@pytest.mark.parametrize(
+    ("mode", "video_reads"),
+    [
+        ("interleaved", True),
+        ("vision_causal", False),
+        ("action_aggregator", False),
+    ],
+)
+def test_episode_memory_reader_routing_follows_causal_mode(mode, video_reads):
+    model = _model(mode)
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=8,
+        chunk_blocks=4,
+        num_slots=4,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=2,
+    )
+    model.configure_causal_training(
+        causal_mode=mode,
+        training_exit_depths=(2,),
+        history_training_mode="episode_memory_scan_bptt",
+        history_window_blocks=8,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+        episode_memory_config=config,
+    )
+    memory = type("ToyMemory", (), {})()
+    memory.episode_memory_config = config
+    memory.episode_state = model.episode_memory.initial_state(1)
+    assert bool(model._episode_memory_kwargs(memory, "video")) is video_reads
+    assert bool(model._episode_memory_kwargs(memory, "action")) is True
+
+def test_episode_memory_checkpoint_round_trip(tmp_path):
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=8,
+        chunk_blocks=4,
+        num_slots=4,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=2,
+    )
+
+    def configured_model():
+        instance = _model("interleaved")
+        instance.configure_causal_training(
+            causal_mode="interleaved",
+            training_exit_depths=(2,),
+            history_training_mode="episode_memory_scan_bptt",
+            history_window_blocks=8,
+            replan_steps=REPLAN_STEPS,
+            action_horizon=ACTION_HORIZON,
+            num_video_frames=ACTION_HORIZON + 1,
+            episode_memory_config=config,
+        )
+        return instance
+
+    source = configured_model()
+    with torch.no_grad():
+        source.episode_memory.empty_state.fill_(0.25)
+        source.episode_memory.reader.gates["action"][0] = 0.5
+    checkpoint_path = tmp_path / "episode-memory.pt"
+    source.save_checkpoint(checkpoint_path, step=7)
+
+    restored = configured_model()
+    restored.load_checkpoint(checkpoint_path)
+    torch.testing.assert_close(
+        restored.episode_memory.empty_state,
+        source.episode_memory.empty_state,
+    )
+    torch.testing.assert_close(
+        restored.episode_memory.reader.gates["action"],
+        source.episode_memory.reader.gates["action"],
+    )
