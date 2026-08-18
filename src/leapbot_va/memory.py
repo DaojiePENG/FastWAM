@@ -14,6 +14,8 @@ from typing import Iterable, Literal, Sequence
 
 import torch
 
+from leapbot_va.episode_memory import EpisodeMemoryConfig
+
 
 CausalMode = Literal["interleaved", "vision_causal", "action_aggregator"]
 Modality = Literal["video", "action"]
@@ -202,6 +204,53 @@ class ReplayBlock:
             executed_actions=self.executed_actions.detach(),
         )
 
+
+@dataclass(frozen=True)
+class ClosedReplayBlock:
+    """One real observation/executed-action/next-observation transition."""
+
+    start: ReplayBlock
+    next_observation_latents: torch.Tensor
+    next_context: torch.Tensor
+    next_context_mask: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if (
+            self.next_observation_latents.ndim != 5
+            or self.next_observation_latents.shape[0] != 1
+            or self.next_observation_latents.shape[2] != 1
+        ):
+            raise ValueError("next observation latents must be [1,C,1,H,W]")
+        if self.next_context.ndim != 3 or self.next_context.shape[0] != 1:
+            raise ValueError("next context must be [1,L,D]")
+        if self.next_context_mask.shape != self.next_context.shape[:2]:
+            raise ValueError("next context mask must match next context")
+        if self.next_context_mask.dtype != torch.bool:
+            raise ValueError("next context mask must be boolean")
+
+    @property
+    def block_index(self) -> int:
+        return self.start.block_index
+
+    @property
+    def nbytes(self) -> int:
+        return self.start.nbytes + sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (
+                self.next_observation_latents,
+                self.next_context,
+                self.next_context_mask,
+            )
+        )
+
+    def detached(self) -> "ClosedReplayBlock":
+        return ClosedReplayBlock(
+            start=self.start.detached(),
+            next_observation_latents=self.next_observation_latents.detach(),
+            next_context=self.next_context.detach(),
+            next_context_mask=self.next_context_mask.detach(),
+        )
+
 @dataclass
 class MemorySnapshot:
     # Keep references to the immutable/detached segments rather than only a
@@ -220,6 +269,9 @@ class MemorySnapshot:
     pending_observation_latents: torch.Tensor | None
     pending_replay_context: torch.Tensor | None
     pending_replay_context_mask: torch.Tensor | None
+    episode_state: torch.Tensor | None
+    pch_closed_blocks: tuple[ClosedReplayBlock, ...]
+    handoff_blocks: tuple[ClosedReplayBlock, ...]
 
 
 @dataclass
@@ -243,6 +295,28 @@ class LeapMemoryState:
     pending_replay_context_mask: torch.Tensor | None = field(
         default=None, repr=False
     )
+    episode_memory_config: EpisodeMemoryConfig = field(
+        default_factory=EpisodeMemoryConfig
+    )
+    episode_state: torch.Tensor | None = field(default=None, repr=False)
+    initial_episode_state: torch.Tensor | None = field(default=None, repr=False)
+    pch_closed_blocks: list[ClosedReplayBlock] = field(default_factory=list, repr=False)
+    handoff_blocks: list[ClosedReplayBlock] = field(default_factory=list, repr=False)
+
+    def __post_init__(self) -> None:
+        episode = self.episode_memory_config
+        if episode.enabled:
+            if self.config.history_storage_mode != "packed_replay":
+                raise ValueError("episode memory requires packed_replay history storage")
+            if self.config.history_window_blocks != episode.window_blocks:
+                raise ValueError("PCH window and episode-memory window must match")
+            if self.episode_state is None or self.initial_episode_state is None:
+                raise ValueError("enabled episode memory requires initial and current H")
+            expected = (1, episode.num_slots, episode.state_dim)
+            if tuple(self.episode_state.shape) != expected:
+                raise ValueError(f"episode state must have shape {expected}")
+            if tuple(self.initial_episode_state.shape) != expected:
+                raise ValueError(f"initial episode state must have shape {expected}")
 
     def snapshot(self) -> MemorySnapshot:
         return MemorySnapshot(
@@ -258,6 +332,9 @@ class LeapMemoryState:
             pending_observation_latents=self.pending_observation_latents,
             pending_replay_context=self.pending_replay_context,
             pending_replay_context_mask=self.pending_replay_context_mask,
+            episode_state=self.episode_state,
+            pch_closed_blocks=tuple(self.pch_closed_blocks),
+            handoff_blocks=tuple(self.handoff_blocks),
         )
 
     def rollback(self, snapshot: MemorySnapshot) -> None:
@@ -273,6 +350,9 @@ class LeapMemoryState:
         self.pending_observation_latents = snapshot.pending_observation_latents
         self.pending_replay_context = snapshot.pending_replay_context
         self.pending_replay_context_mask = snapshot.pending_replay_context_mask
+        self.episode_state = snapshot.episode_state
+        self.pch_closed_blocks[:] = snapshot.pch_closed_blocks
+        self.handoff_blocks[:] = snapshot.handoff_blocks
 
     def bind_prompt(self, fingerprint: str) -> None:
         if self.prompt_fingerprint is None:
@@ -297,7 +377,10 @@ class LeapMemoryState:
                 "episode action positions diverged from fixed replanning boundaries; "
                 "reset memory before continuing"
             )
-        if self.completed_blocks >= self.config.max_history_blocks:
+        if (
+            not self.episode_memory_config.enabled
+            and self.completed_blocks >= self.config.max_history_blocks
+        ):
             raise RuntimeError(
                 "episode KV capacity exceeded: "
                 f"{self.completed_blocks}/{self.config.max_history_blocks} blocks"
@@ -355,6 +438,11 @@ class LeapMemoryState:
         if self.config.history_storage_mode not in ("strict_replay", "packed_replay"):
             return ()
         recent = tuple(self.replay_blocks[-self.config.history_window_blocks :])
+        if self.episode_memory_config.enabled:
+            return (
+                *(closed.start for closed in self.handoff_blocks),
+                *recent,
+            )
         if self.episode_anchor is not None and recent and recent[0].block_index > 0:
             return (self.episode_anchor, *recent)
         return recent
@@ -399,13 +487,84 @@ class LeapMemoryState:
             context_mask=self.pending_replay_context_mask,
             executed_actions=executed_actions.detach(),
         ).detached()
-        if block_index == 0 and self.episode_anchor is None:
+        if (
+            not self.episode_memory_config.enabled
+            and block_index == 0
+            and self.episode_anchor is None
+        ):
             self.episode_anchor = block
         self.replay_blocks.append(block)
-        del self.replay_blocks[: -self.config.history_window_blocks]
+        if not self.episode_memory_config.enabled:
+            del self.replay_blocks[: -self.config.history_window_blocks]
         self.pending_observation_latents = None
         self.pending_replay_context = None
         self.pending_replay_context_mask = None
+    def close_previous_transition(
+        self,
+        *,
+        next_observation_latents: torch.Tensor,
+        next_context: torch.Tensor,
+        next_context_mask: torch.Tensor,
+    ) -> tuple[ClosedReplayBlock, ...] | None:
+        """Close the previous real transition and move only exited PCH into Q."""
+
+        if not self.episode_memory_config.enabled or self.completed_blocks == 0:
+            return None
+        if self.phase is not MemoryPhase.EXPECT_OBSERVATION:
+            raise RuntimeError("transition closure requires a committed action block")
+        previous_index = self.completed_blocks - 1
+        if not self.replay_blocks or self.replay_blocks[-1].block_index != previous_index:
+            raise RuntimeError("the previous executed block is unavailable for closure")
+        if self.pch_closed_blocks and self.pch_closed_blocks[-1].block_index >= previous_index:
+            raise RuntimeError("the previous transition was already closed")
+        closed = ClosedReplayBlock(
+            start=self.replay_blocks[-1],
+            next_observation_latents=next_observation_latents,
+            next_context=next_context,
+            next_context_mask=next_context_mask,
+        ).detached()
+        self.pch_closed_blocks.append(closed)
+
+        window = self.episode_memory_config.window_blocks
+        if len(self.replay_blocks) > window:
+            exiting = self.replay_blocks.pop(0)
+            if (
+                not self.pch_closed_blocks
+                or self.pch_closed_blocks[0].block_index != exiting.block_index
+            ):
+                raise RuntimeError("PCH closure order diverged from replay order")
+            self.handoff_blocks.append(self.pch_closed_blocks.pop(0))
+        if len(self.replay_blocks) > window:
+            raise RuntimeError("PCH exceeded its fixed window")
+        chunk = self.episode_memory_config.chunk_blocks
+        if len(self.handoff_blocks) > chunk:
+            raise RuntimeError("handoff buffer exceeded one atomic chunk")
+        return tuple(self.handoff_blocks) if len(self.handoff_blocks) == chunk else None
+
+    def commit_handoff(self, new_episode_state: torch.Tensor) -> None:
+        if not self.episode_memory_config.enabled:
+            raise RuntimeError("commit_handoff requires enabled episode memory")
+        if len(self.handoff_blocks) != self.episode_memory_config.chunk_blocks:
+            raise RuntimeError("handoff can commit only one complete chunk")
+        if self.episode_state is None or new_episode_state.shape != self.episode_state.shape:
+            raise ValueError("new episode state has incompatible shape")
+        first = self.handoff_blocks[0].block_index
+        expected = list(range(first, first + self.episode_memory_config.chunk_blocks))
+        if [block.block_index for block in self.handoff_blocks] != expected:
+            raise RuntimeError("handoff chunk is not contiguous")
+        self.episode_state = new_episode_state.detach()
+        self.handoff_blocks.clear()
+
+    @property
+    def episode_partition(self) -> dict[str, tuple[int, int]]:
+        """Return half-open H/Q/PCH block ranges at the current decision."""
+
+        t = self.completed_blocks
+        w = self.episode_memory_config.window_blocks
+        c = self.episode_memory_config.chunk_blocks
+        e = max(0, t - w)
+        q = c * (e // c)
+        return {"H": (0, q), "Q": (q, e), "PCH": (e, t)}
 
     def commit_packed_replay_actions(self, executed_actions: torch.Tensor) -> None:
         """Commit real actions without an ActionDiT prefill in packed replay mode."""
@@ -550,7 +709,14 @@ class LeapMemoryState:
         unique = {id(block): block for block in self.replay_blocks}
         if self.episode_anchor is not None:
             unique[id(self.episode_anchor)] = self.episode_anchor
-        return sum(block.nbytes for block in unique.values())
+        replay = sum(block.nbytes for block in unique.values())
+        handoff = sum(block.nbytes for block in self.handoff_blocks)
+        state = (
+            0
+            if self.episode_state is None
+            else self.episode_state.numel() * self.episode_state.element_size()
+        )
+        return replay + handoff + state
 
     @property
     def token_counts(self) -> dict[str, int]:
@@ -592,6 +758,13 @@ class LeapMemoryState:
         self.pending_observation_latents = None
         self.pending_replay_context = None
         self.pending_replay_context_mask = None
+        self.pch_closed_blocks.clear()
+        self.handoff_blocks.clear()
+        self.episode_state = (
+            None
+            if self.initial_episode_state is None
+            else self.initial_episode_state.detach().clone()
+        )
 
 
 def build_block_causal_mask(

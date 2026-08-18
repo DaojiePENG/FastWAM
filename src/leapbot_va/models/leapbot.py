@@ -36,6 +36,10 @@ from leapbot_va.pch import (
     build_pch_context_masks,
     build_pch_validity_signature,
 )
+from leapbot_va.episode_memory import (
+    EpisodeMemoryConfig,
+    EpisodeMemoryModule,
+)
 
 
 class LeapBotVA(FastWAM):
@@ -118,6 +122,15 @@ class LeapBotVA(FastWAM):
         self.history_segment_activation_checkpointing = bool(
             self.mot.mot_checkpoint_mixed_attn
         )
+        self.episode_memory_config = EpisodeMemoryConfig()
+        self.episode_memory = EpisodeMemoryModule(
+            self.episode_memory_config,
+            video_dim=int(self.video_expert.hidden_dim),
+            action_dim=int(self.action_expert.hidden_dim),
+            attention_dim=int(self.mot.num_heads * self.mot.attn_head_dim),
+            num_heads=int(self.mot.num_heads),
+            num_layers=num_layers,
+        ).to(device=self.device, dtype=self.torch_dtype)
 
     def configure_finetuning(
         self,
@@ -125,7 +138,11 @@ class LeapBotVA(FastWAM):
         training_strategy: str = "full_dit",
         video_lora_config: VideoLoRAConfig | None = None,
     ) -> None:
-        valid_strategies = {"full_dit", "video_lora_action_full"}
+        valid_strategies = {
+            "full_dit",
+            "episode_memory_only",
+            "video_lora_action_full",
+        }
         if training_strategy not in valid_strategies:
             raise ValueError(
                 f"training_strategy must be one of {sorted(valid_strategies)}, "
@@ -150,11 +167,18 @@ class LeapBotVA(FastWAM):
         return len(merged)
 
     def configure_trainable_parameters(self) -> None:
-        """Select full-DiT or video-LoRA/action-full trainable parameters."""
+        """Select full-DiT, memory-only, or video-LoRA/action-full parameters."""
+        if self.training_strategy == "episode_memory_only":
+            self.requires_grad_(False)
+            self.episode_memory.train()
+            self.episode_memory.requires_grad_(True)
+            return
         self.mot.train()
         self.temporal_positions.train()
         self.temporal_positions.requires_grad_(True)
-        if self.training_strategy == "full_dit":
+        self.episode_memory.train()
+        self.episode_memory.requires_grad_(self.episode_memory_config.enabled)
+        if self.training_strategy in {"full_dit", "episode_memory_only"}:
             self.mot.requires_grad_(True)
             return
         self.action_expert.requires_grad_(True)
@@ -171,7 +195,7 @@ class LeapBotVA(FastWAM):
         weight_decay: float,
     ) -> list[dict]:
         trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
-        if self.training_strategy == "full_dit":
+        if self.training_strategy in {"full_dit", "episode_memory_only"}:
             return [
                 {
                     "params": trainable,
@@ -217,6 +241,7 @@ class LeapBotVA(FastWAM):
         future_video_condition_clean_warmup_steps: int = 0,
         future_video_condition_noise_ramp_steps: int = 0,
         future_video_denoise_steps: int = -1,
+        episode_memory_config: EpisodeMemoryConfig | None = None,
     ) -> None:
         if causal_mode not in VALID_CAUSAL_MODES:
             raise ValueError(f"unsupported causal mode: {causal_mode}")
@@ -233,6 +258,7 @@ class LeapBotVA(FastWAM):
             "incremental_full_bptt",
             "strict_replay_window_bptt",
             "packed_causal_history_bptt",
+            "episode_memory_scan_bptt",
         }
         if history_training_mode not in valid_history_modes:
             if history_training_mode in {
@@ -258,6 +284,23 @@ class LeapBotVA(FastWAM):
         if resolved_history_window <= 0:
             raise ValueError("history_window_blocks must be positive")
         self.training_history_window_blocks = resolved_history_window
+        resolved_episode = episode_memory_config or EpisodeMemoryConfig()
+        if resolved_episode.enabled:
+            if history_training_mode != "episode_memory_scan_bptt":
+                raise ValueError("enabled episode memory requires episode_memory_scan_bptt")
+            if resolved_history_window != resolved_episode.window_blocks:
+                raise ValueError("history_window_blocks must match episode memory W")
+        elif history_training_mode == "episode_memory_scan_bptt":
+            raise ValueError("episode_memory_scan_bptt requires enabled episode memory")
+        self.episode_memory_config = resolved_episode
+        self.episode_memory = EpisodeMemoryModule(
+            resolved_episode,
+            video_dim=int(self.video_expert.hidden_dim),
+            action_dim=int(self.action_expert.hidden_dim),
+            attention_dim=int(self.mot.num_heads * self.mot.attn_head_dim),
+            num_heads=int(self.mot.num_heads),
+            num_layers=int(self.mot.num_layers),
+        ).to(device=self.device, dtype=self.torch_dtype)
         noise_probability = float(future_video_condition_noise_probability)
         min_u = float(future_video_condition_min_u)
         max_u = float(future_video_condition_max_u)
@@ -413,7 +456,10 @@ class LeapBotVA(FastWAM):
             replan_steps=resolved_replan_steps,
             action_horizon=resolved_action_horizon,
         )
-        if self.history_training_mode == "packed_causal_history_bptt":
+        if self.history_training_mode == "episode_memory_scan_bptt":
+            expected_storage_mode = "packed_replay"
+            allowed_storage_modes = {"packed_replay"}
+        elif self.history_training_mode == "packed_causal_history_bptt":
             expected_storage_mode = "packed_replay"
             allowed_storage_modes = {"packed_replay", "strict_replay"}
         elif self.history_training_mode == "strict_replay_window_bptt":
@@ -456,7 +502,22 @@ class LeapBotVA(FastWAM):
                 history_window_blocks=resolved_history_window,
                 action_horizon=resolved_action_horizon,
                 replan_steps=resolved_replan_steps,
-            )
+            ),
+            episode_memory_config=self.episode_memory_config,
+            episode_state=(
+                self.episode_memory.initial_state(
+                    1, device=self.device, dtype=self.torch_dtype
+                ).detach()
+                if self.episode_memory_config.enabled
+                else None
+            ),
+            initial_episode_state=(
+                self.episode_memory.initial_state(
+                    1, device=self.device, dtype=self.torch_dtype
+                ).detach()
+                if self.episode_memory_config.enabled
+                else None
+            ),
         )
 
     @staticmethod
@@ -480,6 +541,10 @@ class LeapBotVA(FastWAM):
                 f"memory={memory.config.causal_mode} model={self.causal_mode}; "
                 "reset and create memory from this model"
             )
+        if memory.episode_memory_config != self.episode_memory_config:
+            raise ValueError(
+                "memory/model episode-memory configuration mismatch"
+            )
         self.validate_temporal_contract(
             replan_steps=memory.config.replan_steps,
             action_horizon=memory.config.action_horizon,
@@ -490,7 +555,10 @@ class LeapBotVA(FastWAM):
                     "memory replay window differs from checkpoint training W"
                 )
         if (
-            self.history_training_mode == "packed_causal_history_bptt"
+            self.history_training_mode in {
+                "packed_causal_history_bptt",
+                "episode_memory_scan_bptt",
+            }
             and memory.config.history_storage_mode == "incremental_kv"
         ):
             raise ValueError("PCH checkpoints do not support unbounded incremental_kv")
@@ -732,6 +800,100 @@ class LeapBotVA(FastWAM):
             pred_tokens, pre_state["meta"]["grid_size"]
         )
 
+    def _episode_memory_kwargs(
+        self, memory: LeapMemoryState, modality: str
+    ) -> dict[str, Any]:
+        config = memory.episode_memory_config
+        if not config.enabled or memory.episode_state is None:
+            return {}
+        if modality == "video":
+            allowed = (
+                self.causal_mode == "interleaved"
+                if config.video_reads is None
+                else bool(config.video_reads)
+            )
+        elif modality == "action":
+            allowed = bool(config.action_reads)
+        else:
+            raise ValueError(f"unsupported episode-memory modality: {modality}")
+        if not allowed:
+            return {}
+        return {
+            "episode_state": memory.episode_state,
+            "episode_memory_reader": self.episode_memory.reader,
+        }
+
+    def _update_episode_memory(
+        self,
+        memory: LeapMemoryState,
+        chunk,
+    ) -> None:
+        """Apply one closed C-transition operator and atomically clear Q."""
+
+        if not memory.episode_memory_config.enabled:
+            return
+        if memory.episode_state is None:
+            raise RuntimeError("enabled episode memory has no H")
+        expected = memory.episode_memory_config.chunk_blocks
+        if len(chunk) != expected:
+            raise ValueError(f"episode-memory update requires {expected} transitions")
+        first = chunk[0].block_index
+        if [item.block_index for item in chunk] != list(range(first, first + expected)):
+            raise RuntimeError("episode-memory chunk must be contiguous")
+
+        observation_records = [
+            (
+                item.start.observation_latents,
+                item.start.context,
+                item.start.context_mask,
+                item.block_index,
+            )
+            for item in chunk
+        ]
+        last = chunk[-1]
+        observation_records.append(
+            (
+                last.next_observation_latents,
+                last.next_context,
+                last.next_context_mask,
+                last.block_index + 1,
+            )
+        )
+        video_tokens = []
+        for latents, context, mask, block_index in observation_records:
+            prepared = self._prepare_real_observation_pre_dit(
+                latents=latents.to(device=self.device, dtype=self.torch_dtype),
+                context=context.to(device=self.device, dtype=self.torch_dtype),
+                context_mask=mask.to(device=self.device, dtype=torch.bool),
+                block_index=block_index,
+            )
+            video_tokens.append(prepared["tokens"])
+        action_tokens = []
+        for item in chunk:
+            actions = item.start.executed_actions.to(
+                device=self.device, dtype=self.torch_dtype
+            )
+            prepared = self._prepare_action_segment_pre_dit(
+                actions=actions,
+                timestep=torch.zeros((1,), device=self.device, dtype=actions.dtype),
+                context=item.start.context.to(
+                    device=self.device, dtype=self.torch_dtype
+                ),
+                context_mask=item.start.context_mask.to(
+                    device=self.device, dtype=torch.bool
+                ),
+                absolute_start=item.block_index * memory.config.replan_steps,
+                block_index=item.block_index,
+            )
+            action_tokens.append(prepared["tokens"])
+        update, _ = self.episode_memory.updater(
+            torch.stack(video_tokens, dim=1),
+            torch.stack(action_tokens, dim=1),
+        )
+        new_state = update.to(dtype=torch.float32).apply(
+            memory.episode_state.float()
+        ).to(dtype=memory.episode_state.dtype)
+        memory.commit_handoff(new_state)
     def _rebuild_packed_history(
         self, memory: LeapMemoryState
     ) -> dict[str, int]:
@@ -740,15 +902,24 @@ class LeapBotVA(FastWAM):
         records = memory.begin_packed_replay_rebuild()
         if not records:
             return {"segments": 0, "valid_blocks": 0, "packed_tokens": 0}
-        window = int(memory.config.history_window_blocks)
-        recent = list(memory.replay_blocks[-window:])
-        anchor = None
-        if (
-            memory.episode_anchor is not None
-            and recent
-            and recent[0].block_index > 0
-        ):
-            anchor = memory.episode_anchor
+        if memory.episode_memory_config.enabled:
+            window = int(
+                memory.episode_memory_config.window_blocks
+                + memory.episode_memory_config.chunk_blocks
+                - 1
+            )
+            recent = list(records)
+            anchor = None
+        else:
+            window = int(memory.config.history_window_blocks)
+            recent = list(memory.replay_blocks[-window:])
+            anchor = None
+            if (
+                memory.episode_anchor is not None
+                and recent
+                and recent[0].block_index > 0
+            ):
+                anchor = memory.episode_anchor
         reference = records[0]
         latent = reference.observation_latents.to(
             device=self.device, dtype=self.torch_dtype
@@ -1155,6 +1326,25 @@ class LeapBotVA(FastWAM):
             if profile and self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             timings["conditioning_s"] = time.perf_counter() - conditioning_start
+            observation_start = time.perf_counter()
+            input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
+            first_frame_latents = self._encode_input_image_latents_tensor(
+                input_image=input_image,
+                tiled=tiled,
+            )
+            handoff = memory.close_previous_transition(
+                next_observation_latents=first_frame_latents,
+                next_context=context,
+                next_context_mask=context_mask,
+            )
+            if handoff is not None:
+                self._update_episode_memory(memory, handoff)
+            if profile and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            if memory.episode_memory_config.enabled:
+                timings["episode_memory_update_s"] = (
+                    time.perf_counter() - observation_start
+                )
 
             replayed_segments = 0
             packed_history_valid_blocks = 0
@@ -1178,11 +1368,6 @@ class LeapBotVA(FastWAM):
                 )
 
             t0 = time.perf_counter()
-            input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
-            first_frame_latents = self._encode_input_image_latents_tensor(
-                input_image=input_image,
-                tiled=tiled,
-            )
             video_pre = self._prepare_real_observation_pre_dit(
                 latents=first_frame_latents,
                 context=context,
@@ -1201,6 +1386,7 @@ class LeapBotVA(FastWAM):
                 },
                 history_kv=video_history,
                 max_layers=memory.config.exit_depth,
+                **self._episode_memory_kwargs(memory, "video"),
             )
             del video_history
             video_seq_len = int(video_pre["tokens"].shape[1])
@@ -1340,6 +1526,7 @@ class LeapBotVA(FastWAM):
                     history_kv=future_history_kv,
                     max_layers=memory.config.exit_depth,
                     exit_depths=(memory.config.exit_depth,),
+                    **self._episode_memory_kwargs(memory, "video"),
                 )
                 if not isinstance(video_hidden_by_depth, dict):
                     raise RuntimeError("video denoising did not return depth output")
@@ -1391,6 +1578,7 @@ class LeapBotVA(FastWAM):
                 },
                 history_kv=future_history_kv,
                 max_layers=memory.config.exit_depth,
+                **self._episode_memory_kwargs(memory, "video"),
             )
             transient_future_cache_bytes = sum(
                 tensor.numel() * tensor.element_size()
@@ -1460,6 +1648,7 @@ class LeapBotVA(FastWAM):
                     },
                     history_kv=history_kv,
                     max_layers=memory.config.exit_depth,
+                    **self._episode_memory_kwargs(memory, "action"),
                 )
                 pred_action = self._action_head_at_depth(memory.config.exit_depth)(action_hidden)
                 latents_action = self.infer_action_scheduler.step(
@@ -1484,6 +1673,7 @@ class LeapBotVA(FastWAM):
                     "conditioning_s",
                     "history_replay_s",
                     "history_packed_rebuild_s",
+                    "episode_memory_update_s",
                     "observation_prefill_s",
                     "future_video_setup_s",
                     "future_video_denoise_s",
@@ -1511,6 +1701,12 @@ class LeapBotVA(FastWAM):
                 ),
                 "history_valid_blocks": packed_history_valid_blocks,
                 "history_packed_tokens": packed_history_tokens,
+                "episode_memory_enabled": memory.episode_memory_config.enabled,
+                "episode_partition": memory.episode_partition,
+                "handoff_blocks": len(memory.handoff_blocks),
+                "episode_state_tokens": (
+                    0 if memory.episode_state is None else int(memory.episode_state.shape[1])
+                ),
                 "transient_future_video_cache_bytes": transient_future_cache_bytes,
                 "token_counts": memory.token_counts,
                 "phase": memory.phase.value,
@@ -1648,6 +1844,8 @@ class LeapBotVA(FastWAM):
             "action_exit_heads": self.action_exit_heads.state_dict(),
             "video_exit_heads": self.video_exit_heads.state_dict(),
             "temporal_positions": self.temporal_positions.state_dict(),
+            "episode_memory": self.episode_memory.state_dict(),
+            "episode_memory_config": dict(self.episode_memory_config.__dict__),
             "temporal_position_scheme": TEMPORAL_POSITION_SCHEME,
             "exit_depths": self.exit_depths,
             "training_exit_depths": self.training_exit_depths,
@@ -1909,6 +2107,28 @@ class LeapBotVA(FastWAM):
                 "checkpoint/model history training mode mismatch: "
                 f"checkpoint={checkpoint_history_mode} model={self.history_training_mode}"
             )
+        checkpoint_episode_config = payload.get("episode_memory_config")
+        checkpoint_episode_state = payload.get("episode_memory")
+        if self.episode_memory_config.enabled and is_native_leapbot:
+            if checkpoint_episode_config is None or checkpoint_episode_state is None:
+                raise ValueError(
+                    "episode-memory checkpoint is missing config or module state"
+                )
+            normalized_episode_config = EpisodeMemoryConfig(
+                **dict(checkpoint_episode_config)
+            )
+            if normalized_episode_config != self.episode_memory_config:
+                raise ValueError(
+                    "checkpoint/model episode-memory configuration mismatch: "
+                    f"checkpoint={normalized_episode_config} "
+                    f"model={self.episode_memory_config}"
+                )
+        elif checkpoint_episode_config is not None and bool(
+            checkpoint_episode_config.get("enabled", False)
+        ):
+            raise ValueError(
+                "checkpoint enables episode memory but the configured model disables it"
+            )
         checkpoint_history_backend = payload.get(
             "training_packed_history_attention_backend"
         )
@@ -2101,6 +2321,13 @@ class LeapBotVA(FastWAM):
                 label="native LeapBot checkpoint temporal positions",
                 strict=True,
             )
+            if checkpoint_episode_state is not None:
+                self._validate_checkpoint_state_dict(
+                    self.episode_memory,
+                    checkpoint_episode_state,
+                    label="native LeapBot checkpoint episode memory",
+                    strict=True,
+                )
             if self.proprio_encoder is not None:
                 self._validate_checkpoint_state_dict(
                     self.proprio_encoder,
@@ -2176,6 +2403,10 @@ class LeapBotVA(FastWAM):
             # identity extension, even if this model instance was previously
             # used with trained temporal-position weights.
             self.temporal_positions.reset_parameters()
+        if checkpoint_episode_state is not None:
+            self.episode_memory.load_state_dict(
+                checkpoint_episode_state, strict=True
+            )
         if is_native_leapbot and has_trained_shallow_exits:
             self.action_exit_heads.load_state_dict(payload["action_exit_heads"], strict=True)
             self.video_exit_heads.load_state_dict(payload["video_exit_heads"], strict=True)

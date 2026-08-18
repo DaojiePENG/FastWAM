@@ -37,6 +37,7 @@ def create_leapbot(
     history_training_mode: str = "incremental_full_bptt",
     packed_history_attention_backend: str = "dense",
     history_window_blocks: int = 8,
+    episode_memory=None,
     history_vae_batch_chunk_size: int = 1,
     replan_steps: int = 10,
     action_horizon: int = 32,
@@ -61,6 +62,7 @@ def create_leapbot(
     action_scheduler = _as_dict(action_scheduler)
     loss = _as_dict(loss)
     video_lora = _as_dict(video_lora)
+    episode_memory = _as_dict(episode_memory)
     required = {"train_shift", "infer_shift", "num_train_timesteps"}
     missing = required - set(action_scheduler)
     if missing:
@@ -109,6 +111,21 @@ def create_leapbot(
             ),
         ),
     )
+    from .episode_memory import EpisodeMemoryConfig
+
+    resolved_episode_memory = EpisodeMemoryConfig(
+        enabled=bool(episode_memory.get("enabled", False)),
+        window_blocks=int(episode_memory.get("window_blocks", 8)),
+        chunk_blocks=int(episode_memory.get("chunk_blocks", 4)),
+        num_slots=int(episode_memory.get("num_slots", 32)),
+        state_dim=int(episode_memory.get("state_dim", 1024)),
+        group_dim=int(episode_memory.get("group_dim", 16)),
+        updater_dim=int(episode_memory.get("updater_dim", 256)),
+        updater_heads=int(episode_memory.get("updater_heads", 8)),
+        reader_rank=int(episode_memory.get("reader_rank", 64)),
+        video_reads=episode_memory.get("video_reads"),
+        action_reads=bool(episode_memory.get("action_reads", True)),
+    )
     model.configure_causal_training(
         causal_mode=str(causal_mode),
         training_exit_depths=tuple(int(depth) for depth in training_exit_depths),
@@ -130,6 +147,7 @@ def create_leapbot(
             future_video_condition_noise_ramp_steps
         ),
         future_video_denoise_steps=int(future_video_denoise_steps),
+        episode_memory_config=resolved_episode_memory,
     )
     if str(future_video_conditioning) != model.future_video_conditioning:
         raise ValueError(

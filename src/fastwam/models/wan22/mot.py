@@ -460,6 +460,8 @@ class MoT(nn.Module):
         attention_backend: str,
         max_layers: Optional[int] = None,
         checkpoint_internal: bool = True,
+        episode_state: Optional[torch.Tensor] = None,
+        episode_memory_reader: Optional[nn.Module] = None,
     ) -> PackedHistoryCache:
         """Encode all fixed-padding history slots in one block-causal forward."""
 
@@ -562,6 +564,10 @@ class MoT(nn.Module):
                     mixed_slice=mixed_chunks[expert_name],
                     context_payload=contexts[expert_name],
                 )
+                if episode_state is not None and episode_memory_reader is not None:
+                    tokens[expert_name] = tokens[expert_name] + episode_memory_reader(
+                        expert_name, layer_idx, tokens[expert_name], episode_state
+                    )
             video_kv.append(
                 {"k": layer_state["video"]["k"], "v": layer_state["video"]["v"]}
             )
@@ -592,6 +598,8 @@ class MoT(nn.Module):
         segment_valid_mask: Optional[torch.Tensor] = None,
         exit_depths: Optional[Sequence[int]] = None,
         checkpoint_internal: bool = True,
+        episode_state: Optional[torch.Tensor] = None,
+        episode_memory_reader: Optional[nn.Module] = None,
     ) -> tuple[
         torch.Tensor | dict[int, torch.Tensor],
         list[dict[str, torch.Tensor]],
@@ -770,6 +778,10 @@ class MoT(nn.Module):
                 mixed_slice=mixed,
                 context_payload=context_payload,
             )
+            if episode_state is not None and episode_memory_reader is not None:
+                x = x + episode_memory_reader(
+                    expert_name, layer_idx, x, episode_state
+                )
             segment_kv.append({"k": k, "v": v})
             depth = layer_idx + 1
             if requested_exits is not None and depth in requested_exits:
@@ -791,6 +803,8 @@ class MoT(nn.Module):
         exit_depths: Optional[Sequence[int]] = None,
         action_valid_mask: Optional[torch.Tensor] = None,
         checkpoint_internal: bool = True,
+        episode_state: Optional[torch.Tensor] = None,
+        episode_memory_reader: Optional[nn.Module] = None,
     ) -> torch.Tensor | dict[int, torch.Tensor]:
         """Denoise a transient action block against persistent mixed history."""
 
@@ -926,6 +940,10 @@ class MoT(nn.Module):
                 mixed_slice=mixed,
                 context_payload=action_context_payload,
             )
+            if episode_state is not None and episode_memory_reader is not None:
+                x = x + episode_memory_reader(
+                    "action", layer_idx, x, episode_state
+                )
             depth = layer_idx + 1
             if requested_exits is not None and depth in requested_exits:
                 exit_outputs[depth] = x
