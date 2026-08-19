@@ -149,6 +149,89 @@ def test_training_scan_and_online_left_fold_use_identical_chunk_operators():
 
 
 
+def test_chunk_updater_composes_transition_operators_chronologically():
+    torch.manual_seed(17)
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=4,
+        chunk_blocks=3,
+        num_slots=3,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=4,
+    )
+    updater = EpisodeChunkUpdater(config, video_dim=6, action_dim=5)
+    video = torch.randn(2, 4, 3, 6)
+    action = torch.randn(2, 3, 2, 5)
+
+    chunk_update, diagnostics = updater(video, action)
+    assert diagnostics.transition_matrix.shape[:2] == (2, 3)
+    assert diagnostics.prediction_diagonal.shape[:2] == (2, 3)
+
+    manual = EpisodeAffineUpdate(
+        diagnostics.transition_matrix[:, 0],
+        diagnostics.transition_bias[:, 0],
+    )
+    for index in range(1, config.chunk_blocks):
+        manual = EpisodeAffineUpdate(
+            diagnostics.transition_matrix[:, index],
+            diagnostics.transition_bias[:, index],
+        ).compose_after(manual)
+
+    torch.testing.assert_close(chunk_update.matrix, manual.matrix)
+    torch.testing.assert_close(chunk_update.bias, manual.bias)
+
+    state = torch.randn(2, config.num_slots, config.state_dim)
+    sequential = state
+    for index in range(config.chunk_blocks):
+        sequential = EpisodeAffineUpdate(
+            diagnostics.transition_matrix[:, index],
+            diagnostics.transition_bias[:, index],
+        ).apply(sequential)
+    torch.testing.assert_close(
+        chunk_update.apply(state), sequential, rtol=2e-5, atol=2e-6
+    )
+
+
+def test_transition_operator_does_not_mix_other_transition_actions():
+    torch.manual_seed(19)
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=4,
+        chunk_blocks=2,
+        num_slots=3,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=4,
+    )
+    updater = EpisodeChunkUpdater(config, video_dim=6, action_dim=5).eval()
+    with torch.no_grad():
+        updater.a_head.weight.normal_(std=0.1)
+        updater.b_head.weight.normal_(std=0.1)
+
+    video = torch.randn(1, 3, 2, 6)
+    action = torch.randn(1, 2, 3, 5)
+    changed_action = action.clone()
+    changed_action[:, 1, :, 0].add_(5.0)
+
+    _, original = updater(video, action)
+    _, changed = updater(video, changed_action)
+
+    torch.testing.assert_close(
+        original.transition_matrix[:, 0], changed.transition_matrix[:, 0]
+    )
+    torch.testing.assert_close(
+        original.transition_bias[:, 0], changed.transition_bias[:, 0]
+    )
+    assert not torch.allclose(
+        original.transition_matrix[:, 1], changed.transition_matrix[:, 1]
+    )
+
+
 def test_chunk_valid_mask_makes_padded_chunks_identity_and_masks_gradients():
     torch.manual_seed(13)
     config = EpisodeMemoryConfig(

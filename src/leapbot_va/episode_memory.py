@@ -199,10 +199,12 @@ class PredictionCorrectionDiagnostics:
     prediction_diagonal: torch.Tensor
     prediction_bias: torch.Tensor
     observation_direction: torch.Tensor
+    transition_matrix: torch.Tensor
+    transition_bias: torch.Tensor
 
 
 class EpisodeChunkUpdater(nn.Module):
-    """Generate one state-independent correction operator per closed chunk."""
+    """Generate and compose one state-independent operator per transition."""
 
     def __init__(
         self,
@@ -220,10 +222,11 @@ class EpisodeChunkUpdater(nn.Module):
         self.action_adapter = nn.Sequential(
             nn.LayerNorm(action_dim), nn.Linear(action_dim, hidden), nn.SiLU()
         )
-        self.modality_embedding = nn.Parameter(torch.empty(2, hidden))
-        self.position_embedding = nn.Parameter(
-            torch.empty(2 * config.chunk_blocks + 1, hidden)
-        )
+        # Start observation, executed action and real successor have distinct
+        # causal roles. No within-chunk position embedding is used: the same
+        # closed transition must induce the same operator regardless of where
+        # an arbitrary C-block handoff boundary places it.
+        self.role_embedding = nn.Parameter(torch.empty(3, hidden))
         self.slot_queries = nn.Parameter(torch.empty(config.num_slots, hidden))
         self.predict_attention = nn.MultiheadAttention(
             hidden, config.updater_heads, batch_first=True
@@ -242,8 +245,7 @@ class EpisodeChunkUpdater(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.normal_(self.modality_embedding, std=0.02)
-        nn.init.normal_(self.position_embedding, std=0.02)
+        nn.init.normal_(self.role_embedding, std=0.02)
         nn.init.normal_(self.slot_queries, std=0.02)
         nn.init.zeros_(self.a_head.weight)
         nn.init.zeros_(self.a_head.bias)
@@ -272,61 +274,83 @@ class EpisodeChunkUpdater(nn.Module):
         action_tokens: torch.Tensor,
     ) -> tuple[EpisodeAffineUpdate, PredictionCorrectionDiagnostics]:
         c = self.config.chunk_blocks
-        video = self.video_adapter(self._pool_tokens(video_tokens, c + 1, "video_tokens"))
-        action = self.action_adapter(self._pool_tokens(action_tokens, c, "action_tokens"))
+        video = self.video_adapter(
+            self._pool_tokens(video_tokens, c + 1, "video_tokens")
+        )
+        action = self.action_adapter(
+            self._pool_tokens(action_tokens, c, "action_tokens")
+        )
         if video.shape[0] != action.shape[0]:
             raise ValueError("video/action chunk batches must match")
 
-        # Prediction sees only each transition's start observation and executed
-        # action.  Outcome evidence is built exclusively from real successors.
+        # Every transition is encoded independently. Prediction sees only
+        # (o_i, a_i_exec), while correction sees only the real successor
+        # o_{i+1}. Flattening B and C makes all transition operators parallel.
+        batch = int(video.shape[0])
         predict_seq = torch.stack(
-            [item for i in range(c) for item in (video[:, i], action[:, i])], dim=1
-        )
-        predict_seq = (
-            predict_seq
-            + self.position_embedding[: 2 * c][None]
-            + self.modality_embedding[
-                torch.tensor([0, 1] * c, device=video.device)
-            ][None]
-        )
+            (
+                video[:, :-1] + self.role_embedding[0],
+                action + self.role_embedding[1],
+            ),
+            dim=2,
+        ).flatten(0, 1)
         observe_seq = (
-            video[:, 1:]
-            + self.position_embedding[2 : 2 * c + 1 : 2][None]
-            + self.modality_embedding[0][None, None]
-        )
-        queries = self.slot_queries[None].expand(video.shape[0], -1, -1)
+            video[:, 1:] + self.role_embedding[2]
+        ).flatten(0, 1).unsqueeze(1)
+        queries = self.slot_queries[None].expand(batch * c, -1, -1)
         pred_slots = self.predict_norm(
-            queries + self.predict_attention(queries, predict_seq, predict_seq, need_weights=False)[0]
+            queries
+            + self.predict_attention(
+                queries, predict_seq, predict_seq, need_weights=False
+            )[0]
         )
         obs_slots = self.observe_norm(
-            queries + self.observe_attention(queries, observe_seq, observe_seq, need_weights=False)[0]
+            queries
+            + self.observe_attention(
+                queries, observe_seq, observe_seq, need_weights=False
+            )[0]
         )
 
         n, g, d = self.config.num_slots, self.config.num_groups, self.config.group_dim
-        a = 1.0 + 0.01 * torch.tanh(self.a_head(pred_slots)).reshape(-1, n, g, d)
-        b = 0.01 * torch.tanh(self.b_head(pred_slots)).reshape(-1, n, g, d)
-        direction = F.normalize(
-            self.c_head(pred_slots).reshape(-1, n, g, d), dim=-1, eps=1e-6
+        a = 1.0 + 0.01 * torch.tanh(self.a_head(pred_slots)).reshape(
+            batch, c, n, g, d
         )
-        observed = self.y_head(obs_slots).reshape(-1, n, g)
-        gain = 0.25 * torch.sigmoid(self.k_head(obs_slots)).reshape(-1, n, g)
+        b = 0.01 * torch.tanh(self.b_head(pred_slots)).reshape(
+            batch, c, n, g, d
+        )
+        direction = F.normalize(
+            self.c_head(pred_slots).reshape(batch, c, n, g, d),
+            dim=-1,
+            eps=1e-6,
+        )
+        observed = self.y_head(obs_slots).reshape(batch, c, n, g)
+        gain = 0.25 * torch.sigmoid(self.k_head(obs_slots)).reshape(
+            batch, c, n, g
+        )
 
         eye = torch.eye(d, device=video.device, dtype=video.dtype)
         erase = eye - gain[..., None, None] * (
             direction[..., :, None] * direction[..., None, :]
         )
         prediction = torch.diag_embed(a)
-        matrix = torch.matmul(erase, prediction)
-        bias = (
+        transition_matrix = torch.matmul(erase, prediction)
+        transition_bias = (
             torch.matmul(erase, b.unsqueeze(-1)).squeeze(-1)
             + gain[..., None] * direction * observed[..., None]
         )
-        predicted_observation = (direction * b).sum(dim=-1)
-        corrected_group = (
-            torch.matmul(matrix, torch.zeros_like(b).unsqueeze(-1)).squeeze(-1)
-            + bias
+
+        # Chronological affine composition is associative. The last inclusive
+        # prefix is exactly T_{C-1} o ... o T_0 and is applied to H only once.
+        transition_prefixes = associative_affine_scan(
+            EpisodeAffineUpdate(
+                matrix=transition_matrix,
+                bias=transition_bias,
+            )
         )
-        corrected_observation = (direction * corrected_group).sum(dim=-1)
+        matrix = transition_prefixes.matrix[:, -1]
+        bias = transition_prefixes.bias[:, -1]
+        predicted_observation = (direction * b).sum(dim=-1)
+        corrected_observation = (direction * transition_bias).sum(dim=-1)
         return (
             EpisodeAffineUpdate(matrix=matrix, bias=bias),
             PredictionCorrectionDiagnostics(
@@ -337,6 +361,8 @@ class EpisodeChunkUpdater(nn.Module):
                 prediction_diagonal=a,
                 prediction_bias=b,
                 observation_direction=direction,
+                transition_matrix=transition_matrix,
+                transition_bias=transition_bias,
             ),
         )
 
@@ -353,7 +379,19 @@ def prediction_correction_loss(
     if input_state is not None:
         groups = int(diagnostics.prediction_diagonal.shape[-2])
         group_dim = int(diagnostics.prediction_diagonal.shape[-1])
-        grouped = _group_state(input_state, groups, group_dim)
+        if input_state.ndim != 3:
+            raise ValueError("input_state must be [chunks,slots,state_dim]")
+        transition_prefixes = associative_affine_scan(
+            EpisodeAffineUpdate(
+                matrix=diagnostics.transition_matrix,
+                bias=diagnostics.transition_bias,
+            )
+        )
+        post_states = apply_prefix_updates(input_state.float(), transition_prefixes)
+        transition_inputs = torch.cat(
+            (input_state[:, None].float(), post_states[:, :-1]), dim=1
+        )
+        grouped = _group_state(transition_inputs, groups, group_dim)
         predicted_group = (
             diagnostics.prediction_diagonal * grouped
             + diagnostics.prediction_bias

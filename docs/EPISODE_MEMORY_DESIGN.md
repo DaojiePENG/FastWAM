@@ -91,67 +91,73 @@ $H\in\mathbb{R}^{32\times1024}$ 是一个独立于 VideoDiT 3072 维 hidden spac
 
 一个更新 chunk 固定包含四个闭合 transitions。视觉和动作先分别经过现有 VideoDiT、ActionDiT 的 clean `pre_dit` 路径，保留在各自特征空间，再由独立的小型视觉适配器和动作适配器送入 chunk updater。不能使用已经吸收 PCH 的 contextual layer KV 或最终 hidden state，否则会把近期历史再次写入 $H$。当前代码没有永久保存 clean pre-DiT token；实现时应在 replay 构建中复用或按需重算这一级表示，而不是重新运行完整 VideoDiT/ActionDiT。
 
-chunk updater 使用带固定时序位置的交错轨迹：
+chunk updater 将一个 chunk 拆成 $C$ 条闭环 transition：
 
 ```text
-V(o_s), A(a_s_exec), V(o_s+1), ..., A(a_s+3_exec), V(o_s+4)
+(o_s, a_s_exec, o_s+1), ..., (o_s+C-1, a_s+C-1_exec, o_s+C)
 ```
 
-视觉和动作直到 updater 内部才融合。预测分支对每个 transition 只能读取其起点 observation 和 executed action；真实结果分支读取对应的后继 observation。这样真实结果用于校正，而不能提前泄漏给状态预测。四个 transition 在 updater 内可以用固定长度 causal attention 并行处理，最终共同产生一个 chunk 算子。
+视觉和动作直到 updater 内部才融合。每条 transition 使用同一组参数独立编码，不使用 chunk 内位置嵌入：预测分支只能读取该条 transition 的起点 observation 和 executed action，校正分支只能读取对应的真实后继 observation。这样同一条交互不会因为落在任意 chunk 边界的不同位置而改变算子，真实结果也不能提前泄漏给状态预测。$C$ 条 transition 的算子并行产生，再按时间顺序关联组合成一个 chunk 算子。
 
 ### 直观更新
 
-正文只需把更新理解为三步：
+对每条 transition $i$，更新分成三步：
 
 \[
-\widehat H=\operatorname{Predict}_j(H),
+\widehat H_{i+1}=\operatorname{Predict}(H_i,o_i,a_i^{exec}),
 \]
 
 \[
-r_j=y_j-\operatorname{ReadObservation}_j(\widehat H),
+r_i=y(o_{i+1})-\operatorname{ReadObservation}(\widehat H_{i+1}),
 \]
 
 \[
-H'=\widehat H+\operatorname{WriteCorrection}_j(r_j).
+H_{i+1}=\widehat H_{i+1}+\operatorname{WriteCorrection}(r_i).
 \]
 
-`Predict` 根据 chunk 起点和实际执行动作推进旧世界状态；`ReadObservation` 从推进后的状态预测这四次交互应产生的真实观测证据；`WriteCorrection` 只沿本 chunk 可观测的状态方向擦除错误预测并写入真实结果。未被当前视角观测到的状态方向保留，因此 $H$ 不是最新 observation 的压缩副本。
+`Predict` 根据起点 observation 和实际执行动作推进世界状态；`ReadObservation` 从推进后的状态预测动作结果；`WriteCorrection` 只沿该真实后继 observation 可观测的状态方向擦除错误预测并写入证据。未被当前视角观测到的状态方向保留，因此 $H$ 不是最新 observation 的压缩副本。实现不会在这里逐条物化 $H_i$，而是先把每一步展开成仿射算子，再组合后一次应用。
 
 所有 chunk 都执行更新。校正门只表示某个隐状态方向在本次交互中的可观测性和校正强度，不是 chunk admission、关键帧选择或重要性筛选；不允许通过 hard top-k 或整段零门跳过历史。
 
 ### 可扫描展开
 
-实现时将 $H$ 向量化为 $h$。chunk updater 独立产生结构化的临时参数，使三步写成：
+实现时将 $H$ 向量化为 $h$。第 $i$ 条 transition 独立产生结构化参数：
 
 \[
-\widehat h=A_jh+b_j,
+\widehat h_{i+1}=A_i h_i+b_i,
 \]
 
 \[
-\widehat y_j=C_j\widehat h,
+\widehat y_{i+1}=C_i\widehat h_{i+1},
 \]
 
 \[
-h'=\widehat h+C_j^\top K_j(y_j-\widehat y_j).
+h_{i+1}=\widehat h_{i+1}+C_i^\top K_i(y_{i+1}-\widehat y_{i+1}).
 \]
 
-其中 $y_j$ 是从真实后继 observations 得到的 clean 视觉证据；$C_j$ 把世界状态投影到本次观测证据空间；$C_j^\top$ 把残差写回对应状态方向；$K_j$ 是有界的校正强度。真实视觉证据不需要与 $H$ 处在同一坐标系，二者由 $C_j/C_j^\top$ 显式连接。
+其中 $y_{i+1}$ 来自真实后继 observation；$C_i$ 把世界状态投影到该次观测证据空间；$C_i^\top$ 把残差写回对应状态方向；$K_i$ 是有界校正强度。真实视觉证据不需要预先与 $H$ 对齐，二者由学习到的 $C_i/C_i^\top$ 连接。
 
-展开后：
+展开后得到 transition 算子 $T_i=(G_i,B_i)$：
 
 \[
-h'=G_jh+B_j,
+h_{i+1}=G_i h_i+B_i,
 \]
 
 \[
-G_j=(I-C_j^\top K_jC_j)A_j,
+G_i=(I-C_i^\top K_iC_i)A_i,
 \qquad
-B_j=(I-C_j^\top K_jC_j)b_j+C_j^\top K_jy_j.
+B_i=(I-C_i^\top K_iC_i)b_i+C_i^\top K_iy_{i+1}.
 \]
 
-因此每个 chunk 可以在不知道输入 $H$ 的情况下，仅根据本段真实闭环交互生成一个更新算子 $(G_j,B_j)$；把它应用到任意旧状态时，仍严格等价于一次依赖旧状态预测值的 residual correction。
+一个 chunk 的最终算子不是另外预测的，而是严格按时间组合：
 
-为使算子组合可承受，$A_j$ 和 $I-C_j^\top K_jC_j$ 在每个状态 token 内按 16 维分组构成块对角矩阵；$C_j$ 在相同分组内归一化，$K_j$ 通过有界门产生。块对角结构在任意次数组合后保持不变，避免完整稠密矩阵 scan。$A_j$ 以单位变换初始化，校正以小幅度初始化，以防训练初期快速破坏长期状态。
+\[
+T_j^{chunk}=T_{s+C-1}\circ\cdots\circ T_{s+1}\circ T_s.
+\]
+
+因此每条 transition 都能在不知道输入 $H$ 的情况下并行生成算子；组合后的 chunk 算子同样与输入 $H$ 无关，但应用时仍严格等价于依次执行 $C$ 次依赖预测状态的 residual correction。在线推理只在 Q 满 $C$ 后将这个 chunk 算子应用到 $H$ 一次。
+
+为使算子组合可承受，$A_i$ 和 $I-C_i^\top K_iC_i$ 在每个状态 token 内按 16 维分组构成块对角矩阵；$C_i$ 在相同分组内归一化，$K_i$ 通过有界门产生。块对角结构在任意次数组合后保持不变，避免完整稠密矩阵 scan。$A_i$ 以单位变换初始化，校正以小幅度初始化，以防训练初期快速破坏长期状态。
 
 这一路径借用了 delta-rule 的代数思想，但 $H$ 仍是供 WAM 使用的固定世界状态 token，而不是普通 token-level Mamba/RNN hidden state；更新单位是完整闭环 chunk，不是语言 token，也不是无限视觉历史的重新汇总。
 
@@ -180,8 +186,8 @@ B_j=(I-C_j^\top K_jC_j)b_j+C_j^\top K_jy_j.
 训练损失由三部分组成：
 
 - 现有多出口 VideoDiT flow loss 和 ActionDiT flow loss，负责让读取到的 $H$ 对世界预测和控制有用；
-- 校正前预测损失，使 $C_j(A_jh_j+b_j)$ 预测真实 $y_j$，保证 `Predict` 真正学习动作条件下的状态推进；
-- 校正后观测一致性损失，只约束本次可观测方向，不强迫整个 $H_{j+1}$ 等于 $y_j$，避免抹除不可见的远期状态。
+- 校正前预测损失，使 $C_i(A_ih_i+b_i)$ 预测真实 $y_{i+1}$，保证 `Predict` 真正学习动作条件下的状态推进；
+- 校正后观测一致性损失，只约束本次可观测方向，不强迫整个 $H_{i+1}$ 等于 $y_{i+1}$，避免抹除不可见的远期状态。
 
 训练初期冻结 Fast-WAM 主干，只训练 chunk updater、$H$ 读出适配器、memory-attention 门和相关 loss head。历史 clean pre-DiT 表征与主干断开梯度，避免保存完整 episode 的大模型激活。稳定后再联合训练现有 LoRA、浅层 exit heads 和新 memory 模块；主 WAM 梯度可以穿过所选目标的 $H$ 和 prefix scan 回到所有先前 chunk 算子，但仍不要求对历史 block 展开完整 VideoDiT/ActionDiT。
 
@@ -216,7 +222,7 @@ scan 消除了原先 $H_0\rightarrow H_1\rightarrow\cdots$ 的顺序前向和顺
 
 ## 设计结论
 
-完整方案不是“PCH 加递归摘要”。PCH 和 Q 保存有界的精确闭环轨迹，负责局部控制和 chunk 交接；$H$ 保存固定容量的 episode world state。每个四-transition chunk 独立产生一个可组合的“动作推进—观测预测—真实残差校正”算子，训练用 associative prefix scan 并行恢复所有长期状态，推理用同一算子在线更新。复杂推理留在 VideoDiT/ActionDiT 的注意力读取路径，长期写入被刻意约束成稳定、可组合且具有明确世界状态校正含义的状态滤波器。
+完整方案不是“PCH 加递归摘要”。PCH 和 Q 保存有界的精确闭环轨迹，负责局部控制和 chunk 交接；$H$ 保存固定容量的 episode world state。每条 transition 独立产生“动作推进—观测预测—真实残差校正”算子，四条算子按时间组合成 chunk 算子；训练用 associative prefix scan 并行恢复所有长期状态，推理用同一 chunk 算子在线更新。复杂推理留在 VideoDiT/ActionDiT 的注意力读取路径，长期写入被刻意约束成稳定、可组合且具有明确世界状态校正含义的状态滤波器。
 
 ## 当前实现
 
