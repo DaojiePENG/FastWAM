@@ -344,6 +344,7 @@ def prediction_correction_loss(
     diagnostics: PredictionCorrectionDiagnostics,
     *,
     input_state: torch.Tensor | None = None,
+    valid_mask: torch.Tensor | None = None,
     prediction_weight: float = 0.1,
     correction_weight: float = 0.1,
 ) -> torch.Tensor:
@@ -368,12 +369,20 @@ def prediction_correction_loss(
         corrected_observation = (
             diagnostics.observation_direction * corrected_group
         ).sum(dim=-1)
-    prediction = F.mse_loss(
-        predicted_observation, diagnostics.observed_evidence
-    )
-    correction = F.mse_loss(
-        corrected_observation, diagnostics.observed_evidence
-    )
+    def masked_mse(value: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        error = (value - target).square()
+        if valid_mask is None:
+            return error.mean()
+        if valid_mask.numel() != error.shape[0]:
+            raise ValueError("valid_mask must contain one value per chunk")
+        mask = valid_mask.to(device=error.device, dtype=error.dtype).reshape(
+            error.shape[0], *([1] * (error.ndim - 1))
+        )
+        denominator = mask.sum() * error[0].numel()
+        return (error * mask).sum() / denominator.clamp_min(1.0)
+
+    prediction = masked_mse(predicted_observation, diagnostics.observed_evidence)
+    correction = masked_mse(corrected_observation, diagnostics.observed_evidence)
     return float(prediction_weight) * prediction + float(correction_weight) * correction
 
 
@@ -507,6 +516,8 @@ def build_episode_prefix_states(
     initial_state: torch.Tensor,
     video_tokens: torch.Tensor,
     action_tokens: torch.Tensor,
+    *,
+    chunk_valid_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, EpisodeAffineUpdate, PredictionCorrectionDiagnostics]:
     """Generate all chunk operators in parallel and scan their H prefixes.
 
@@ -525,6 +536,13 @@ def build_episode_prefix_states(
     chunks = blocks // c
     if int(video_tokens.shape[1]) != blocks + 1:
         raise ValueError("closed transitions require exactly one extra observation")
+    if chunk_valid_mask is None:
+        chunk_valid_mask = torch.ones(
+            (batch, chunks), dtype=torch.bool, device=video_tokens.device
+        )
+    elif tuple(chunk_valid_mask.shape) != (batch, chunks):
+        raise ValueError("chunk_valid_mask must be [batch,chunks]")
+    chunk_valid_mask = chunk_valid_mask.to(device=video_tokens.device, dtype=torch.bool)
     video_chunks = torch.stack(
         [video_tokens[:, index * c : (index + 1) * c + 1] for index in range(chunks)],
         dim=1,
@@ -539,6 +557,18 @@ def build_episode_prefix_states(
         batch, chunks, *updates.matrix.shape[1:]
     )
     bias = updates.bias.reshape(batch, chunks, *updates.bias.shape[1:])
+    valid_matrix = chunk_valid_mask[:, :, None, None, None, None]
+    identity = torch.eye(
+        updater.config.group_dim,
+        device=matrix.device,
+        dtype=matrix.dtype,
+    ).reshape(1, 1, 1, 1, updater.config.group_dim, updater.config.group_dim)
+    matrix = torch.where(valid_matrix, matrix, identity)
+    bias = torch.where(
+        chunk_valid_mask[:, :, None, None, None],
+        bias,
+        torch.zeros((), device=bias.device, dtype=bias.dtype),
+    )
     prefixes = associative_affine_scan(
         EpisodeAffineUpdate(matrix=matrix, bias=bias),
         checkpoint_stages=True,

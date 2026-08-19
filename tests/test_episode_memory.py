@@ -9,6 +9,7 @@ from leapbot_va.episode_memory import (
     apply_prefix_updates,
     associative_affine_scan,
     build_episode_prefix_states,
+    prediction_correction_loss,
 )
 from leapbot_va.memory import KVSegment, LeapMemoryConfig, LeapMemoryState
 
@@ -145,6 +146,51 @@ def test_training_scan_and_online_left_fold_use_identical_chunk_operators():
         )
         online = update.apply(online)
     torch.testing.assert_close(online, states[:, -1], rtol=2e-5, atol=2e-6)
+
+
+
+def test_chunk_valid_mask_makes_padded_chunks_identity_and_masks_gradients():
+    torch.manual_seed(13)
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=4,
+        chunk_blocks=2,
+        num_slots=3,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=4,
+    )
+    updater = EpisodeChunkUpdater(config, video_dim=6, action_dim=5)
+    initial = torch.randn(2, 3, 8, requires_grad=True)
+    video = torch.randn(2, 7, 2, 6, requires_grad=True)
+    action = torch.randn(2, 6, 3, 5, requires_grad=True)
+    valid = torch.tensor([[True, False, False], [True, True, True]])
+
+    states, _, diagnostics = build_episode_prefix_states(
+        updater,
+        initial,
+        video,
+        action,
+        chunk_valid_mask=valid,
+    )
+    torch.testing.assert_close(states[0, 1], states[0, 0])
+    torch.testing.assert_close(states[0, 2], states[0, 0])
+
+    input_states = torch.cat(
+        [initial[:, None], states[:, :-1]], dim=1
+    ).reshape(6, 3, 8)
+    loss = prediction_correction_loss(
+        diagnostics,
+        input_state=input_states,
+        valid_mask=valid.flatten(),
+    )
+    loss = loss + states[0, 0].sum() + states[1, -1].sum()
+    loss.backward()
+    assert torch.count_nonzero(action.grad[0, 2:]) == 0
+    assert torch.count_nonzero(video.grad[0, 3:]) == 0
+    assert torch.isfinite(action.grad[1]).all()
 
 
 

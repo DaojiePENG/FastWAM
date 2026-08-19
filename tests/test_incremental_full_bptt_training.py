@@ -1106,6 +1106,45 @@ def test_episode_memory_scan_training_step_backpropagates_through_h():
     assert model.episode_memory.reader.gates["action"].grad is not None
     assert model.episode_memory.reader.gates["action"].grad.abs().sum() > 0
 
+
+def test_episode_memory_scan_supports_mixed_chunk_counts_in_one_batch():
+    model = _model("interleaved")
+    config = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=8,
+        chunk_blocks=4,
+        num_slots=4,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=2,
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(2,),
+        history_training_mode="episode_memory_scan_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=8,
+        replan_steps=REPLAN_STEPS,
+        action_horizon=ACTION_HORIZON,
+        num_video_frames=ACTION_HORIZON + 1,
+        episode_memory_config=config,
+    )
+
+    # The first row uses H0 (zero complete chunks); the second scans one chunk.
+    loss, metrics = model.training_loss(_sample((8, 12)))
+    assert torch.isfinite(loss)
+    assert metrics["history_blocks_mean"] == 8.0
+    loss.backward()
+    updater_grad = sum(
+        float(parameter.grad.abs().sum())
+        for parameter in model.episode_memory.updater.parameters()
+        if parameter.grad is not None
+    )
+    assert updater_grad > 0
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_video_h"),
     [

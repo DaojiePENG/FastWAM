@@ -2160,11 +2160,16 @@ def _episode_memory_scan_bptt_loss(
                 int(action_pre["tokens"].shape[-1]),
             ).detach()
 
+        chunk_valid_mask = (
+            torch.arange(max_chunks, device=model.device)[None]
+            < chunk_counts[:, None]
+        )
         prefix_states, _, diagnostics = build_episode_prefix_states(
             model.episode_memory.updater,
             initial_state,
             clean_video_tokens,
             clean_action_tokens,
+            chunk_valid_mask=chunk_valid_mask,
         )
         selected_state = initial_state.clone()
         for row in range(batch):
@@ -2179,6 +2184,7 @@ def _episode_memory_scan_bptt_loss(
         aux_loss = prediction_correction_loss(
             diagnostics,
             input_state=chunk_input_states,
+            valid_mask=chunk_valid_mask.flatten(),
             prediction_weight=0.1,
             correction_weight=0.1,
         )
