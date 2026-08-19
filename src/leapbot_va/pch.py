@@ -189,6 +189,8 @@ class PCHLayout:
 def build_pch_dense_attention_mask(
     layout: PCHLayout,
     causal_mode: str,
+    *,
+    prefix_video_tokens: int = 0,
 ) -> torch.Tensor:
     """Build the exact block-causal PCH mask as bool ``[B,S,S]``."""
 
@@ -233,7 +235,18 @@ def build_pch_dense_attention_mask(
     invalid_diagonal = (~valid).unsqueeze(2) & torch.eye(
         layout.packed_tokens, dtype=torch.bool, device=layout.device
     ).unsqueeze(0)
-    return mask | invalid_diagonal
+    mask = mask | invalid_diagonal
+    prefix_video_tokens = int(prefix_video_tokens)
+    if prefix_video_tokens < 0:
+        raise ValueError("prefix_video_tokens must be non-negative")
+    if prefix_video_tokens:
+        video_reads_prefix = causal_mode != "action_aggregator"
+        prefix_allowed = is_action | video_reads_prefix
+        prefix_mask = (
+            valid[:, :, None] & prefix_allowed[None, :, None]
+        ).expand(-1, -1, prefix_video_tokens)
+        mask = torch.cat([prefix_mask, mask], dim=2)
+    return mask
 
 
 def build_pch_context_masks(
@@ -278,8 +291,14 @@ class _FlexBlockMaskCache:
         self.capacity = int(capacity)
         self._cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
 
-    def get(self, layout: PCHLayout, causal_mode: str) -> Any | None:
-        key = layout.structure_signature(causal_mode)
+    @staticmethod
+    def _key(
+        layout: PCHLayout, causal_mode: str, prefix_video_tokens: int
+    ) -> tuple[Any, ...]:
+        return (*layout.structure_signature(causal_mode), int(prefix_video_tokens))
+
+    def get(self, layout: PCHLayout, causal_mode: str, prefix_video_tokens: int = 0) -> Any | None:
+        key = self._key(layout, causal_mode, prefix_video_tokens)
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
@@ -290,8 +309,9 @@ class _FlexBlockMaskCache:
         layout: PCHLayout,
         causal_mode: str,
         dense_mask: torch.Tensor,
+        prefix_video_tokens: int = 0,
     ) -> Any:
-        key = layout.structure_signature(causal_mode)
+        key = self._key(layout, causal_mode, prefix_video_tokens)
         cached = self._cache.get(key)
         if cached is not None:
             self._cache.move_to_end(key)
@@ -313,7 +333,7 @@ class _FlexBlockMaskCache:
                 B=layout.batch_size,
                 H=None,
                 Q_LEN=layout.packed_tokens,
-                KV_LEN=layout.packed_tokens,
+                KV_LEN=int(prefix_video_tokens) + layout.packed_tokens,
                 device=str(layout.device),
             )
         except Exception as exc:
@@ -336,6 +356,8 @@ def build_pch_attention_mask(
     layout: PCHLayout,
     causal_mode: str,
     backend: str,
+    *,
+    prefix_video_tokens: int = 0,
 ) -> torch.Tensor | Any:
     """Create a Dense SDPA mask or a semantically identical Flex BlockMask."""
 
@@ -343,13 +365,24 @@ def build_pch_attention_mask(
     if backend not in {"dense", "flex"}:
         raise ValueError("packed_history_attention_backend must be flex or dense")
     if backend == "flex":
-        cached = _FLEX_MASK_CACHE.get(layout, causal_mode)
+        cached = _FLEX_MASK_CACHE.get(
+            layout, causal_mode, prefix_video_tokens
+        )
         if cached is not None:
             return cached
-    dense = build_pch_dense_attention_mask(layout, causal_mode)
+    dense = build_pch_dense_attention_mask(
+        layout,
+        causal_mode,
+        prefix_video_tokens=prefix_video_tokens,
+    )
     if backend == "dense":
         return dense
-    return _FLEX_MASK_CACHE.get_or_create(layout, causal_mode, dense)
+    return _FLEX_MASK_CACHE.get_or_create(
+        layout,
+        causal_mode,
+        dense,
+        prefix_video_tokens,
+    )
 
 
 def combine_packed_history_kv(

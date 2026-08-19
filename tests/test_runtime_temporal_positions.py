@@ -7,6 +7,7 @@ from torch import nn
 from fastwam.models.wan22.action_dit import ActionDiT
 from fastwam.models.wan22.fastwam import FastWAM
 from fastwam.models.wan22.mot import MoT
+from leapbot_va.episode_memory import EpisodeMemoryConfig
 from fastwam.models.wan22.wan_video_dit import WanVideoDiT
 from leapbot_va.lora import VideoLoRAConfig
 from leapbot_va.memory import LeapMemoryConfig, LeapMemoryState
@@ -772,3 +773,64 @@ def test_strict_replay_rebuilds_recent_real_window_and_single_v0_anchor():
     assert result["memory"]["replayed_segments"] == 5
     assert result["memory"]["history_storage_mode"] == "strict_replay"
     assert result["memory"]["replay_bytes"] > 0
+
+
+def test_episode_h0_kv_is_encoded_once_and_reused_after_pch_exit():
+    torch.manual_seed(9022)
+    model = _model(
+        layers=8,
+        proprio_dim=2,
+        vae=_TinyVideoVAE(),
+        video_attention_mask_mode="first_frame_causal",
+    )
+    episode = EpisodeMemoryConfig(
+        enabled=True,
+        window_blocks=4,
+        chunk_blocks=2,
+        num_slots=2,
+        state_dim=8,
+        group_dim=2,
+        updater_dim=16,
+        updater_heads=4,
+        reader_rank=2,
+    )
+    model.configure_causal_training(
+        causal_mode="interleaved",
+        training_exit_depths=(8,),
+        history_training_mode="episode_memory_scan_bptt",
+        packed_history_attention_backend="dense",
+        history_window_blocks=4,
+        replan_steps=1,
+        action_horizon=2,
+        num_video_frames=3,
+        episode_memory_config=episode,
+    )
+    model.eval()
+    memory = model.create_memory(exit_depth=8, max_history_blocks=4)
+    context = torch.randn(1, 3, 6)
+    context_mask = torch.ones(1, 3, dtype=torch.bool)
+    cached_h0 = None
+    for block in range(8):
+        result = model.infer_action(
+            prompt=None,
+            input_image=torch.full((1, 3, 16, 16), float(block) / 10.0),
+            action_horizon=2,
+            num_video_frames=3,
+            proprio=torch.tensor([[float(block), -float(block)]]),
+            context=context,
+            context_mask=context_mask,
+            num_inference_steps=1,
+            seed=200 + block,
+            memory=memory,
+        )
+        if block == 1:
+            assert memory.episode_anchor_segment is not None
+            cached_h0 = memory.episode_anchor_segment
+        if block >= 6:
+            assert cached_h0 is not None
+            assert memory.segments[0] is cached_h0
+        model.commit_executed_actions(memory, result["action"][:1])
+
+    assert memory.episode_anchor_segment is cached_h0
+    memory.reset()
+    assert memory.episode_anchor_segment is None

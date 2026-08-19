@@ -266,6 +266,7 @@ class MemorySnapshot:
     pending_context_mask: torch.Tensor | None
     replay_blocks: tuple[ReplayBlock, ...]
     episode_anchor: ReplayBlock | None
+    episode_anchor_segment: KVSegment | None
     pending_observation_latents: torch.Tensor | None
     pending_replay_context: torch.Tensor | None
     pending_replay_context_mask: torch.Tensor | None
@@ -288,6 +289,7 @@ class LeapMemoryState:
     pending_context_mask: torch.Tensor | None = field(default=None, repr=False)
     replay_blocks: list[ReplayBlock] = field(default_factory=list, repr=False)
     episode_anchor: ReplayBlock | None = field(default=None, repr=False)
+    episode_anchor_segment: KVSegment | None = field(default=None, repr=False)
     pending_observation_latents: torch.Tensor | None = field(
         default=None, repr=False
     )
@@ -329,6 +331,7 @@ class LeapMemoryState:
             pending_context_mask=self.pending_context_mask,
             replay_blocks=tuple(self.replay_blocks),
             episode_anchor=self.episode_anchor,
+            episode_anchor_segment=self.episode_anchor_segment,
             pending_observation_latents=self.pending_observation_latents,
             pending_replay_context=self.pending_replay_context,
             pending_replay_context_mask=self.pending_replay_context_mask,
@@ -347,6 +350,7 @@ class LeapMemoryState:
         self.pending_context_mask = snapshot.pending_context_mask
         self.replay_blocks[:] = snapshot.replay_blocks
         self.episode_anchor = snapshot.episode_anchor
+        self.episode_anchor_segment = snapshot.episode_anchor_segment
         self.pending_observation_latents = snapshot.pending_observation_latents
         self.pending_replay_context = snapshot.pending_replay_context
         self.pending_replay_context_mask = snapshot.pending_replay_context_mask
@@ -705,7 +709,10 @@ class LeapMemoryState:
 
     @property
     def cache_nbytes(self) -> int:
-        return sum(segment.nbytes for segment in self.segments)
+        unique = {id(segment): segment for segment in self.segments}
+        if self.episode_anchor_segment is not None:
+            unique[id(self.episode_anchor_segment)] = self.episode_anchor_segment
+        return sum(segment.nbytes for segment in unique.values())
 
     @property
     def replay_nbytes(self) -> int:
@@ -758,6 +765,7 @@ class LeapMemoryState:
         self.pending_context_mask = None
         self.replay_blocks.clear()
         self.episode_anchor = None
+        self.episode_anchor_segment = None
         self.pending_observation_latents = None
         self.pending_replay_context = None
         self.pending_replay_context_mask = None

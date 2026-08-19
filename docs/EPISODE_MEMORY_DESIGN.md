@@ -53,7 +53,7 @@ o4, a4_exec, o5, a5_exec, o6, a6_exec, o7, a7_exec, o8
 
 例如 $W=8,C=4,t=13$ 时，$e=5,q=4$：$H$ 覆盖 blocks $[0,4)$，$Q$ 保存 block 4，PCH 保存 $[5,13)$。在 $t=16$ 时，blocks $[4,8)$ 完成交接，$H$ 覆盖 $[0,8)$，$Q$ 清空，PCH 保存 $[8,16)$。
 
-首个真实观测额外写入一次不可变首帧记忆 $F$，实现上复用现有 `V0 anchor`：保存 $o_0$ 的 observation latent 和初始 proprio，不保存 $a_0$。当 block 0 仍在 Q 或 PCH 中时只维护而不额外读取 $F$；第一个完整 chunk 已交接、block 0 离开 Q+PCH 后才启用该 anchor。此后 $F$ 提供不变的初始场景参照，$H$ 表示交互持续修正后的远期世界状态。$F$ 是 episode 初始条件，不属于 transition 历史划分，因此 H/Q/PCH 对闭环 blocks 的互斥覆盖保持不变。
+首个真实观测额外建立一份不可变首帧记忆 $F$：在 block 0 尚位于精确历史时，从其一次无历史、无 $H$ 的 causal VideoDiT prefill 中截取并永久保存逐层视觉 KV，不保存 $a_0$。block 0 仍在 Q 或 PCH 中时，模型只读取精确历史，不额外读取 $F$；第一个完整 chunk 已交接、block 0 离开 Q+PCH 后，固定的 $F$ KV 作为只读前缀参与后续推理，不再重新编码。此后 $F$ 提供不变的初始场景参照，$H$ 表示交互持续修正后的远期世界状态。$F$ 是 episode 初始条件，不属于 transition 历史划分，因此 H/Q/PCH 对闭环 blocks 的互斥覆盖保持不变。
 
 ## PCH 与交接缓冲区
 

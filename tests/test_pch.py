@@ -91,6 +91,20 @@ def test_pch_three_causal_modes(mode, video_reads_old_video, video_reads_old_act
     assert not mask[current_video, current_action]
 
 
+@pytest.mark.parametrize(
+    "mode,video_reads_h0",
+    [("interleaved", True), ("vision_causal", True), ("action_aggregator", False)],
+)
+def test_fixed_h0_prefix_obeys_causal_mode(mode, video_reads_h0):
+    layout = _layout([[True, True]], [False], action_tokens=1)
+    prefix_tokens = 2
+    mask = build_pch_dense_attention_mask(layout, mode, prefix_video_tokens=prefix_tokens)
+    assert mask.shape == (1, layout.packed_tokens, prefix_tokens + layout.packed_tokens)
+    first_valid_video = layout.video_tokens_per_slot
+    first_action = (layout.window_blocks + 1) * layout.video_tokens_per_slot
+    assert bool(mask[0, first_valid_video, :prefix_tokens].all()) is video_reads_h0
+    assert mask[0, first_action, :prefix_tokens].all()
+
 def test_pch_mixed_h_anchor_padding_and_safe_invalid_rows():
     layout = _layout(
         [
@@ -155,6 +169,34 @@ def _tiny_mot():
     )
     return MoT({"video": video, "action": action}, mot_checkpoint_mixed_attn=False)
 
+
+def test_pch_dense_prefill_accepts_fixed_video_prefix():
+    mot = _tiny_mot().eval()
+    layout = _layout([[True, True]], [False])
+    video = torch.randn(1, 3, 12)
+    action = torch.randn(1, 4, 10)
+    prefix = [
+        {"k": torch.randn(1, 2, 32), "v": torch.randn(1, 2, 32)}
+        for _ in range(2)
+    ]
+    mask = build_pch_attention_mask(layout, "interleaved", "dense", prefix_video_tokens=2)
+    cache = mot.prefill_packed_history(
+        video_tokens=video,
+        action_tokens=action,
+        video_freqs=precompute_freqs_cis(16, end=3).view(3, 1, -1),
+        action_freqs=precompute_freqs_cis(16, end=4).view(4, 1, -1),
+        video_t_mod=torch.zeros(1, 6, 12),
+        action_t_mod=torch.zeros(1, 6, 10),
+        video_context=None,
+        action_context=None,
+        layout=layout,
+        attention_mask=mask,
+        attention_backend="dense",
+        max_layers=2,
+        fixed_prefix_kv=prefix,
+    )
+    assert cache.video_kv[-1]["k"].shape == (1, 3, 32)
+    assert cache.action_kv[-1]["k"].shape == (1, 4, 32)
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention comparison needs CUDA")
 @pytest.mark.parametrize("mode", ["interleaved", "vision_causal", "action_aggregator"])

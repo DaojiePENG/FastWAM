@@ -898,6 +898,7 @@ class LeapBotVA(FastWAM):
         records = memory.begin_packed_replay_rebuild()
         if not records:
             return {"segments": 0, "valid_blocks": 0, "packed_tokens": 0}
+        fixed_anchor_segment = None
         if memory.episode_memory_config.enabled:
             window = int(
                 memory.episode_memory_config.window_blocks
@@ -914,7 +915,11 @@ class LeapBotVA(FastWAM):
                 and recent
                 and recent[0].block_index > 0
             ):
-                anchor = memory.episode_anchor
+                if memory.episode_anchor_segment is None:
+                    raise RuntimeError(
+                        "first-frame memory was not encoded before leaving PCH"
+                    )
+                fixed_anchor_segment = memory.episode_anchor_segment
         else:
             window = int(memory.config.history_window_blocks)
             recent = list(memory.replay_blocks[-window:])
@@ -1075,10 +1080,17 @@ class LeapBotVA(FastWAM):
         video_context_mask, action_context_mask = build_pch_context_masks(
             base_context_mask, layout
         )
+        fixed_prefix_kv = None
+        prefix_video_tokens = 0
+        if fixed_anchor_segment is not None:
+            fixed_prefix_kv = memory.materialize((fixed_anchor_segment,))
+            prefix_video_tokens = fixed_anchor_segment.num_tokens
+
         attention_mask = build_pch_attention_mask(
             layout,
             memory.config.causal_mode,
             self.packed_history_attention_backend,
+            prefix_video_tokens=prefix_video_tokens,
         )
         cache = self.mot.prefill_packed_history(
             video_tokens=video_pre["tokens"],
@@ -1093,6 +1105,7 @@ class LeapBotVA(FastWAM):
             attention_mask=attention_mask,
             attention_backend=self.packed_history_attention_backend,
             max_layers=memory.config.exit_depth,
+            fixed_prefix_kv=fixed_prefix_kv,
         )
 
         new_segments: list[KVSegment] = []
@@ -1112,12 +1125,22 @@ class LeapBotVA(FastWAM):
                 values=[layer["v"][:, start:stop] for layer in cache.video_kv],
             ).detached()
 
-        if anchor is not None:
+        if fixed_anchor_segment is not None:
+            new_segments.append(fixed_anchor_segment)
+        elif anchor is not None:
             new_segments.append(video_segment(0, anchor.block_index))
         for offset, record in enumerate(recent):
             history_slot = left_padding + offset
             video_slot = history_slot + 1
-            new_segments.append(video_segment(video_slot, record.block_index))
+            segment = video_segment(video_slot, record.block_index)
+            if (
+                memory.episode_memory_config.enabled
+                and memory.episode_memory_config.first_frame_memory
+                and record.block_index == 0
+                and memory.episode_anchor_segment is None
+            ):
+                memory.episode_anchor_segment = segment
+            new_segments.append(segment)
             start = history_slot * action_stride
             stop = start + action_stride
             action_start = record.block_index * memory.config.replan_steps
@@ -1138,8 +1161,9 @@ class LeapBotVA(FastWAM):
         memory.segments[:] = new_segments
         return {
             "segments": len(new_segments),
-            "valid_blocks": int(layout.valid_blocks[0].item()),
-            "packed_tokens": layout.packed_tokens,
+            "valid_blocks": int(layout.valid_blocks[0].item())
+            + int(fixed_anchor_segment is not None),
+            "packed_tokens": layout.packed_tokens + prefix_video_tokens,
         }
 
     def _rebuild_strict_replay_history(

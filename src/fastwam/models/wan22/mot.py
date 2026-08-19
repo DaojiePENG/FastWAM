@@ -460,6 +460,7 @@ class MoT(nn.Module):
         attention_backend: str,
         max_layers: Optional[int] = None,
         checkpoint_internal: bool = True,
+        fixed_prefix_kv: Optional[list[dict[str, torch.Tensor]]] = None,
         episode_state: Optional[torch.Tensor] = None,
         episode_memory_reader: Optional[nn.Module] = None,
     ) -> PackedHistoryCache:
@@ -489,6 +490,26 @@ class MoT(nn.Module):
             raise ValueError(
                 f"action tokens {tuple(action_tokens.shape[:2])} do not match layout {expected_action}"
             )
+        prefix_tokens = 0
+        if fixed_prefix_kv is not None:
+            if len(fixed_prefix_kv) < max_layers:
+                raise ValueError("fixed_prefix_kv has fewer layers than max_layers")
+            prefix_tokens = int(fixed_prefix_kv[0]["k"].shape[1])
+            if prefix_tokens <= 0:
+                raise ValueError("fixed_prefix_kv must contain at least one token")
+            for layer in fixed_prefix_kv[:max_layers]:
+                key, value = layer["k"], layer["v"]
+                if key.shape != value.shape or int(key.shape[0]) != batch:
+                    raise ValueError("fixed_prefix_kv has incompatible K/V geometry")
+                if int(key.shape[1]) != prefix_tokens:
+                    raise ValueError("fixed_prefix_kv token counts differ by layer")
+        if isinstance(attention_mask, torch.Tensor):
+            expected_mask = (layout.packed_tokens, prefix_tokens + layout.packed_tokens)
+            if tuple(attention_mask.shape[-2:]) != expected_mask:
+                raise ValueError(
+                    "packed attention mask does not match fixed-prefix geometry"
+                )
+
 
         tokens = {"video": video_tokens, "action": action_tokens}
         freqs = {"video": video_freqs, "action": action_freqs}
@@ -537,10 +558,18 @@ class MoT(nn.Module):
                     "checkpoint": use_gradient_checkpointing,
                 }
 
+            q_cat = torch.cat(q_chunks, dim=1)
+            k_cat = torch.cat(k_chunks, dim=1)
+            v_cat = torch.cat(v_chunks, dim=1)
+            if fixed_prefix_kv is not None:
+                prefix = fixed_prefix_kv[layer_idx]
+                k_cat = torch.cat([prefix["k"], k_cat], dim=1)
+                v_cat = torch.cat([prefix["v"], v_cat], dim=1)
+
             mixed = self._mixed_attention(
-                q_cat=torch.cat(q_chunks, dim=1),
-                k_cat=torch.cat(k_chunks, dim=1),
-                v_cat=torch.cat(v_chunks, dim=1),
+                q_cat=q_cat,
+                k_cat=k_cat,
+                v_cat=v_cat,
                 attention_mask=attention_mask,
                 checkpoint_attention=None if checkpoint_internal else False,
             )
