@@ -4,7 +4,7 @@
 
 ## 目标与核心结构
 
-新记忆系统同时保留局部精度和完整 episode 覆盖：最近的真实闭环轨迹由 PCH 精确保存，更早的轨迹被持续吸收到固定容量的隐式世界状态 $H$。它不保存无限增长的 KV，不使用 VLM、语言摘要、任务阶段、技能边界、关键帧或进度标签，也不判断某段历史“值不值得记”。所有实际发生的闭环交互都会进入记忆，只是以不同形态存在。
+新记忆系统同时保留局部精度和完整 episode 覆盖：不可变的首帧记忆 $F$ 保存真实初始观测，最近的真实闭环轨迹由 PCH 精确保存，更早的轨迹被持续吸收到固定容量的隐式世界状态 $H$。它不保存无限增长的 KV，不使用 VLM、语言摘要、任务阶段、技能边界、关键帧或进度标签，也不判断某段历史“值不值得记”。所有实际发生的闭环交互都会进入记忆，只是以不同形态存在。
 
 第一版固定：
 
@@ -12,7 +12,7 @@
 - $H$ 每次吸收 $C=4$ 个 transition，且 $C<W$；
 - $H$ 为 32 个、每个 1024 维的世界状态 token；
 - $H$ 的更新以 16 维通道组为基本线性变换单元；
-- 在线总容量为固定的 $H$、最多 $C-1$ 个待交接 block，以及 $W$ 个 PCH block，与 episode 长度无关。
+- 在线总容量为一个固定首帧 $F$、固定的 $H$、最多 $C-1$ 个待交接 block，以及 $W$ 个 PCH block，与 episode 长度无关。
 
 这里一个 block 对应一个已经执行的控制闭环：
 
@@ -53,7 +53,7 @@ o4, a4_exec, o5, a5_exec, o6, a6_exec, o7, a7_exec, o8
 
 例如 $W=8,C=4,t=13$ 时，$e=5,q=4$：$H$ 覆盖 blocks $[0,4)$，$Q$ 保存 block 4，PCH 保存 $[5,13)$。在 $t=16$ 时，blocks $[4,8)$ 完成交接，$H$ 覆盖 $[0,8)$，$Q$ 清空，PCH 保存 $[8,16)$。
 
-现有窗口外 `V0 anchor` 在 episode-memory 模式下必须关闭。episode 初期 $V_0$ 自然位于 PCH；之后 block 0 已存在于 $Q$ 或 $H$，再次加入 anchor 会破坏无重叠约束。
+首个真实观测额外写入一次不可变首帧记忆 $F$，实现上复用现有 `V0 anchor`：保存 $o_0$ 的 observation latent 和初始 proprio，不保存 $a_0$。当 block 0 仍在 Q 或 PCH 中时只维护而不额外读取 $F$；第一个完整 chunk 已交接、block 0 离开 Q+PCH 后才启用该 anchor。此后 $F$ 提供不变的初始场景参照，$H$ 表示交互持续修正后的远期世界状态。$F$ 是 episode 初始条件，不属于 transition 历史划分，因此 H/Q/PCH 对闭环 blocks 的互斥覆盖保持不变。
 
 ## PCH 与交接缓冲区
 
@@ -208,7 +208,7 @@ scan 消除了原先 $H_0\rightarrow H_1\rightarrow\cdots$ 的顺序前向和顺
 - $Q$ 收齐四个 block 后，更新 H 与删除 Q 是一个可回滚事务；
 - 顺序折叠和 associative scan 在 FP32 容差内得到相同的所有 prefix $H$；
 - scan 组合保持 16 维块结构，训练图中不存在跨 chunk 的 Python 顺序递归；
-- episode-memory 模式不再注入窗口外 V0 anchor；
+- episode-memory 模式只在 block 0 离开 Q+PCH 后读取单份 V0 anchor，且不保存对应动作；
 - Q+PCH 的 exact-history mask 与现有三种 causal mode 一致，padding 和无效 slot 不可见；
 - H 的 memory-attention 门初始化为零时，加载现有 checkpoint 的输出保持在规定容差内；
 - partial terminal action、prompt/context 变化、推理异常和 episode reset 正确清理 H/Q/PCH 与 pending transition；

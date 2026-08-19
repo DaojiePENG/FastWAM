@@ -1465,11 +1465,16 @@ def _packed_causal_history_bptt_loss(
     ).reshape(-1)
     if tuple(anchor_valid.shape) != (batch,):
         raise ValueError("episode_anchor_valid must be [B]")
-    expected_anchor = (
-        torch.zeros_like(current_blocks, dtype=torch.bool)
-        if episode_mode
-        else current_blocks > window
-    )
+    if episode_mode:
+        episode = model.episode_memory_config
+        exited = torch.clamp(current_blocks - episode.window_blocks, min=0)
+        # Do not duplicate V0 while it is represented exactly in Q or PCH.
+        expected_anchor = (
+            (exited >= episode.chunk_blocks)
+            & bool(episode.first_frame_memory)
+        )
+    else:
+        expected_anchor = current_blocks > window
     if not torch.equal(anchor_valid, expected_anchor):
         raise ValueError(
             "PCH must add V0 exactly when it is outside the recent window"
@@ -2219,6 +2224,33 @@ def _episode_memory_scan_bptt_loss(
         exact_positions[row, destination] = torch.arange(start, stop)
     from leapbot_va.pch import encode_pch_slot_validity_metadata
 
+    anchor_valid = (
+        (q_cpu > 0)
+        & bool(config.first_frame_memory)
+    ).to(dtype=torch.bool)
+    anchor_video = source_video.new_zeros(
+        source_video.shape[0], source_video.shape[1], 1, *source_video.shape[3:]
+    )
+    anchor_proprio = source_proprio.new_zeros(
+        source_proprio.shape[0], *source_proprio.shape[2:]
+    )
+    source_valid_cpu = source_valid.detach().cpu()
+    source_positions_cpu = source_positions.detach().cpu()
+    for row in range(batch):
+        if not bool(anchor_valid[row].item()):
+            continue
+        matches = torch.nonzero(
+            source_valid_cpu[row] & (source_positions_cpu[row] == 0),
+            as_tuple=False,
+        ).flatten()
+        if int(matches.numel()) != 1:
+            raise RuntimeError(
+                "episode-memory anchor requires exactly one real O0 in the full prefix"
+            )
+        source_slot = int(matches.item())
+        anchor_video[row] = source_video[row, :, source_slot : source_slot + 1]
+        anchor_proprio[row] = source_proprio[row, source_slot]
+
     exact_sample.update(
         {
             "history_video": exact_video,
@@ -2229,10 +2261,12 @@ def _episode_memory_scan_bptt_loss(
             "history_window_blocks": torch.full(
                 (batch,), exact_slots, dtype=torch.long
             ),
-            "episode_anchor_valid": torch.zeros(batch, dtype=torch.bool),
+            "episode_anchor_video": anchor_video,
+            "episode_anchor_proprio": anchor_proprio,
+            "episode_anchor_valid": anchor_valid,
             "full_episode_history": torch.zeros(batch, dtype=torch.bool),
             "pch_slot_validity": encode_pch_slot_validity_metadata(
-                exact_valid, torch.zeros(batch, dtype=torch.bool)
+                exact_valid, anchor_valid
             ),
             "_episode_state": selected_state.to(dtype=model.torch_dtype),
             "_episode_memory_aux_loss": aux_loss,

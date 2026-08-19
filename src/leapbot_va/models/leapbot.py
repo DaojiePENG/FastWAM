@@ -909,7 +909,16 @@ class LeapBotVA(FastWAM):
                 - 1
             )
             recent = list(records)
+            # Keep V0 immutable, but do not duplicate it while block 0 is
+            # already represented exactly in Q+PCH.
             anchor = None
+            if (
+                memory.episode_memory_config.first_frame_memory
+                and memory.episode_anchor is not None
+                and recent
+                and recent[0].block_index > 0
+            ):
+                anchor = memory.episode_anchor
         else:
             window = int(memory.config.history_window_blocks)
             recent = list(memory.replay_blocks[-window:])
@@ -2081,9 +2090,15 @@ class LeapBotVA(FastWAM):
                     f"trained={checkpoint_trained_depths}"
                 )
         checkpoint_training_strategy = payload.get("training_strategy")
+        memory_to_joint = (
+            str(checkpoint_training_strategy) == "episode_memory_only"
+            and self.training_strategy == "video_lora_action_full"
+            and self.episode_memory_config.enabled
+        )
         if (
             checkpoint_training_strategy is not None
             and str(checkpoint_training_strategy) != self.training_strategy
+            and not memory_to_joint
         ):
             raise ValueError(
                 "checkpoint/model training strategy mismatch: "

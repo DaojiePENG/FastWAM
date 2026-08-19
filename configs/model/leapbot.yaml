@@ -29,6 +29,7 @@ episode_memory:
   updater_dim: 256
   updater_heads: 8
   reader_rank: 64
+  first_frame_memory: true
   # null follows the causal-mode default: only interleaved exposes H to VideoDiT.
   video_reads: null
   action_reads: true

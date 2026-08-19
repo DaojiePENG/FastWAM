@@ -487,8 +487,11 @@ class LeapMemoryState:
             context_mask=self.pending_replay_context_mask,
             executed_actions=executed_actions.detach(),
         ).detached()
+        # V0 is retained once; episode memory delays reading it until block 0
+        # has left the exact Q+PCH path.
         if (
-            not self.episode_memory_config.enabled
+            (not self.episode_memory_config.enabled
+             or self.episode_memory_config.first_frame_memory)
             and block_index == 0
             and self.episode_anchor is None
         ):

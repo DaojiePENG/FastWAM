@@ -224,6 +224,9 @@ def test_h_q_pch_partition_is_complete_disjoint_and_transactional():
         )
         state.commit_packed_replay_actions(torch.zeros(1, 2, 7))
 
+    assert state.episode_anchor is not None
+    assert state.episode_anchor.block_index == 0
+
     snapshot = state.snapshot()
     chunk = state.close_previous_transition(
         next_observation_latents=_observation(13),

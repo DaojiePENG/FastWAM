@@ -140,9 +140,24 @@ def _validate_config(cfg: DictConfig, total_processes: int, gpu_ids: list[int]) 
         "incremental_full_bptt",
         "strict_replay_window_bptt",
         "packed_causal_history_bptt",
+        "episode_memory_scan_bptt",
     }:
         raise ValueError(f"Invalid history_training_mode: {history_mode}")
-    if int(cfg.model.history_window_blocks) != int(cfg.data.train.history_window_blocks):
+    if history_mode == "episode_memory_scan_bptt":
+        episode = cfg.model.episode_memory
+        if not bool(episode.enabled):
+            raise ValueError("episode_memory_scan_bptt requires episode_memory.enabled=true")
+        if int(cfg.model.history_window_blocks) != int(episode.window_blocks):
+            raise ValueError("model and episode-memory window_blocks must match")
+        if str(cfg.data.train.history_sampling_mode) != "full_prefix":
+            raise ValueError("episode-memory scan requires full_prefix data")
+        if cfg.data.train.history_window_blocks is not None:
+            raise ValueError("episode-memory full-prefix data cannot set history_window_blocks")
+        if bool(cfg.data.train.use_episode_anchor) != bool(episode.first_frame_memory):
+            raise ValueError("data anchor and episode first_frame_memory must match")
+        if not str(cfg.launch.output_prefix).startswith("episode_memory"):
+            raise ValueError("episode-memory runs require an episode_memory output namespace")
+    elif int(cfg.model.history_window_blocks) != int(cfg.data.train.history_window_blocks):
         raise ValueError("data/model history_window_blocks must match")
     backend = str(cfg.model.get("packed_history_attention_backend", "dense"))
     if backend not in {"dense", "flex"}:
@@ -220,6 +235,12 @@ def _contract_fields(cfg: DictConfig, total_processes: int, global_batch: int) -
         f"video_lora_multiplier={cfg.model.video_lora.learning_rate_multiplier}",
         f"history_vae_batch_chunk_size={cfg.model.history_vae_batch_chunk_size}",
         f"history_window_blocks={cfg.model.history_window_blocks}",
+        f"episode_memory_enabled={cfg.model.episode_memory.enabled}",
+        f"episode_memory_chunk_blocks={cfg.model.episode_memory.chunk_blocks}",
+        f"episode_memory_num_slots={cfg.model.episode_memory.num_slots}",
+        f"episode_memory_state_dim={cfg.model.episode_memory.state_dim}",
+        f"episode_memory_group_dim={cfg.model.episode_memory.group_dim}",
+        f"first_frame_memory={cfg.model.episode_memory.first_frame_memory}",
         f"world_model_conditioning={cfg.model.future_video_conditioning}",
         f"num_video_frames={cfg.model.num_video_frames}",
         f"future_video_condition_noise_probability={cfg.model.future_video_condition_noise_probability}",
@@ -234,10 +255,10 @@ def _contract_fields(cfg: DictConfig, total_processes: int, global_batch: int) -
         "padding_attention_mask=true",
         f"history_training_mode={cfg.model.history_training_mode}",
         f"packed_history_attention_backend={cfg.model.get('packed_history_attention_backend', 'dense')}",
-        f"history_execution_layout={'fixed_padding' if str(cfg.model.history_training_mode) == 'packed_causal_history_bptt' else 'iterative_replay'}",
+        f"history_execution_layout={'affine_prefix_scan' if str(cfg.model.history_training_mode) == 'episode_memory_scan_bptt' else 'fixed_padding' if str(cfg.model.history_training_mode) == 'packed_causal_history_bptt' else 'iterative_replay'}",
         f"history_sampling_mode={cfg.data.train.history_sampling_mode}",
         "history_padding=left_masked",
-        "episode_anchor=single_real_v0",
+        f"episode_anchor={'single_real_v0' if bool(cfg.model.episode_memory.first_frame_memory) else 'disabled'}",
         f"max_history_blocks={cfg.data.train.max_history_blocks}",
         f"replan_steps={cfg.model.replan_steps}",
         f"action_horizon={cfg.model.action_horizon}",

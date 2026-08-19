@@ -50,7 +50,7 @@ data:
     replan_steps: 10
     history_seed: ${seed}
     history_sampling_mode: full_prefix
-    use_episode_anchor: false
+    use_episode_anchor: ${model.episode_memory.first_frame_memory}
     initial_block_oversample: 1
     pretrained_norm_stats: ./checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json
     text_embedding_cache_dir: ./data/text_embeds_cache/libero
@@ -73,7 +73,7 @@ model:
   training_strategy: video_lora_action_full
   episode_memory:
     enabled: true
-    window_blocks: 8
+    window_blocks: ${model.history_window_blocks}
     chunk_blocks: 4
     num_slots: 32
     state_dim: 1024
@@ -81,6 +81,7 @@ model:
     updater_dim: 256
     updater_heads: 8
     reader_rank: 64
+    first_frame_memory: true
     video_reads: null
     action_reads: true
   training_exit_depths: [30]

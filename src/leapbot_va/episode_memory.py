@@ -28,6 +28,7 @@ class EpisodeMemoryConfig:
     updater_dim: int = 256
     updater_heads: int = 8
     reader_rank: int = 64
+    first_frame_memory: bool = True
     video_reads: bool | None = None
     action_reads: bool = True
 

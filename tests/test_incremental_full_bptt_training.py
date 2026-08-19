@@ -10,6 +10,7 @@ from fastwam.models.wan22.action_dit import ActionDiT
 from fastwam.models.wan22.mot import MoT
 from fastwam.models.wan22.wan_video_dit import WanVideoDiT
 from leapbot_va.episode_memory import EpisodeMemoryConfig
+from leapbot_va.lora import VideoLoRAConfig
 from leapbot_va.models.leapbot import LeapBotVA
 from leapbot_va.training import (
     _packed_causal_history_reference_loss,
@@ -1094,6 +1095,7 @@ def test_episode_memory_scan_training_step_backpropagates_through_h():
     loss, metrics = model.training_loss(sample)
     assert torch.isfinite(loss)
     assert metrics["loss_episode_memory_aux"] >= 0
+    assert metrics["episode_anchor_fraction"] == 1.0
     loss.backward()
     updater_grad = sum(
         float(parameter.grad.abs().sum())
@@ -1184,4 +1186,23 @@ def test_episode_memory_checkpoint_round_trip(tmp_path):
     torch.testing.assert_close(
         restored.episode_memory.reader.gates["action"],
         source.episode_memory.reader.gates["action"],
+    )
+
+    lora = VideoLoRAConfig(enabled=True, rank=2, alpha=2.0)
+    source.configure_finetuning(
+        training_strategy="episode_memory_only",
+        video_lora_config=lora,
+    )
+    staged_path = tmp_path / "episode-memory-stage1.pt"
+    source.save_checkpoint(staged_path, step=8)
+
+    joint = configured_model()
+    joint.configure_finetuning(
+        training_strategy="video_lora_action_full",
+        video_lora_config=lora,
+    )
+    joint.load_checkpoint(staged_path)
+    torch.testing.assert_close(
+        joint.episode_memory.empty_state,
+        source.episode_memory.empty_state,
     )
