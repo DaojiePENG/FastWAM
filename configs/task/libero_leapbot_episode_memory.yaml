@@ -82,8 +82,6 @@ model:
     updater_heads: 8
     reader_rank: 64
     first_frame_memory: true
-    video_reads: null
-    action_reads: true
   training_exit_depths: [30]
   mot_checkpoint_mixed_attn: true
   skip_dit_load_from_pretrain: true

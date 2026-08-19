@@ -1497,11 +1497,9 @@ def _packed_causal_history_bptt_loss(
     def memory_reader_kwargs(modality: str) -> dict[str, Any]:
         if not episode_mode:
             return {}
-        if modality == "video":
-            configured = model.episode_memory_config.video_reads
-            allowed = model.causal_mode == "interleaved" if configured is None else bool(configured)
-        else:
-            allowed = bool(model.episode_memory_config.action_reads)
+        if modality not in {"video", "action"}:
+            raise ValueError(f"unsupported episode-memory modality: {modality}")
+        allowed = modality == "action" or model.causal_mode == "interleaved"
         if not allowed:
             return {}
         return {

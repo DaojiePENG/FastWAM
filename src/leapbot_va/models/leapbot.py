@@ -807,13 +807,9 @@ class LeapBotVA(FastWAM):
         if not config.enabled or memory.episode_state is None:
             return {}
         if modality == "video":
-            allowed = (
-                self.causal_mode == "interleaved"
-                if config.video_reads is None
-                else bool(config.video_reads)
-            )
+            allowed = self.causal_mode == "interleaved"
         elif modality == "action":
-            allowed = bool(config.action_reads)
+            allowed = True
         else:
             raise ValueError(f"unsupported episode-memory modality: {modality}")
         if not allowed:
@@ -2129,8 +2125,11 @@ class LeapBotVA(FastWAM):
                 raise ValueError(
                     "episode-memory checkpoint is missing config or module state"
                 )
+            normalized_episode_payload = dict(checkpoint_episode_config)
+            normalized_episode_payload.pop("video_reads", None)
+            normalized_episode_payload.pop("action_reads", None)
             normalized_episode_config = EpisodeMemoryConfig(
-                **dict(checkpoint_episode_config)
+                **normalized_episode_payload
             )
             if normalized_episode_config != self.episode_memory_config:
                 raise ValueError(

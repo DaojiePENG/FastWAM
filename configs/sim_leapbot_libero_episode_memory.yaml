@@ -22,8 +22,6 @@ model:
     updater_heads: 8
     reader_rank: 64
     first_frame_memory: true
-    video_reads: null
-    action_reads: true
   packed_history_attention_backend: flex
   history_window_blocks: 8
   history_vae_batch_chunk_size: 4

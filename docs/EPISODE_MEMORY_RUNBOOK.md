@@ -78,5 +78,5 @@ bash scripts/evaluate_episode_memory_checkpoint.sh
 
 ## 配置入口
 
-训练实验由 `configs/task/libero_leapbot_episode_memory.yaml` 和 `libero_leapbot_episode_memory_joint.yaml` 控制；在线评估由 `configs/sim_leapbot_libero_episode_memory.yaml` 控制。首帧第三记忆的唯一开关是 `model.episode_memory.first_frame_memory`，数据侧 anchor 自动引用它。PCH 窗口只需修改 `model.history_window_blocks`，episode memory 的 `window_blocks` 自动引用该值；`chunk_blocks`、H 的 slot/维度、三种 causal mode 以及 VideoDiT/ActionDiT 的 H 读取范围也都由上述 YAML 控制。命令行中的 Hydra override 只用于临时调试，正式实验应固化为独立配置。
+训练实验由 `configs/task/libero_leapbot_episode_memory.yaml` 和 `libero_leapbot_episode_memory_joint.yaml` 控制；在线评估由 `configs/sim_leapbot_libero_episode_memory.yaml` 控制。首帧第三记忆的唯一开关是 `model.episode_memory.first_frame_memory`，数据侧 anchor 自动引用它。PCH 窗口只需修改 `model.history_window_blocks`，episode memory 的 `window_blocks` 自动引用该值；`chunk_blocks`、H 的 slot/维度和 causal mode 也都由上述 YAML 控制。H 的读出位置不设独立开关，只由 causal mode 决定。命令行中的 Hydra override 只用于临时调试，正式实验应固化为独立配置。
 

@@ -30,9 +30,7 @@ episode_memory:
   updater_heads: 8
   reader_rank: 64
   first_frame_memory: true
-  # null follows the causal-mode default: only interleaved exposes H to VideoDiT.
-  video_reads: null
-  action_reads: true
+  # H reader routing is derived exclusively from causal_mode.
 # Strict BF16 parity requires the same batch-one T=1 VAE call used at rollout.
 history_vae_batch_chunk_size: 1
 # These values define the learned local/absolute action clock and are persisted

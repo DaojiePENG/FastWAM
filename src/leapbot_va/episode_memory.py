@@ -29,8 +29,6 @@ class EpisodeMemoryConfig:
     updater_heads: int = 8
     reader_rank: int = 64
     first_frame_memory: bool = True
-    video_reads: bool | None = None
-    action_reads: bool = True
 
     def __post_init__(self) -> None:
         positive = {

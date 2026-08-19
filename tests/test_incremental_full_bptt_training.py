@@ -1107,14 +1107,14 @@ def test_episode_memory_scan_training_step_backpropagates_through_h():
     assert model.episode_memory.reader.gates["action"].grad.abs().sum() > 0
 
 @pytest.mark.parametrize(
-    ("mode", "video_reads"),
+    ("mode", "expected_video_h"),
     [
         ("interleaved", True),
         ("vision_causal", False),
         ("action_aggregator", False),
     ],
 )
-def test_episode_memory_reader_routing_follows_causal_mode(mode, video_reads):
+def test_episode_memory_reader_routing_follows_causal_mode(mode, expected_video_h):
     model = _model(mode)
     config = EpisodeMemoryConfig(
         enabled=True,
@@ -1140,7 +1140,7 @@ def test_episode_memory_reader_routing_follows_causal_mode(mode, video_reads):
     memory = type("ToyMemory", (), {})()
     memory.episode_memory_config = config
     memory.episode_state = model.episode_memory.initial_state(1)
-    assert bool(model._episode_memory_kwargs(memory, "video")) is video_reads
+    assert bool(model._episode_memory_kwargs(memory, "video")) is expected_video_h
     assert bool(model._episode_memory_kwargs(memory, "action")) is True
 
 def test_episode_memory_checkpoint_round_trip(tmp_path):
@@ -1187,6 +1187,17 @@ def test_episode_memory_checkpoint_round_trip(tmp_path):
         restored.episode_memory.reader.gates["action"],
         source.episode_memory.reader.gates["action"],
     )
+
+    legacy_payload = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    legacy_payload["episode_memory_config"]["video_reads"] = False
+    legacy_payload["episode_memory_config"]["action_reads"] = False
+    legacy_path = tmp_path / "episode-memory-legacy-reader-switches.pt"
+    torch.save(legacy_payload, legacy_path)
+    configured_model().load_checkpoint(legacy_path)
 
     lora = VideoLoRAConfig(enabled=True, rank=2, alpha=2.0)
     source.configure_finetuning(

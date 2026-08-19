@@ -123,8 +123,7 @@ def create_leapbot(
         updater_dim=int(episode_memory.get("updater_dim", 256)),
         updater_heads=int(episode_memory.get("updater_heads", 8)),
         reader_rank=int(episode_memory.get("reader_rank", 64)),
-        video_reads=episode_memory.get("video_reads"),
-        action_reads=bool(episode_memory.get("action_reads", True)),
+        first_frame_memory=bool(episode_memory.get("first_frame_memory", True)),
     )
     model.configure_causal_training(
         causal_mode=str(causal_mode),

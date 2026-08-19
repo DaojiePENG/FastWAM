@@ -77,11 +77,11 @@ $H\in\mathbb{R}^{32\times1024}$ 是一个独立于 VideoDiT 3072 维 hidden spac
 
 持久状态只保存这一份 $H$，不保存它的逐层 KV。每次模型前向时，用共享基础投影和逐层低秩适配器临时产生每层 memory K/V，再通过独立的 memory-attention 分支供 VideoDiT 或 ActionDiT 读取。该分支与语言/proprio cross-attention 分开，并使用零初始化输出门，使加入 memory 的初始行为接近现有 checkpoint。这样计算形式类似逐层读取 context token，但 $H$ 不进入现有静态 `context_payload`，也不与 PCH KV 混成无法区分的持久 cache。
 
-三种 causal mode 继续作为既有实验轴，$H$ 的读取范围遵循每个实验的因果合同，而不是在 memory 设计中固定成“只给 ActionDiT”：
+三种 causal mode 继续作为既有实验轴，$H$ 的读取范围只由 causal mode 决定，不再设置额外的普通开关：
 
-- `interleaved` 默认允许 VideoDiT 和 ActionDiT 读取 $H$；
-- `vision_causal` 的严格版本不允许 action-conditioned $H$ 进入 VideoDiT，ActionDiT 仍可读取；若允许 VideoDiT 读取，则必须明确标成放宽因果约束的独立 ablation；
-- `action_aggregator` 默认由 ActionDiT 读取 $H$，让 VideoDiT 读取同样作为独立 ablation。
+- `interleaved`：VideoDiT 和 ActionDiT 都读取 $H$；
+- `vision_causal`：只有 ActionDiT 读取 $H$；
+- `action_aggregator`：只有 ActionDiT 读取 $H$。
 
 每个实验只维护一个 $H$，不并行维护 $H^V/H^{VA}$。
 
