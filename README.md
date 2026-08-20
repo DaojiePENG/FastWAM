@@ -131,6 +131,10 @@ per task):
   `EVALUATION.sigma_shift=5.0` to reproduce the original setting.
 - Upgraded LIBERO evaluation with persistent model workers, dynamic task
   scheduling, bad-GPU quarantine, failure recovery, and resumable results.
+- Optimized action-only inference for IDM and Optional IDM: `infer_action`
+  returns actions and video latents directly, while VAE decoding is performed
+  only by `infer_joint` when video output is requested, eliminating redundant
+  computation in action-only deployments.
 
 ## Index
 

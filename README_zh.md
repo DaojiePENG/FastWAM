@@ -117,6 +117,8 @@ python experiments/libero/run_libero_manager.py \
   效果接近。评测原论文发布的旧 checkpoint 时，请显式设置
   `EVALUATION.sigma_shift=5.0`，以复现原始设置。
 - LIBERO 评测升级为持久模型进程，并支持动态任务调度、坏卡隔离、失败恢复和断点续测。
+- 优化 IDM 和 Optional IDM 的纯 action 推理：`infer_action` 直接返回 action 和 video latent，
+  仅 `infer_joint` 在需要输出视频时执行 VAE decode，避免 action-only 部署中的冗余计算。
 
 ## 目录
 

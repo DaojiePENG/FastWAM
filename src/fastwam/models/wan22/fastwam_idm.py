@@ -312,47 +312,6 @@ class FastWAMIDM(FastWAMJoint):
         return self.video_expert.unpatchify(x, (f, h, w))
 
     @torch.no_grad()
-    def infer_action(
-        self,
-        prompt: Optional[str],
-        input_image: torch.Tensor,
-        action_horizon: int,
-        num_video_frames: int,
-        proprio: Optional[torch.Tensor] = None,
-        context: Optional[torch.Tensor] = None,
-        context_mask: Optional[torch.Tensor] = None,
-        negative_prompt: Optional[str] = None,
-        text_cfg_scale: float = 1.0,
-        num_inference_steps: int = 20,
-        sigma_shift: Optional[float] = None,
-        seed: Optional[int] = None,
-        rand_device: str = "cpu",
-        tiled: bool = False,
-        compile_action_infer: bool = False,
-    ) -> dict[str, Any]:
-        # Reuse infer_joint pipeline and keep infer_action output contract.
-        out = self.infer_joint(
-            prompt=prompt,
-            input_image=input_image,
-            num_video_frames=num_video_frames,
-            action_horizon=action_horizon,
-            action=None,
-            proprio=proprio,
-            context=context,
-            context_mask=context_mask,
-            negative_prompt=negative_prompt,
-            text_cfg_scale=text_cfg_scale,
-            num_inference_steps=num_inference_steps,
-            sigma_shift=sigma_shift,
-            seed=seed,
-            rand_device=rand_device,
-            tiled=tiled,
-            test_action_with_infer_action=False,
-            compile_action_infer=compile_action_infer,
-        )
-        return {"action": out["action"]}
-
-    @torch.no_grad()
     def infer_joint(
         self,
         prompt: Optional[str],
@@ -373,14 +332,56 @@ class FastWAMIDM(FastWAMJoint):
         test_action_with_infer_action: bool = True,
         compile_action_infer: bool = False,
     ) -> dict[str, Any]:
-        del negative_prompt, text_cfg_scale, test_action_with_infer_action
-        self.eval()
-
+        del test_action_with_infer_action
         if action is not None:
             logger.warning(
                 "`FastWAMIDM.infer_joint` ignores `action` input; "
                 "video is denoised in a standalone first stage."
             )
+
+        out = self.infer_action(
+            prompt=prompt,
+            input_image=input_image,
+            num_video_frames=num_video_frames,
+            action_horizon=action_horizon,
+            proprio=proprio,
+            context=context,
+            context_mask=context_mask,
+            negative_prompt=negative_prompt,
+            text_cfg_scale=text_cfg_scale,
+            num_inference_steps=num_inference_steps,
+            sigma_shift=sigma_shift,
+            seed=seed,
+            rand_device=rand_device,
+            tiled=tiled,
+            compile_action_infer=compile_action_infer,
+        )
+        return {
+            "video": self._decode_latents(out["video_latents"], tiled=tiled),
+            "action": out["action"],
+        }
+
+    @torch.no_grad()
+    def infer_action(
+        self,
+        prompt: Optional[str],
+        input_image: torch.Tensor,
+        action_horizon: int,
+        num_video_frames: int,
+        proprio: Optional[torch.Tensor] = None,
+        context: Optional[torch.Tensor] = None,
+        context_mask: Optional[torch.Tensor] = None,
+        negative_prompt: Optional[str] = None,
+        text_cfg_scale: float = 1.0,
+        num_inference_steps: int = 20,
+        sigma_shift: Optional[float] = None,
+        seed: Optional[int] = None,
+        rand_device: str = "cpu",
+        tiled: bool = False,
+        compile_action_infer: bool = False,
+    ) -> dict[str, Any]:
+        del negative_prompt, text_cfg_scale
+        self.eval()
 
         if input_image.ndim == 3:
             input_image = input_image.unsqueeze(0)
@@ -583,6 +584,6 @@ class FastWAMIDM(FastWAMJoint):
             latents_action = self.infer_action_scheduler.step(pred_action, step_delta_action, latents_action)
 
         return {
-            "video": self._decode_latents(latents_video, tiled=tiled),
+            "video_latents": latents_video,
             "action": latents_action[0].detach().to(device="cpu", dtype=torch.float32),
         }
