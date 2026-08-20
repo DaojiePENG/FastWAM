@@ -1136,7 +1136,20 @@ class Wan22Trainer:
                             global_loss,
                         )
                         if global_loss_metrics:
-                            detail_str = " ".join([f"{k}={v:.4f}" for k, v in sorted(global_loss_metrics.items())])
+                            # Keep per-layer memory diagnostics in W&B without
+                            # expanding every console line by O(num_layers).
+                            console_metrics = {
+                                key: value
+                                for key, value in global_loss_metrics.items()
+                                if not (
+                                    key.startswith("episode_memory_")
+                                    and "_layer_" in key
+                                )
+                            }
+                            detail_str = " ".join(
+                                f"{key}={value:.4f}"
+                                for key, value in sorted(console_metrics.items())
+                            )
                             description += detail_str + " "
                         samples_per_second = (
                             steps_per_sec

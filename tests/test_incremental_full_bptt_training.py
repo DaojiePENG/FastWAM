@@ -1096,6 +1096,12 @@ def test_episode_memory_scan_training_step_backpropagates_through_h():
     assert torch.isfinite(loss)
     assert metrics["loss_episode_memory_aux"] >= 0
     assert metrics["episode_anchor_fraction"] == 1.0
+    assert metrics["episode_memory_gate_video_mean_abs"] == 0.0
+    assert metrics["episode_memory_gate_action_mean_abs"] == 0.0
+    assert metrics["episode_memory_gate_video_active_fraction"] == 0.0
+    assert metrics["episode_memory_gate_action_active_fraction"] == 0.0
+    assert metrics["episode_memory_residual_ratio_video_mean"] == 0.0
+    assert metrics["episode_memory_residual_ratio_action_mean"] == 0.0
     loss.backward()
     updater_grad = sum(
         float(parameter.grad.abs().sum())

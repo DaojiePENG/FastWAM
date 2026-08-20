@@ -2276,9 +2276,19 @@ def _episode_memory_scan_bptt_loss(
             "_episode_memory_aux_loss": aux_loss,
         }
     )
-    return _packed_causal_history_bptt_loss(
-        model, exact_sample, tiled=tiled
-    )
+    reader = model.episode_memory.reader
+    reader.begin_monitoring()
+    try:
+        total, metrics = _packed_causal_history_bptt_loss(
+            model, exact_sample, tiled=tiled
+        )
+    except Exception:
+        reader.end_monitoring()
+        raise
+    metrics.update(reader.end_monitoring())
+    return total, metrics
+
+
 def causal_history_training_loss(model: "LeapBotVA", sample, tiled: bool = False):
     """Full-gradient causal training with LingBot-style video conditioning.
 

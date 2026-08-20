@@ -296,11 +296,29 @@ def test_reader_zero_gate_preserves_existing_model_behavior():
     )
     query = torch.randn(2, 5, 12)
     state = torch.randn(2, 4, 8)
+    reader.begin_monitoring()
     output = reader("video", 0, query, state)
+    metrics = reader.end_monitoring()
     assert torch.count_nonzero(output) == 0
+    assert metrics["episode_memory_gate_video_mean_abs"] == 0.0
+    assert metrics["episode_memory_gate_video_active_fraction"] == 0.0
+    assert metrics["episode_memory_gate_video_layer_00"] == 0.0
+    assert metrics["episode_memory_residual_ratio_video_mean"] == 0.0
     output.sum().backward()
     assert reader.gates["video"].grad is not None
     assert reader.gates["video"].grad[0].abs() > 0
+
+    with torch.no_grad():
+        reader.gates["video"][0] = 0.5
+    reader.begin_monitoring()
+    nonzero_output = reader("video", 0, query, state)
+    metrics = reader.end_monitoring()
+    assert metrics["episode_memory_gate_video_layer_00"] == pytest.approx(
+        float(torch.tanh(torch.tensor(0.5)))
+    )
+    assert metrics["episode_memory_gate_video_active_fraction"] == 0.5
+    assert metrics["episode_memory_residual_ratio_video_mean"] > 0.0
+    assert torch.count_nonzero(nonzero_output) > 0
 
 
 def _segment(modality: str, block: int, length: int) -> KVSegment:

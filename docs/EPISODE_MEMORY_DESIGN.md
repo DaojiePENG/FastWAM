@@ -88,7 +88,7 @@ context / context_mask
 executed_actions
 ~~~
 
-这里的 context 是推理时的语言 context 加该 observation 对应的 proprio token。所有张量在写入 replay 状态时都会 detach。
+这里的 context 是推理时的语言 context 加该 observation 对应的 proprio token，供之后的精确 PCH prefill 使用。H updater 虽然复用同一个 pre-DiT 接口，但当前只消费其中的 `tokens`，不会读取或写入 context/proprio。所有张量在写入 replay 状态时都会 detach。
 
 ClosedReplayBlock 在 ReplayBlock 基础上增加：
 
@@ -173,7 +173,16 @@ model.commit_executed_actions(memory, actions_model_space)
 
 ### 输入 token 的真实来源
 
-在线推理中，Q 中的 raw observation/action 会重新经过现有 VideoDiT/ActionDiT 的 clean pre_dit，并应用绝对 block/action temporal position。这里不会运行 VideoDiT 或 ActionDiT transformer blocks，也不会读取 PCH KV 或 H。
+在线推理中，Q 保存的 observation VAE latents 和 executed actions 会重新经过现有 VideoDiT/ActionDiT 的 clean pre_dit，并应用绝对 block/action temporal position。这里不会重新运行 VAE，不会运行 VideoDiT 或 ActionDiT transformer blocks，也不会读取 PCH KV 或 H。
+
+`pre_dit` 会同时构造 `tokens`、`context`、`context_mask`、`t_mod` 和 `freqs`，但 EpisodeChunkUpdater 只接收 `tokens`。在进入 DiT blocks 之前，context 中的语言/proprio token 尚未与视觉或动作 token 发生 cross-attention，因此当前 H writer 的有效输入严格是 observation 与 executed action，不包含 proprio：
+
+~~~text
+video token  = VideoDiT patch embedding(VAE latent) + episode block offset
+action token = ActionDiT action encoder(executed action) + block/control offsets
+~~~
+
+proprio 仍由精确 Q+PCH 和当前目标分支按真实时刻读取，不写入 H。
 
 EpisodeChunkUpdater._pool_tokens 随后立即对每个 observation 的全部空间 token、每个 action 段的全部 action token 做平均：
 
@@ -388,6 +397,17 @@ clean updater 输入停止梯度。用于主 WAM target 的 exact Q+PCH packed f
 
 memory reader 的 gate 初始化为零，因此刚开始时主 WAM 行为不受 H 影响；gate 本身能收到主损失梯度，而 updater 同时由辅助损失启动。
 
+### Memory reader 训练监控
+
+`episode_memory_scan_bptt` 每个训练 step 会把以下指标并入现有 metrics，trainer 自动以 `train/` 前缀写入 W&B：
+
+- `episode_memory_gate_{video|action}_mean_abs`、`max_abs`：各层有效门控 `tanh(raw_gate)` 的绝对值统计；
+- `episode_memory_gate_{video|action}_active_fraction`：有效门控绝对值大于 0.01 的层比例；
+- `episode_memory_gate_{video|action}_layer_00...`：每层带符号的有效门控；
+- `episode_memory_residual_ratio_{video|action}_mean` 和逐层值：实际注入 residual 的 RMS 与注入前 hidden RMS 之比。
+
+residual ratio 只对该 step 中按 causal mode 真正调用 reader 的模态产生。所有统计均在 reader forward 中 detach，不进入损失、不改变梯度。gate 非零但 residual ratio 接近零表示 reader 输出没有实际影响；辅助损失下降但 ActionDiT residual ratio 长期为零，则表示 updater 学到了内部校正而策略没有使用 H。
+
 ## H 如何被 VideoDiT / ActionDiT 读取
 
 EpisodeMemoryReader 是独立的逐层 cross-attention-like 分支，不是把 H token 拼进 PCH self-attention KV。
@@ -495,15 +515,29 @@ transition updater 改为 role_embedding 后，没有为更早实验性 episode-
 
 ## 当前代码明确存在的边界与差距
 
-### Updater 已经丢失空间布局
+### Updater 的视觉写入已经丢失空间布局
 
-虽然输入来自全部 clean pre-DiT token，_pool_tokens 会立刻对空间/action token 维取平均。当前 H writer 没有 VideoDiT 空间交互，也没有保留物体位置、局部变化或 token 间关系。
+当前视觉写入不是“经过 VideoDiT 世界建模后的特征”。`VideoDiT.pre_dit` 只对 observation VAE latent 做 patch embedding，再加入 episode block offset；空间 token 尚未经过任何 VideoDiT block 的空间 self-attention。随后 `_pool_tokens` 立即沿空间 token 维取平均：
 
-### Updater 的训练/推理 proprio context 不完全一致
+~~~text
+[B,C+1,Sv,Dv] -> [B,C+1,Dv]
+~~~
 
-在线 _update_episode_memory 使用每个 replay block 保存的 context；该 context 在推理时包含对应 proprio token。
+因此 block 时间偏置和整体视觉统计仍然存在，但 patch 的排列、物体位置、局部变化以及 token 间空间关系都不能被当前 updater 显式区分。Action token 也沿控制步维平均，因此一个 block 内更细的动作时序结构同样被强烈压缩。这是当前 H writer 最实质的表征瓶颈，而不是 pre-DiT 是否接收 context。
 
-scan 训练生成 updater clean pre-DiT token 时调用 build_inputs(..., append_proprio=False)，随后对所有历史 observation/action 使用同一份 text base_context，没有把 history_proprio 加入 updater 输入。历史 proprio 仍用于后面的 exact PCH/WAM target branch，但不进入训练时的 H updater。这是当前可验证的 train–inference input mismatch。
+拟议的替换方向是只为 H writer 引入冻结的 V-JEPA 视觉编码器，PCH 和 VideoDiT 主路径保持不变。V-JEPA 在池化前已经完成时空 token 交互，可为 updater 提供更稳定、包含空间关系的视觉状态坐标；executed action 仍由独立的动作编码路径表示，二者只在 updater 内融合。为保持现有 prediction-correction 因果语义，预测分支只能读取截止到 \(o_i\) 的视觉表示和 \(a_i^{exec}\)，校正分支才能读取真实 \(o_{i+1}\)；不能用一次看见完整 \(o_0,\ldots,o_C\) 的双向 chunk 表示同时生成预测与校正。每个 chunk 仍独立产生算子，因此不会破坏 associative scan。
+
+该替换尚未实现。当前 Q 只持有 observation VAE latent，而冻结 V-JEPA 通常需要自身预处理后的 RGB 帧或视频，因此落地时需要额外保留其输入或在 observation 到达时缓存合适的视觉表征，不能直接把现有 VAE latent 当作 V-JEPA 输入。
+
+### Updater context/proprio 的实际边界
+
+在线 `_update_episode_memory` 复用 replay block 保存的完整 context，其中包含该 observation 对应的 proprio token；scan 训练生成 clean token 时则调用 `build_inputs(..., append_proprio=False)`，并传入统一的纯文本 `base_context`。这在调用参数上不同，但在当前实现中不是有效的 train-inference mismatch。
+
+原因是 VideoDiT/ActionDiT 的 `pre_dit` 将 context 单独保存在 pre-state 中，只有进入后续 DiT blocks 的 cross-attention 后才会作用于视觉/动作 token；EpisodeChunkUpdater 只取得 `pre_state["tokens"]`，不取得 context。因此训练和在线 H updater 都没有使用 proprio，符合 H 只保存远期 observation-action 状态、精确 proprio 留在 Q+PCH 的边界。
+
+`append_proprio=False` 也不代表整个 WAM 训练只使用文本。原始 FastWAM 的 `build_inputs` 默认会追加当前 proprio；LeapBot 的历史训练先关闭这一步，以避免把当前 proprio 错配给所有历史 block，随后在 exact Q+PCH/WAM target 分支中使用 `history_proprio` 为每个历史 block 重建对应 context，并为当前 block 附加当前真实 proprio。
+
+当前剩余问题只是接口语义不够清晰并有冗余计算：在线 H 更新传入了 updater 不会消费的 context。后续应让 H writer 使用显式的 context-independent token/视觉编码接口；如果未来改为读取 pre-state context，则必须同时重建训练端逐时刻 context，否则届时才会形成真实 mismatch。
 
 ### 训练没有跨目标复用 episode scan
 

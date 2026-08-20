@@ -474,6 +474,56 @@ class EpisodeMemoryReader(nn.Module):
         )
         for up in self.adapter_up:
             nn.init.zeros_(up.weight)
+        self._monitoring_enabled = False
+        self._monitoring_residual_ratios: dict[str, list[list[torch.Tensor]]] = {}
+
+    def begin_monitoring(self) -> None:
+        """Collect detached reader-effect statistics until ``end_monitoring``."""
+
+        self._monitoring_enabled = True
+        self._monitoring_residual_ratios = {
+            modality: [[] for _ in range(self.num_layers)]
+            for modality in self.gates
+        }
+
+    def end_monitoring(
+        self, *, active_threshold: float = 0.01
+    ) -> dict[str, float]:
+        """Return effective gate and observed memory-residual diagnostics."""
+
+        if active_threshold < 0:
+            raise ValueError("active_threshold must be non-negative")
+        self._monitoring_enabled = False
+        metrics: dict[str, float] = {}
+        with torch.no_grad():
+            for modality, raw_gates in self.gates.items():
+                effective = torch.tanh(raw_gates.detach().float())
+                absolute = effective.abs()
+                prefix = f"episode_memory_gate_{modality}"
+                metrics[f"{prefix}_mean_abs"] = float(absolute.mean())
+                metrics[f"{prefix}_max_abs"] = float(absolute.max())
+                metrics[f"{prefix}_active_fraction"] = float(
+                    (absolute > active_threshold).float().mean()
+                )
+                for layer, value in enumerate(effective):
+                    metrics[f"{prefix}_layer_{layer:02d}"] = float(value)
+
+                layer_samples = self._monitoring_residual_ratios.get(modality, [])
+                observed_layer_means: list[torch.Tensor] = []
+                for layer, samples in enumerate(layer_samples):
+                    if not samples:
+                        continue
+                    layer_mean = torch.stack(samples).mean()
+                    metrics[
+                        f"episode_memory_residual_ratio_{modality}_layer_{layer:02d}"
+                    ] = float(layer_mean)
+                    observed_layer_means.append(layer_mean)
+                if observed_layer_means:
+                    metrics[f"episode_memory_residual_ratio_{modality}_mean"] = float(
+                        torch.stack(observed_layer_means).mean()
+                    )
+        self._monitoring_residual_ratios = {}
+        return metrics
 
     def forward(
         self,
@@ -508,7 +558,14 @@ class EpisodeMemoryReader(nn.Module):
         attended = F.scaled_dot_product_attention(q, k, v)
         attended = attended.transpose(1, 2).reshape(batch, queries, self.attention_dim)
         gate = torch.tanh(self.gates[modality][layer]).to(dtype=attended.dtype)
-        return gate * self.output[modality](attended)
+        residual = gate * self.output[modality](attended)
+        if self._monitoring_enabled:
+            with torch.no_grad():
+                residual_rms = residual.detach().float().square().mean().sqrt()
+                base_rms = query_tokens.detach().float().square().mean().sqrt()
+                ratio = residual_rms / base_rms.clamp_min(1.0e-12)
+                self._monitoring_residual_ratios[modality][int(layer)].append(ratio)
+        return residual
 
 
 class EpisodeMemoryModule(nn.Module):
