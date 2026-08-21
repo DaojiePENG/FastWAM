@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - libero_spatial_leapbotce
+  - _self_
+batch_size: 1
+num_workers: 0
+max_steps: 10
+log_every: 1
+save_every: 10
+eval_every: 0
+model:
+  cloudedge:
+    stale_loss_warmup_steps: 5
+wandb:
+  enabled: false

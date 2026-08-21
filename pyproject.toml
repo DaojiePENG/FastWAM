@@ -31,6 +31,7 @@ dependencies = [
   "rich==14.2.0",
   "safetensors==0.5.3",
   "termcolor==2.5.0",
+  "timm==0.9.10",
   "torch==2.7.1+cu128",
   "torchcodec==0.4.0",
   "torchvision==0.22.1+cu128",
@@ -39,6 +40,9 @@ dependencies = [
   "typing-extensions==4.15.0",
   "wandb==0.23.1",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [tool.setuptools.package-dir]
 "" = "src"

@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+  - override /data: libero_spatial_cloudedge
+  - override /model: leapbotce
+  - _self_
+batch_size: 2
+num_workers: 4
+learning_rate: 1e-4
+num_epochs: 10
+max_steps: 2000
+log_every: 10
+save_every: 500
+eval_every: 0
+gradient_accumulation_steps: 1
+weight_decay: 1e-2
+resume: null
+model:
+  cloudedge:
+    stale_loss_warmup_steps: 1000
+wandb:
+  project: leapbotce
+  name: libero_spatial_leapbotce
