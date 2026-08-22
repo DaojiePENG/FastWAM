@@ -1,4 +1,4 @@
-_target_: fastwam.models.wan22.leapbotce_factory.create_leapbotce
+_target_: fastwam.models.wan22.leapbotce_edge_train_factory.create_leapbotce
 model_id: Wan-AI/Wan2.2-TI2V-5B
 tokenizer_model_id: Wan-AI/Wan2.1-T2V-1.3B
 tokenizer_max_len: 128
@@ -15,6 +15,7 @@ edge_vision:
   num_views: 2
   pretrained: true
   freeze: true
+  checkpoint_path: checkpoints/siglip-base/model.safetensors
 cloudedge:
   stale_loss_lambda_max: 0.5
   stale_loss_warmup_steps: 1000

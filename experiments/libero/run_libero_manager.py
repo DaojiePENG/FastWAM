@@ -22,6 +22,8 @@ if str(project_root) not in sys.path:
 from experiments.libero.summarize_results import summarize_results
 from experiments.libero.worker_pool import pending_task_count, read_worker_status, requeue_task
 
+DEFAULT_TASK_SUITE_NAMES = ["libero_10", "libero_goal", "libero_spatial", "libero_object"]
+
 
 def create_task_file(output_file: Path, task_suite_names: list[str]) -> Path:
     from libero.libero import benchmark
@@ -104,12 +106,22 @@ def run_evaluation(
     output_dir: Path,
     extra_overrides: list[str],
     config_name: str,
+    evaluator_script: str,
 ) -> None:
     if num_gpus <= 0:
         raise ValueError("MULTIRUN.num_gpus must be positive.")
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    evaluator_path = (project_root / evaluator_script).resolve()
+    try:
+        evaluator_path.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(
+            "MULTIRUN.evaluator_script must be a path inside the project root."
+        ) from exc
+    if not evaluator_path.is_file():
+        raise FileNotFoundError(f"Evaluator script not found: {evaluator_path}")
     source_task_file = task_file.resolve()
     output_task_file = (output_dir / source_task_file.name).resolve()
     if source_task_file != output_task_file:
@@ -172,6 +184,7 @@ def run_evaluation(
     print(f"trials per task: {num_trials}")
     print(f"task list: {task_file}")
     print(f"output: {output_dir}")
+    print(f"evaluator: {evaluator_path.relative_to(project_root)}")
     if extra_args_display:
         print(f"forwarded overrides: {extra_args_display}")
     print("recovery: quarantine a crashed GPU and requeue its unfinished task")
@@ -194,7 +207,7 @@ def run_evaluation(
         )
         cmd = [
             sys.executable,
-            "experiments/libero/eval_libero_single.py",
+            str(evaluator_path.relative_to(project_root)),
             "--config-name",
             config_name,
             f"task={task_choice}",
@@ -315,11 +328,15 @@ def main(cfg: DictConfig):
     if task_file_cfg:
         task_file = Path(os.path.expanduser(os.path.expandvars(str(task_file_cfg))))
         if not task_file.exists():
-            task_file = create_task_file(task_file, list(manager.task_suite_names))
+            task_file = create_task_file(
+                task_file, list(manager.get("task_suite_names", DEFAULT_TASK_SUITE_NAMES))
+            )
         else:
             print(f"Using existing task list: {task_file}")
     else:
-        task_file = create_task_file(output_dir / "tasks.txt", list(manager.task_suite_names))
+        task_file = create_task_file(
+            output_dir / "tasks.txt", list(manager.get("task_suite_names", DEFAULT_TASK_SUITE_NAMES))
+        )
 
     OmegaConf.save(config=cfg, f=str(output_dir / "manager_config.yaml"))
     if bool(manager.get("create_only", False)):
@@ -335,6 +352,7 @@ def main(cfg: DictConfig):
         output_dir=output_dir,
         extra_overrides=collect_worker_overrides(),
         config_name=HydraConfig.get().job.config_name,
+        evaluator_script=str(manager.get("evaluator_script", "experiments/libero/eval_libero_single.py")),
     )
 
 

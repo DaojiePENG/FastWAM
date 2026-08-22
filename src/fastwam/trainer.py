@@ -3,6 +3,7 @@ import json
 import inspect
 import os
 import re
+import shutil
 from math import ceil
 from pathlib import Path
 import time
@@ -41,6 +42,7 @@ class Wan22Trainer:
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
         self.save_every = int(cfg.save_every)
+        self.keep_last_checkpoints = int(cfg.get("keep_last_checkpoints", 0))
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
@@ -603,6 +605,18 @@ class Wan22Trainer:
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
 
+    def _prune_checkpoints(self):
+        """Keep only the newest complete checkpoints when retention is enabled."""
+        keep = self.keep_last_checkpoints
+        if keep <= 0:
+            return
+        weights = sorted(Path(self.weights_dir).glob("step_*.pt"))
+        states = sorted((path for path in Path(self.state_dir).glob("step_*") if path.is_dir()), key=lambda path: path.name)
+        for path in weights[:-keep]:
+            path.unlink(missing_ok=True)
+        for path in states[:-keep]:
+            shutil.rmtree(path, ignore_errors=True)
+
     def save_checkpoint(self):
         step_tag = f"step_{self.global_step:06d}"
 
@@ -617,6 +631,7 @@ class Wan22Trainer:
         self.accelerator.save_state(output_dir=state_path)
         if self.accelerator.is_main_process:
             self._save_trainer_state(state_path)
+            self._prune_checkpoints()
         self.accelerator.wait_for_everyone()
 
         return {"weights_path": ckpt_path, "state_path": state_path}
@@ -692,6 +707,9 @@ class Wan22Trainer:
 
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
+
+                if hasattr(train_model, "set_training_step"):
+                    train_model.set_training_step(self.global_step, self.max_steps)
 
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)

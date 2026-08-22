@@ -237,7 +237,11 @@ class LeapBotCE(FastWAM):
         return self.infer_action_edge(cache, current_views, action_horizon, **kwargs)
 
     def save_checkpoint(self, path, optimizer=None, step=None):
-        payload = {"mot": self.mot.state_dict(), "edge_vision": self.edge_vision.state_dict(),
+        # Frozen Wan/SigLIP base weights come from the configured local paths.
+        # Export only the fine-tuned action and edge adapter parameters.
+        payload = {"leapbotce_delta": True,
+                   "action_expert": self.action_expert.state_dict(),
+                   "edge_vision_projector": self.edge_vision.projector.state_dict(),
                    "method": "LeapBotCE", "step": step, "torch_dtype": str(self.torch_dtype),
                    "leapbotce_meta": {"edge_num_views": self.edge_num_views,
                                        "stale_loss_lambda_max": self.stale_loss_lambda_max,
@@ -249,7 +253,27 @@ class LeapBotCE(FastWAM):
         torch.save(payload, path)
 
     def load_checkpoint(self, path, optimizer=None):
-        payload = super().load_checkpoint(path, optimizer)
+        payload = torch.load(path, map_location="cpu")
+        if payload.get("leapbotce_delta", False):
+            self.action_expert.load_state_dict(payload["action_expert"], strict=True)
+            self.edge_vision.projector.load_state_dict(
+                payload["edge_vision_projector"], strict=True)
+            if self.proprio_encoder is not None and "proprio_encoder" in payload:
+                self.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
+            if optimizer is not None and "optimizer" in payload:
+                optimizer.load_state_dict(payload["optimizer"])
+            return payload
+        # v1 full-MoT checkpoint compatibility.
+        if "mot" in payload:
+            self.mot.load_state_dict(payload["mot"], strict=False)
+        elif "dit" in payload:
+            self.video_expert.load_state_dict(payload["dit"], strict=False)
+        else:
+            raise ValueError(f"Checkpoint missing LeapBotCE weights: {path}")
+        if self.proprio_encoder is not None and "proprio_encoder" in payload:
+            self.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
         if "edge_vision" in payload:
             self.edge_vision.load_state_dict(payload["edge_vision"], strict=True)
+        if optimizer is not None and "optimizer" in payload:
+            optimizer.load_state_dict(payload["optimizer"])
         return payload

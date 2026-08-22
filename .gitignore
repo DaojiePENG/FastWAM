@@ -3,6 +3,9 @@
 outputs/
 checkpoints
 data/*
+.libero/
+third_party/LIBERO/
+third_party/RoboTwin/
 apex/
 assets/
 runs

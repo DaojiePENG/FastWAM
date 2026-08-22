@@ -23,6 +23,8 @@ EVALUATION:
   env_num: 1
   num_steps_wait: 30
   replan_steps: 10
+  # Only the cloud planning observation is delayed by this many environment steps.
+  max_delay_steps: 0
   binarize_gripper: true
   use_action_ensembler: false
   visualize_future_video: false
@@ -44,11 +46,6 @@ EVALUATION:
 MULTIRUN:
   create_only: false
   task_file: null
-  task_suite_names:
-    - libero_10
-    - libero_goal
-    - libero_spatial
-    - libero_object
   num_gpus: 8
 
 hydra:
