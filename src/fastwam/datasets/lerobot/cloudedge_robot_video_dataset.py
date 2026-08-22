@@ -66,10 +66,16 @@ class CloudEdgeRobotVideoDataset(torch.utils.data.Dataset):
         output = {
             "cloud_current_image": current_cloud,
             "cloud_stale_image": stale_cloud,
+            # The cloud observation is a temporally consistent snapshot: its
+            # visual input and state come from the same history index.
+            "cloud_current_proprio": sample["proprio"][current:current + 1],
+            "cloud_stale_proprio": sample["proprio"][stale:stale + 1],
             "edge_current_views": current_views,
+            "edge_current_proprio": sample["proprio"][current:current + 1],
             "cloud_delay_steps": torch.tensor(delay, dtype=torch.long),
             "action": sample["action"][current:end],
             "action_is_pad": sample["action_is_pad"][current:end],
+            # Retain the established key for callers outside LeapBotCE.
             "proprio": sample["proprio"][current:current + 1],
             "prompt": sample["prompt"],
         }

@@ -22,16 +22,19 @@ DELAY_SAMPLES = []
 def _predict(obs_cloud, obs_current, task_description, model, processor, cfg,
              action_horizon, input_w, input_h, model_device):
     prompt = base.DEFAULT_PROMPT.format(task=task_description)
-    cloud_image, _, _ = base._obs_to_model_input(
+    cloud_image, cloud_proprio, _ = base._obs_to_model_input(
         obs_cloud, cfg, processor, input_w, input_h, model_device, model.torch_dtype)
-    current_image, proprio, imgs = base._obs_to_model_input(
+    current_image, edge_proprio, imgs = base._obs_to_model_input(
         obs_current, cfg, processor, input_w, input_h, model_device, model.torch_dtype)
     current_views = model._split_views(current_image, model.edge_num_views)
     steps = int(cfg.EVALUATION.get("num_inference_steps", cfg.eval_num_inference_steps))
     with torch.no_grad():
-        cache = model.encode_cloud(cloud_image, prompt=prompt, proprio=proprio)
+        cache = model.encode_cloud(
+            cloud_image, prompt=prompt, cloud_proprio=cloud_proprio
+        )
         pred = model.infer_action_edge(
             cache, current_views, action_horizon,
+            edge_proprio=edge_proprio,
             num_inference_steps=steps,
             sigma_shift=cfg.EVALUATION.get("sigma_shift"),
             seed=None if cfg.get("seed") is None else int(cfg.seed),

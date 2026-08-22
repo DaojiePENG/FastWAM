@@ -109,16 +109,23 @@ class LeapBotCE(FastWAM):
             self.stale_loss_warmup_steps = max(int(total_steps) // 2, 1)
 
     def _prepare_context(self, sample):
+        """Build the static language context shared by cloud and edge paths."""
         context, context_mask = sample.get("context"), sample.get("context_mask")
         if context is None or context_mask is None:
             context, context_mask = self.encode_prompt(sample["prompt"])
         context = context.to(self.device, self.torch_dtype)
         context_mask = context_mask.to(self.device, torch.bool)
-        proprio = sample.get("proprio")
-        if self.proprio_encoder is not None:
+        return context, context_mask
+
+    def _with_proprio(self, context, context_mask, proprio, source):
+        if getattr(self, "proprio_encoder", None) is not None:
             if proprio is None:
-                raise ValueError("LeapBotCE requires current proprio.")
+                raise ValueError(f"LeapBotCE requires {source} proprio.")
             if proprio.ndim == 3:
+                if proprio.shape[1] != 1:
+                    raise ValueError(
+                        f"LeapBotCE expects one {source} proprio state, got {tuple(proprio.shape)}"
+                    )
                 proprio = proprio[:, 0]
             context, context_mask = self._append_proprio_to_context(
                 context, context_mask, proprio.to(self.device, self.torch_dtype))
@@ -129,23 +136,39 @@ class LeapBotCE(FastWAM):
         mask = torch.ones((context.shape[0], 1), device=context.device, dtype=torch.bool)
         return torch.cat([context, token], 1), torch.cat([context_mask, mask], 1)
 
-    def _encode_cloud_tensor(self, input_image, context, context_mask):
+    def _encode_cloud_tensor(self, input_image, cloud_context, cloud_context_mask,
+                             edge_context=None, edge_context_mask=None):
         if input_image.ndim != 4:
             raise ValueError(f"cloud image must be [B,3,H,W], got {tuple(input_image.shape)}")
         latents = self._encode_video_latents(input_image.unsqueeze(2).to(self.device, self.torch_dtype))
         timestep = torch.zeros((latents.shape[0],), device=self.device, dtype=latents.dtype)
         fuse = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
-        values = self.video_expert.prepare(latents, timestep, context, context_mask, None, fuse)
+        values = self.video_expert.prepare(
+            latents, timestep, cloud_context, cloud_context_mask, None, fuse
+        )
         video_tokens, _, video_t_mod, video_context, video_context_mask, video_freqs, _, _, _, tokens_per_frame = values
         video_mask = self.video_expert.build_video_to_video_mask(
             video_tokens.shape[1], tokens_per_frame, video_tokens.device)
         cache_k, cache_v = self.mot.prefill_video_cache_tensor(
             video_tokens, video_freqs, video_t_mod, video_context, video_context_mask, video_mask)
-        return CloudPlanningCache(cache_k, cache_v, context, context_mask,
+        if edge_context is None:
+            edge_context, edge_context_mask = cloud_context, cloud_context_mask
+        return CloudPlanningCache(cache_k, cache_v, edge_context, edge_context_mask,
                                   int(video_tokens.shape[1]), int(tokens_per_frame))
 
     @torch.no_grad()
-    def encode_cloud(self, input_image, prompt=None, context=None, context_mask=None, proprio=None):
+    def encode_cloud(self, input_image, prompt=None, context=None, context_mask=None,
+                     cloud_proprio=None, proprio=None):
+        """Encode one temporally consistent cloud observation into a MoT cache.
+
+        ``context`` is language-only. ``cloud_proprio`` must belong to the same
+        time step as ``input_image``; ``proprio`` is a backwards-compatible alias.
+        The cache retains the language context only so edge inference can append
+        its current state without reusing the stale cloud state.
+        """
+        if cloud_proprio is not None and proprio is not None:
+            raise ValueError("Provide either cloud_proprio or proprio, not both.")
+        cloud_proprio = cloud_proprio if cloud_proprio is not None else proprio
         if context is None or context_mask is None:
             if prompt is None:
                 raise ValueError("Provide prompt or context/context_mask to encode_cloud.")
@@ -155,11 +178,15 @@ class LeapBotCE(FastWAM):
                 context, context_mask = context.unsqueeze(0), context_mask.unsqueeze(0)
             context = context.to(self.device, self.torch_dtype)
             context_mask = context_mask.to(self.device, torch.bool)
-        if proprio is not None:
-            if proprio.ndim == 1:
-                proprio = proprio.unsqueeze(0)
-            context, context_mask = self._append_proprio_to_context(context, context_mask, proprio)
-        return self._encode_cloud_tensor(input_image.to(self.device, self.torch_dtype), context, context_mask)
+        if cloud_proprio is not None and cloud_proprio.ndim == 1:
+            cloud_proprio = cloud_proprio.unsqueeze(0)
+        cloud_context, cloud_context_mask = self._with_proprio(
+            context, context_mask, cloud_proprio, "cloud"
+        )
+        return self._encode_cloud_tensor(
+            input_image.to(self.device, self.torch_dtype),
+            cloud_context, cloud_context_mask, context, context_mask
+        )
 
     def _predict_from_cache(self, cache, noisy_action, timestep, edge_context, edge_mask):
         action_mask = torch.ones((noisy_action.shape[1], cache.video_seq_len + noisy_action.shape[1]),
@@ -172,13 +199,36 @@ class LeapBotCE(FastWAM):
         del tiled
         action = sample["action"].to(self.device, self.torch_dtype)
         context, context_mask = self._prepare_context(sample)
-        edge_context, edge_mask = self._edge_context(context, context_mask, sample["edge_current_views"])
+        edge_proprio = sample.get("edge_current_proprio", sample.get("proprio"))
+        edge_context, edge_mask = self._with_proprio(
+            context, context_mask, edge_proprio, "edge"
+        )
+        edge_context, edge_mask = self._edge_context(
+            edge_context, edge_mask, sample["edge_current_views"]
+        )
         noise = torch.randn_like(action)
         timestep = self.train_action_scheduler.sample_training_t(action.shape[0], self.device, action.dtype)
         noisy = self.train_action_scheduler.add_noise(action, noise, timestep)
         target = self.train_action_scheduler.training_target(action, noise, timestep)
-        fresh = self._encode_cloud_tensor(sample["cloud_current_image"], context, context_mask)
-        stale = self._encode_cloud_tensor(sample["cloud_stale_image"], context, context_mask)
+        cloud_current_proprio = sample.get("cloud_current_proprio", edge_proprio)
+        cloud_stale_proprio = sample.get("cloud_stale_proprio")
+        if self.proprio_encoder is not None and cloud_stale_proprio is None:
+            raise ValueError(
+                "LeapBotCE requires cloud_stale_proprio so the stale cloud cache "
+                "cannot be conditioned on current edge state."
+            )
+        fresh_context, fresh_context_mask = self._with_proprio(
+            context, context_mask, cloud_current_proprio, "cloud current"
+        )
+        stale_context, stale_context_mask = self._with_proprio(
+            context, context_mask, cloud_stale_proprio, "cloud stale"
+        )
+        fresh = self._encode_cloud_tensor(
+            sample["cloud_current_image"], fresh_context, fresh_context_mask, context, context_mask
+        )
+        stale = self._encode_cloud_tensor(
+            sample["cloud_stale_image"], stale_context, stale_context_mask, context, context_mask
+        )
         pred_fresh = self._predict_from_cache(fresh, noisy, timestep, edge_context, edge_mask)
         pred_stale = self._predict_from_cache(stale, noisy, timestep, edge_context, edge_mask)
         valid = None
@@ -205,11 +255,18 @@ class LeapBotCE(FastWAM):
     @torch.no_grad()
     def infer_action_edge(self, planning_cache, current_views, action_horizon,
                           num_inference_steps=20, sigma_shift=None, seed=None,
-                          rand_device="cpu", **_):
+                          rand_device="cpu", edge_proprio=None, proprio=None, **_):
+        """Denoise actions from a cloud cache and current edge-only inputs."""
+        if edge_proprio is not None and proprio is not None:
+            raise ValueError("Provide either edge_proprio or proprio, not both.")
+        edge_proprio = edge_proprio if edge_proprio is not None else proprio
         if current_views.ndim == 4:
             current_views = current_views.unsqueeze(0)
+        edge_context, edge_mask = self._with_proprio(
+            planning_cache.context, planning_cache.context_mask, edge_proprio, "edge"
+        )
         edge_context, edge_mask = self._edge_context(
-            planning_cache.context, planning_cache.context_mask, current_views)
+            edge_context, edge_mask, current_views)
         generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
         action = torch.randn((planning_cache.context.shape[0], action_horizon, self.action_expert.action_dim),
                              generator=generator, device=rand_device).to(self.device, self.torch_dtype)
@@ -233,8 +290,12 @@ class LeapBotCE(FastWAM):
     def infer_action(self, prompt, input_image, action_horizon, proprio=None,
                      context=None, context_mask=None, current_views=None, **kwargs):
         current_views = current_views if current_views is not None else self._split_views(input_image, self.edge_num_views)
-        cache = self.encode_cloud(input_image, prompt, context, context_mask, proprio)
-        return self.infer_action_edge(cache, current_views, action_horizon, **kwargs)
+        cache = self.encode_cloud(
+            input_image, prompt, context, context_mask, cloud_proprio=proprio
+        )
+        return self.infer_action_edge(
+            cache, current_views, action_horizon, edge_proprio=proprio, **kwargs
+        )
 
     def save_checkpoint(self, path, optimizer=None, step=None):
         # Frozen Wan/SigLIP base weights come from the configured local paths.

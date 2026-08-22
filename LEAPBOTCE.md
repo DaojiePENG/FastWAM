@@ -17,8 +17,12 @@ current language + proprio -------------------------------------> ActionDiT
 The public two-stage API is:
 
 ```python
-planning_cache = model.encode_cloud(delayed_image, prompt=prompt, proprio=proprio)
-prediction = model.infer_action_edge(planning_cache, current_views, action_horizon=32)
+planning_cache = model.encode_cloud(
+    delayed_image, prompt=prompt, cloud_proprio=delayed_proprio
+)
+prediction = model.infer_action_edge(
+    planning_cache, current_views, action_horizon=32, edge_proprio=current_proprio
+)
 ```
 
 `model.infer_action(...)` remains the synchronous compatibility wrapper.
@@ -111,10 +115,15 @@ or remove it only after confirming that training will not be resumed.
 
 ## LIBERO Delay Evaluation
 
-The delayed path changes only the cloud planning observation. Current edge
-views and current proprioception always remain fresh. At every replan, delay is
-sampled uniformly from `1..min(d_max, available_history)`; insufficient
-history falls back to the current frame. `d_max=0` is synchronous.
+The cloud path receives a temporally consistent delayed observation: both
+camera views and proprioception come from the same `t-d` history entry. The
+current edge views and current proprioception always remain fresh and are added
+only to ActionDiT. At every replan, delay is sampled uniformly from
+`1..min(d_max, available_history)`; insufficient history falls back to the
+current frame. `d_max=0` is synchronous.
+
+LIBERO instructions are static. Any time-varying cloud-side input must come
+from the same `t-d` history entry.
 
 For a single task, the sweep script accepts arbitrary delay windows through
 `LEAPBOTCE_DELAYS`:
@@ -165,8 +174,9 @@ to delay zero.
 
 The initial LIBERO-Spatial experiment used 10,000 steps, bf16, ZeRO-1,
 effective batch 16, a train-time maximum delay of 20, and 10 rollouts per task
-for each of the 10 Spatial tasks. This is a development benchmark, not the
-final 50-rollout report:
+for each of the 10 Spatial tasks. It predates strict delayed-proprio wiring;
+rerun P0 with this revision. This is a development benchmark, not the final
+50-rollout report:
 
 | Eval max delay | Success | Actual mean delay | Retention vs. d=0 |
 | --- | ---: | ---: | ---: |
