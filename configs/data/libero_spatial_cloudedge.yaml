@@ -1,6 +1,6 @@
 train:
   _target_: fastwam.datasets.lerobot.cloudedge_robot_video_dataset.CloudEdgeRobotVideoDataset
-  dataset_dirs: [./data/libero_mujoco3.3.2/libero_spatial_no_noops_lerobot]
+  dataset_dirs: [/mnt/c2-worldmodel/training_data/LIBERO-fastwam/libero_spatial_no_noops_lerobot]
   max_delay_steps: 20
   action_horizon: 32
   num_frames: 33
@@ -17,6 +17,7 @@ train:
   camera_key: null
   val_set_proportion: 0.0
   is_training_set: true
+  pretrained_norm_stats: /mnt/c2-worldmodel/2638088/fastwam/fastwam_release/libero_uncond_2cam224_dataset_stats.json
   skip_padding_as_possible: true
   concat_multi_camera: horizontal
   processor:
@@ -40,6 +41,6 @@ train:
     val_transforms:
       - {_target_: fastwam.datasets.lerobot.transforms.image.ToTensor}
       - {_target_: torchvision.transforms.Resize, size: [224, 224]}
-  text_embedding_cache_dir: ./data/text_embeds_cache/libero
+  text_embedding_cache_dir: /mnt/c2-worldmodel/2653853/leapbot-ce/text_embeds/libero
   use_text_embed_cache: true
   context_len: 128
