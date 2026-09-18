@@ -19,6 +19,12 @@ edge_vision:
 cloudedge:
   stale_loss_lambda_max: 0.5
   stale_loss_warmup_steps: 1000
+  # Optional cloud-to-edge representation adapter.  It is zero-initialized,
+  # so enabling it starts from the frozen-cloud baseline.
+  kv_adapter:
+    enabled: false
+    rank: 64
+    dropout: 0.0
 
 video_dit_config:
   has_image_input: false

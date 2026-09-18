@@ -15,6 +15,8 @@ def create_leapbotce(edge_vision=None, cloudedge=None, **kwargs):
     """Hydra factory that reuses the FastWAM pretrained loader."""
     edge_vision = _as_dict(edge_vision)
     cloudedge = _as_dict(cloudedge)
+    kv_adapter = _as_dict(cloudedge.get("kv_adapter"))
+    kv_adapter_rank = kv_adapter.get("rank", kv_adapter.get("bottleneck_dim", 64))
     base = create_fastwam(**kwargs)
     model = LeapBotCE(
         video_expert=base.video_expert,
@@ -41,6 +43,9 @@ def create_leapbotce(edge_vision=None, cloudedge=None, **kwargs):
         edge_vision_freeze=bool(edge_vision.get("freeze", True)),
         stale_loss_lambda_max=float(cloudedge.get("stale_loss_lambda_max", 0.5)),
         stale_loss_warmup_steps=int(cloudedge.get("stale_loss_warmup_steps", 1000)),
+        cloud_kv_adapter_enabled=bool(kv_adapter.get("enabled", False)),
+        cloud_kv_adapter_rank=int(kv_adapter_rank),
+        cloud_kv_adapter_dropout=float(kv_adapter.get("dropout", 0.0)),
     )
     # Wan22Trainer optimizes model.dit; make the edge projector part of it.
     model.mot.add_module("edge_vision_projector", model.edge_vision.projector)

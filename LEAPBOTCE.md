@@ -2,14 +2,16 @@
 
 Cluster handoff and experiment guide for the CloudEdge FastWAM implementation.
 
-LeapBotCE is a CloudEdge adaptation of FastWAM. The cloud side consumes a
-possibly delayed observation with the frozen Wan video expert and transmits its
-MoT video KV cache as a planning representation. The edge side consumes current
+LeapBotCE is a CloudEdge adaptation of FastWAM. The default recipe keeps the
+Wan video expert frozen and transmits its MoT video KV cache as a planning
+representation. An optional lightweight cache adapter can learn the
+cloud-to-edge interface without updating Wan; this is the recommended first
+step for cloud representation adaptation. The edge side consumes current
 camera views with a frozen SigLIP-Base encoder and fuses its trainable projected
 token with current proprioception and language in ActionDiT.
 
 ```text
-delayed cloud observation -> frozen Wan -> planning KV cache
+delayed cloud observation -> frozen Wan -> (optional KV adapter) -> planning KV cache
 current edge views       -> frozen SigLIP -> trainable projector -> ActionDiT
 current language + proprio -------------------------------------> ActionDiT
 ```
@@ -30,10 +32,15 @@ prediction = model.infer_action_edge(
 ## Status
 
 This commit supports and has been tested on the two-camera, 7D-action
-LIBERO-Spatial recipe. The trainable set is ActionDiT, the SigLIP projector,
-and the proprio projector. Wan and SigLIP are frozen. The inference checkpoint
-is a compact delta: it requires the local Wan, ActionDiT-backbone, and SigLIP
-base weights listed below.
+LIBERO-Spatial recipe. The baseline trainable set is ActionDiT, the SigLIP
+projector, and the proprio projector. Wan and SigLIP are frozen. When the KV
+adapter is enabled, its shared low-rank K/V residual and per-layer scales are
+added to the trainable set; the Wan backbone remains frozen. In either mode the
+inference checkpoint is a compact delta and requires the local base weights
+listed below.
+The adapter path has focused unit/integration coverage; the existing LIBERO
+numbers below are from the frozen-cloud baseline and must not be reused as
+adapter results.
 
 RoboTwin CloudEdge training and delayed evaluation are **not implemented in
 this commit**. RoboTwin has three cameras, a 14D action/state space, and a
@@ -96,6 +103,37 @@ Run the lightweight integration check before reserving a large job:
 ```bash
 bash scripts/train_zero1.sh 1 task=libero_spatial_leapbotce_smoke
 ```
+
+### Cloud KV interface adapter
+
+The adapter is a zero-initialized, shared low-rank residual applied after Wan
+prefills the per-layer video K/V cache. It preserves the cache shape consumed
+by ActionDiT, so fresh and stale training paths and the two-stage inference API
+use the same interface. The default model configuration leaves it disabled to
+preserve the frozen-cloud baseline.
+
+Run the dedicated LIBERO recipe with the adapter enabled:
+
+```bash
+bash scripts/train_zero1.sh 2 task=libero_spatial_leapbotce_kv \
+  output_dir=./runs/libero_spatial_leapbotce_kv/dtrain20_seed42 \
+  seed=42
+```
+
+The equivalent override on the baseline task is:
+
+```bash
+bash scripts/train_zero1.sh 2 task=libero_spatial_leapbotce \
+  model.cloudedge.kv_adapter.enabled=true \
+  model.cloudedge.kv_adapter.rank=64
+```
+
+This is a model-agnostic interface adaptation protocol, not a claim that one
+adapter checkpoint can be copied unchanged to every video backbone. The
+current MoT consumer still requires the cloud cache to have the same number of
+layers, attention heads, and per-token channel width as ActionDiT. For a
+different interface, add a source-to-canonical projection or a fixed-size
+planning-token API and retrain only that small adapter.
 
 Train with a 40-step delay distribution by overriding the dataset range. The
 dataset dynamically expands its same-episode observation window, so no manual

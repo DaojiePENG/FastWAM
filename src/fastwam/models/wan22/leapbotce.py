@@ -5,7 +5,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .cloud_kv_adapter import CloudKVAdapter
 from .fastwam import FastWAM
+from fastwam.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -89,7 +93,9 @@ class LeapBotCE(FastWAM):
     def __init__(self, *args, edge_vision_model_name="vit_base_patch16_siglip_224",
                  edge_num_views=2, edge_vision_pretrained=True, edge_vision_freeze=True,
                  stale_loss_lambda_max=0.5, stale_loss_warmup_steps=1,
-                 edge_vision_encoder=None, edge_vision_embed_dim=None, **kwargs):
+                 edge_vision_encoder=None, edge_vision_embed_dim=None,
+                 cloud_kv_adapter_enabled=False, cloud_kv_adapter_rank=64,
+                 cloud_kv_adapter_dropout=0.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.edge_vision = EdgeVisionEncoder(
             self.text_dim, edge_num_views, edge_vision_model_name,
@@ -100,6 +106,15 @@ class LeapBotCE(FastWAM):
         self.stale_loss_lambda_max = float(stale_loss_lambda_max)
         self.stale_loss_warmup_steps = int(stale_loss_warmup_steps)
         self.training_step = 0
+        self.cloud_kv_adapter = None
+        if bool(cloud_kv_adapter_enabled):
+            cache_dim = int(self.mot.num_heads) * int(self.mot.attn_head_dim)
+            self.cloud_kv_adapter = CloudKVAdapter(
+                num_layers=int(self.mot.num_layers),
+                cache_dim=cache_dim,
+                rank=int(cloud_kv_adapter_rank),
+                dropout=float(cloud_kv_adapter_dropout),
+            ).to(device=self.device, dtype=self.torch_dtype)
 
     def set_training_step(self, step: int, total_steps: Optional[int] = None):
         self.training_step = int(step)
@@ -151,6 +166,9 @@ class LeapBotCE(FastWAM):
             video_tokens.shape[1], tokens_per_frame, video_tokens.device)
         cache_k, cache_v = self.mot.prefill_video_cache_tensor(
             video_tokens, video_freqs, video_t_mod, video_context, video_context_mask, video_mask)
+        cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
+        if cloud_kv_adapter is not None:
+            cache_k, cache_v = cloud_kv_adapter(cache_k, cache_v)
         if edge_context is None:
             edge_context, edge_context_mask = cloud_context, cloud_context_mask
         return CloudPlanningCache(cache_k, cache_v, edge_context, edge_context_mask,
@@ -307,6 +325,10 @@ class LeapBotCE(FastWAM):
                    "leapbotce_meta": {"edge_num_views": self.edge_num_views,
                                        "stale_loss_lambda_max": self.stale_loss_lambda_max,
                                        "stale_loss_warmup_steps": self.stale_loss_warmup_steps}}
+        cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
+        if cloud_kv_adapter is not None:
+            payload["cloud_kv_adapter"] = cloud_kv_adapter.state_dict()
+            payload["leapbotce_meta"]["cloud_kv_adapter"] = cloud_kv_adapter.config()
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()
         if optimizer is not None:
@@ -321,6 +343,20 @@ class LeapBotCE(FastWAM):
                 payload["edge_vision_projector"], strict=True)
             if self.proprio_encoder is not None and "proprio_encoder" in payload:
                 self.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
+            adapter_state = payload.get("cloud_kv_adapter")
+            if adapter_state is not None:
+                cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
+                if cloud_kv_adapter is None:
+                    raise ValueError(
+                        "Checkpoint contains a cloud_kv_adapter, but the model was created "
+                        "with cloud_kv_adapter_enabled=False."
+                    )
+                cloud_kv_adapter.load_state_dict(adapter_state, strict=True)
+            elif getattr(self, "cloud_kv_adapter", None) is not None:
+                logger.warning(
+                    "Checkpoint has no cloud_kv_adapter state; keeping the adapter at its "
+                    "zero-initialized identity."
+                )
             if optimizer is not None and "optimizer" in payload:
                 optimizer.load_state_dict(payload["optimizer"])
             return payload

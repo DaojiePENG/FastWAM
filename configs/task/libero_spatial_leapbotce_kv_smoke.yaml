@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - libero_spatial_leapbotce_smoke
+  - _self_
+
+model:
+  cloudedge:
+    kv_adapter:
+      enabled: true
+      rank: 8
+      dropout: 0.0
+
+wandb:
+  name: libero_spatial_leapbotce_kv_smoke

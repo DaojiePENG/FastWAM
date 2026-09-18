@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - libero_spatial_leapbotce
+  - _self_
+
+# Train the lightweight cloud-to-edge cache interface while keeping the Wan
+# video backbone frozen.  The adapter is zero-initialized, so the first forward
+# pass is equivalent to the frozen-cloud LeapBotCE baseline.
+model:
+  cloudedge:
+    kv_adapter:
+      enabled: true
+      rank: 64
+      dropout: 0.0
+
+wandb:
+  name: libero_spatial_leapbotce_kv

@@ -15,6 +15,9 @@ from fastwam.models.wan22.leapbotce import (
     LeapBotCE,
     stale_loss_weight,
 )
+from fastwam.models.wan22.cloud_kv_adapter import CloudKVAdapter
+from fastwam.models.wan22 import leapbotce_edge_train_factory
+from fastwam.trainer import Wan22Trainer
 
 
 class TinyVision(nn.Module):
@@ -34,6 +37,178 @@ def test_stale_loss_curriculum():
     assert stale_loss_weight(200, 100, 0.5) == pytest.approx(0.5)
     with pytest.raises(ValueError):
         stale_loss_weight(1, 10, 1.1)
+
+
+def test_cloud_kv_adapter_is_identity_then_learns_residual():
+    adapter = CloudKVAdapter(num_layers=2, cache_dim=6, rank=3)
+    # The source cloud cache is treated as a frozen tensor.  Gradients should
+    # still reach the lightweight interface adapter.
+    keys = [torch.randn(2, 4, 6) for _ in range(2)]
+    values = [torch.randn(2, 4, 6) for _ in range(2)]
+
+    adapted_keys, adapted_values = adapter(keys, values)
+    assert isinstance(adapted_keys, list)
+    assert isinstance(adapted_values, list)
+    for original, adapted in zip(keys, adapted_keys):
+        torch.testing.assert_close(adapted, original)
+        assert adapted.dtype == original.dtype
+        assert adapted.shape == original.shape
+    for original, adapted in zip(values, adapted_values):
+        torch.testing.assert_close(adapted, original)
+
+    # Zero-init up projections preserve the baseline, while still providing a
+    # useful gradient to the adapter when the cache is frozen.
+    loss = sum(item.square().mean() for item in adapted_keys + adapted_values)
+    loss.backward()
+    assert adapter.up_k.weight.grad is not None
+    assert adapter.up_v.weight.grad is not None
+    assert adapter.up_k.weight.grad.abs().sum() > 0
+    assert adapter.up_v.weight.grad.abs().sum() > 0
+    assert all(item.grad is None for item in keys + values)
+
+
+def test_cloud_kv_adapter_validates_cache_contract():
+    adapter = CloudKVAdapter(num_layers=2, cache_dim=4, rank=2)
+    cache = [torch.zeros(1, 3, 4) for _ in range(2)]
+    with pytest.raises(ValueError, match="layer count"):
+        adapter(cache[:1], cache[:1])
+    with pytest.raises(ValueError, match="shape mismatch"):
+        adapter(cache, [torch.zeros(1, 2, 4) for _ in range(2)])
+    with pytest.raises(ValueError, match="channel mismatch"):
+        bad = [torch.zeros(1, 3, 5) for _ in range(2)]
+        adapter(bad, bad)
+    with pytest.raises(ValueError, match=r"shape \[batch, sequence, channels\]"):
+        bad = [torch.zeros(1, 4) for _ in range(2)]
+        adapter(bad, bad)
+
+
+def test_cloud_kv_adapter_checkpoint_roundtrip(tmp_path):
+    def make_shell():
+        model = LeapBotCE.__new__(LeapBotCE)
+        nn.Module.__init__(model)
+        model.action_expert = nn.Linear(3, 3)
+        model.edge_vision = SimpleNamespace(projector=nn.Linear(3, 3))
+        model.proprio_encoder = None
+        model.cloud_kv_adapter = CloudKVAdapter(num_layers=2, cache_dim=4, rank=2)
+        model.edge_num_views = 2
+        model.stale_loss_lambda_max = 0.5
+        model.stale_loss_warmup_steps = 1
+        model.torch_dtype = torch.float32
+        return model
+
+    source = make_shell()
+    with torch.no_grad():
+        source.cloud_kv_adapter.up_k.weight.fill_(0.125)
+        source.cloud_kv_adapter.layer_scale_v.fill_(0.75)
+    path = tmp_path / "leapbotce_delta.pt"
+    source.save_checkpoint(path)
+
+    restored = make_shell()
+    restored.load_checkpoint(path)
+    torch.testing.assert_close(
+        restored.cloud_kv_adapter.up_k.weight,
+        source.cloud_kv_adapter.up_k.weight,
+    )
+    torch.testing.assert_close(
+        restored.cloud_kv_adapter.layer_scale_v,
+        source.cloud_kv_adapter.layer_scale_v,
+    )
+
+
+def test_cloud_kv_adapter_is_in_dit_train_registry_without_unfreezing_cloud():
+    class TinyTrainShell(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.video_expert = nn.Linear(4, 4)
+            self.cloud_kv_adapter = CloudKVAdapter(num_layers=2, cache_dim=4, rank=2)
+            self.dit = nn.ModuleDict({"cloud_kv_adapter": self.cloud_kv_adapter})
+
+    model = TinyTrainShell()
+    Wan22Trainer._apply_dit_only_train_mode(model)
+    assert all(not parameter.requires_grad for parameter in model.video_expert.parameters())
+    assert all(parameter.requires_grad for parameter in model.cloud_kv_adapter.parameters())
+    assert model.cloud_kv_adapter.training
+
+
+def test_edge_factory_registers_optional_cloud_adapter(monkeypatch):
+    class TinyLeapBotCE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.action_expert = nn.Linear(2, 2)
+            self.edge_vision = SimpleNamespace(projector=nn.Linear(2, 2))
+            self.cloud_kv_adapter = CloudKVAdapter(num_layers=1, cache_dim=4, rank=2)
+
+    model = TinyLeapBotCE()
+    monkeypatch.setattr(
+        leapbotce_edge_train_factory,
+        "_create_local_leapbotce",
+        lambda **_kwargs: model,
+    )
+    output = leapbotce_edge_train_factory.create_leapbotce()
+    assert output is model
+    assert set(output.dit.keys()) == {
+        "action_expert",
+        "edge_vision_projector",
+        "cloud_kv_adapter",
+    }
+    assert output.dit["cloud_kv_adapter"] is output.cloud_kv_adapter
+
+
+def test_cloud_encoding_applies_kv_adapter_at_cache_boundary():
+    class TinyVideoExpert:
+        fuse_vae_embedding_in_latents = False
+
+        @staticmethod
+        def prepare(latents, timestep, context, context_mask, *_args):
+            del timestep
+            batch = latents.shape[0]
+            tokens = torch.zeros(batch, 3, 4)
+            t_mod = torch.zeros(batch, 1, 4)
+            freqs = torch.zeros(3, 1, 2, dtype=torch.complex64)
+            return (tokens, None, t_mod, context, context_mask, freqs, None, None, None, 1)
+
+        @staticmethod
+        def build_video_to_video_mask(seq_len, tokens_per_frame, device):
+            del tokens_per_frame
+            return torch.ones(seq_len, seq_len, dtype=torch.bool, device=device)
+
+    class TinyMoT:
+        num_heads = 1
+        attn_head_dim = 4
+        num_layers = 2
+        raw_keys = None
+        raw_values = None
+
+        @classmethod
+        def prefill_video_cache_tensor(cls, *_args):
+            key = torch.randn(1, 3, 4)
+            value = torch.randn(1, 3, 4)
+            cls.raw_keys = [key.clone(), key.clone()]
+            cls.raw_values = [value.clone(), value.clone()]
+            return cls.raw_keys, cls.raw_values
+
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.device = torch.device("cpu")
+    model.torch_dtype = torch.float32
+    model.video_expert = TinyVideoExpert()
+    model.mot = TinyMoT()
+    model._encode_video_latents = lambda image: torch.zeros(image.shape[0], 1, 1, 1, 1)
+    model.cloud_kv_adapter = CloudKVAdapter(num_layers=2, cache_dim=4, rank=2)
+    with torch.no_grad():
+        model.cloud_kv_adapter.up_k.weight.fill_(0.1)
+        model.cloud_kv_adapter.up_v.weight.fill_(0.1)
+
+    context = torch.zeros(1, 1, 4)
+    context_mask = torch.ones(1, 1, dtype=torch.bool)
+    cache = model._encode_cloud_tensor(
+        torch.zeros(1, 3, 8, 8), context, context_mask
+    )
+    assert len(cache.video_cache_k) == 2
+    assert cache.video_cache_k[0].shape == (1, 3, 4)
+    assert cache.video_cache_k[0].dtype == torch.float32
+    assert not torch.equal(cache.video_cache_k[0], TinyMoT.raw_keys[0])
+    assert not torch.equal(cache.video_cache_v[0], TinyMoT.raw_values[0])
 
 
 def test_stale_index_respects_padding_and_boundary():
