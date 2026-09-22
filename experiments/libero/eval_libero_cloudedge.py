@@ -50,7 +50,10 @@ def _predict(obs_cloud, obs_current, task_description, model, processor, cfg,
 
 def run_single_episode(env, initial_state, task_description, model, processor, cfg,
                        episode_idx, *, action_horizon, input_w, input_h, model_device):
-    max_steps = base._get_max_steps(cfg.EVALUATION.task_suite_name)
+    max_steps = int(
+        cfg.EVALUATION.get("max_episode_steps")
+        or base._get_max_steps(cfg.EVALUATION.task_suite_name)
+    )
     wait_steps = int(cfg.EVALUATION.get("num_steps_wait", 5))
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
     max_delay = int(cfg.EVALUATION.get("max_delay_steps", 0))

@@ -475,7 +475,10 @@ def run_single_episode(
     input_h: int,
     model_device: str,
 ) -> tuple[bool, list, list[dict[str, Any]], Optional[float]]:
-    max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
+    max_steps = int(
+        cfg.EVALUATION.get("max_episode_steps")
+        or _get_max_steps(cfg.EVALUATION.task_suite_name)
+    )
     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
     use_action_ensembler = bool(cfg.EVALUATION.get("use_action_ensembler", False))

@@ -1,6 +1,7 @@
 """Utils for evaluating policies in LIBERO simulation environments."""
 
 import math
+import os
 import time
 import pathlib
 
@@ -10,6 +11,53 @@ import numpy as np
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv
 from fastwam.utils.video_io import save_mp4
+
+
+def _patch_single_visible_gpu_egl_selection():
+    """Make robosuite use the logical EGL index for a one-GPU CUDA mask.
+
+    robosuite 1.4 interprets ``CUDA_VISIBLE_DEVICES=7`` as EGL device index 7.
+    NVIDIA exposes only one EGL device in that masked process, so its valid index
+    is actually 0. Keep the workaround local to FastWAM's LIBERO evaluator and
+    leave the normal multi-device path untouched.
+    """
+    try:
+        from robosuite.renderers.context import egl_context
+    except ImportError:
+        return
+
+    original = egl_context.create_initialized_egl_device_display
+    if getattr(original, "_fastwam_logical_gpu_patch", False):
+        return
+
+    def create_initialized_egl_device_display(device_id=0):
+        devices = egl_context.EGL.eglQueryDevicesEXT()
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        mujoco_device = os.environ.get("MUJOCO_EGL_DEVICE_ID")
+        selected = mujoco_device if mujoco_device is not None else cuda_visible
+        if len(devices) == 1 and selected and selected.isdigit() and int(selected) != 0:
+            old_cuda_visible = cuda_visible
+            old_mujoco_device = mujoco_device
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+            os.environ["MUJOCO_EGL_DEVICE_ID"] = "0"
+            try:
+                return original(0)
+            finally:
+                if old_cuda_visible is None:
+                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = old_cuda_visible
+                if old_mujoco_device is None:
+                    os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
+                else:
+                    os.environ["MUJOCO_EGL_DEVICE_ID"] = old_mujoco_device
+        return original(device_id)
+
+    create_initialized_egl_device_display._fastwam_logical_gpu_patch = True
+    egl_context.create_initialized_egl_device_display = create_initialized_egl_device_display
+
+
+_patch_single_visible_gpu_egl_selection()
 
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")

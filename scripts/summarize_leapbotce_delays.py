@@ -152,10 +152,11 @@ def main() -> None:
     for window in summary["windows"]:
         low, high = window["success_rate_wilson95"]
         retention = window["retention_vs_delay_0"]
+        retention_text = "n/a" if retention is None else f"{retention:.4f}"
         print(
             f"{window['delay_max']}\t{window['successes']}\t{window['total']}\t"
             f"{window['success_rate']:.4f}\t[{low:.4f},{high:.4f}]\t"
-            f"{retention:.4f}\t{window['actual_delay_mean']:.4f}\t{window['replans']}"
+            f"{retention_text}\t{window['actual_delay_mean']:.4f}\t{window['replans']}"
         )
     print(f"JSON: {output_json}")
     print(f"CSV: {output_csv}")

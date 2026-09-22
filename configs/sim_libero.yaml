@@ -22,6 +22,8 @@ EVALUATION:
   # Runtime behavior
   env_num: 1
   num_steps_wait: 30
+  # Optional short-run cap for smoke tests; null keeps the official suite limit.
+  max_episode_steps: null
   replan_steps: 10
   # Only the cloud planning observation is delayed by this many environment steps.
   max_delay_steps: 0
