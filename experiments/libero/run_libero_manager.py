@@ -149,7 +149,21 @@ def run_evaluation(
     failed_file = worker_root / "failed_tasks.txt"
     status_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    pending_file.write_text("\n".join(task_lines) + "\n", encoding="utf-8")
+    # Resume support: only queue tasks whose results are not already on disk,
+    # so re-running a sweep after a crash/timeout redoes just the missing part.
+    pending_lines = [
+        line
+        for line, (suite_name, task_id) in zip(task_lines, tasks)
+        if not _task_result_exists(output_dir, suite_name, task_id)
+    ]
+    skipped = len(task_lines) - len(pending_lines)
+    if skipped:
+        print(f"skipping {skipped}/{len(task_lines)} tasks with existing results")
+    if not pending_lines:
+        print("All tasks already have results; nothing to run.")
+        summarize_results(str(output_dir), ckpt=ckpt, config=task_choice)
+        return
+    pending_file.write_text("\n".join(pending_lines) + "\n", encoding="utf-8")
     failed_file.write_text("", encoding="utf-8")
     stop_file.unlink(missing_ok=True)
     lock_dir = lock_file.with_name(f"{lock_file.name}.lockdir")

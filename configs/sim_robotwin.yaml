@@ -12,6 +12,10 @@ model:
   load_text_encoder: true
   skip_dit_load_from_pretrain: true
   action_dit_pretrained_path: null
+  # Local Wan-AI layout keeps the original .pth T5/VAE files; the
+  # DiffSynth-Studio safetensors redirect would look for files that do not
+  # exist locally (and .pth content cannot be loaded as safetensors).
+  redirect_common_files: false
 
 EVALUATION:
   robotwin_root: third_party/RoboTwin

@@ -1,3 +1,5 @@
+import copy
+import json
 import logging
 import os
 import sys
@@ -28,6 +30,23 @@ from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 
 logger = logging.getLogger(__name__)
+
+
+def _load_observation_delay_history() -> type:
+    """Return the ObservationDelayHistory class shared with the LIBERO entry.
+
+    Imported through the module file path so the robotwin policy works both
+    under hydra (arbitrary sys.path) and direct runs.
+    """
+    delay_module_path = (
+        PROJECT_ROOT / "experiments" / "libero" / "cloudedge_delay.py"
+    )
+    module_spec = importlib.util.spec_from_file_location(
+        "fastwam_robotwin_cloudedge_delay", delay_module_path
+    )
+    delay_module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(delay_module)
+    return delay_module.ObservationDelayHistory
 
 
 def _is_none_like(value: Any) -> bool:
@@ -184,6 +203,30 @@ class WorldActionRobotWinPolicy:
         self.step_count = 0
         self._timing_rollout = {"infer_s": 0.0, "sim_s": 0.0}
 
+        # CloudEdgeVLA-style single-stream full-observation frame delay
+        # (opt-in via env vars; unset/0 keeps the official behavior exactly).
+        # Semantics mirror experiments/libero/cloudedge_delay.py: per-step
+        # deep-copied observations in a bounded deque; at every replan the
+        # inference observation is hist[-1 - d] with d ~ U{1..min(D, len-1)}
+        # from a per-episode RandomState(delay_seed + episode_index).
+        self._delay_cls = _load_observation_delay_history()
+        self._max_delay_steps = int(os.environ.get("FASTWAM_MAX_DELAY_STEPS", "0") or 0)
+        self._delay_seed = int(os.environ.get("FASTWAM_DELAY_SEED", "1234") or 0)
+        self._delay_log_dir = os.environ.get("FASTWAM_DELAY_LOG_DIR") or None
+        self._delay_task = os.environ.get("FASTWAM_TASK_NAME", "task")
+        self._delay_history: Optional[deque] = None
+        self._delay_rng = None
+        self._delay_replan_idx = 0
+        if self._max_delay_steps > 0 and self._delay_log_dir:
+            os.makedirs(self._delay_log_dir, exist_ok=True)
+        if self._max_delay_steps > 0:
+            logger.info(
+                "Frame-delay enabled | max_delay_steps=%d | delay_seed=%d | log_dir=%s",
+                self._max_delay_steps,
+                self._delay_seed,
+                self._delay_log_dir,
+            )
+
         logger.info(
             "Initialized WorldActionRobotWinPolicy | ckpt=%s | stats=%s | horizon=%d | replan=%d",
             checkpoint_path,
@@ -273,15 +316,38 @@ class WorldActionRobotWinPolicy:
     def should_request_observation(self) -> bool:
         return not self.pending_actions
 
+    def _delay_log(self, episode_idx: int, delay: int) -> None:
+        if not self._delay_log_dir:
+            return
+        record = {
+            "task": self._delay_task,
+            "episode": int(episode_idx),
+            "replan_idx": int(self._delay_replan_idx),
+            "delay": int(delay),
+            "max_delay_steps": int(self._max_delay_steps),
+            "delay_seed": int(self._delay_seed),
+        }
+        path = os.path.join(self._delay_log_dir, f"{self._delay_task}_delay_log.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+
     def step(self, task_env, observation: Optional[Dict[str, Any]]) -> None:
+        if observation is not None and self._delay_history is not None:
+            self._delay_history.append(copy.deepcopy(observation))
+
         if not self.pending_actions:
             if observation is None:
                 raise ValueError(
                     "Observation is required when action queue is empty "
                     "(replan step for fastwam)."
                 )
+            obs_for_plan = observation
+            if self._delay_history is not None:
+                obs_for_plan, delay = self._delay_history.sample(self._delay_rng)
+                self._delay_log(self.episode_count - 1, delay)
+                self._delay_replan_idx += 1
             instruction = task_env.get_instruction()
-            self._fill_action_queue(observation=observation, instruction=instruction)
+            self._fill_action_queue(observation=obs_for_plan, instruction=instruction)
 
         if not self.pending_actions:
             logger.warning("No action generated; skip current eval step.")
@@ -306,9 +372,14 @@ class WorldActionRobotWinPolicy:
 
     def reset(self) -> None:
         self.pending_actions.clear()
+        episode_idx = self.episode_count
         self.episode_count += 1
         self.step_count = 0
         self.reset_timing_rollout()
+        if self._max_delay_steps > 0:
+            self._delay_history = self._delay_cls(self._max_delay_steps)
+            self._delay_rng = np.random.RandomState(self._delay_seed + episode_idx)
+            self._delay_replan_idx = 0
 
 
 def encode_obs(observation: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

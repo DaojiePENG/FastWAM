@@ -56,6 +56,10 @@ METHODS = [
     ("StarWAM-SharedDiT", ["StarWAM-SharedDiT"]),
     ("Kairos †", ["Kairos"]),
     ("LeapBot-DualLane-V2 (在研)", ["LeapBot-DualLane-V2"]),
+    ("LeapBotCE (d_train=20)", ["LeapBotCE (d_train=20)"]),
+    ("LeapBotCE (d_train=20, 110k)", ["LeapBotCE (d_train=20, 110k)"]),
+    ("LeapBotCE (d_train=20, 200k)", ["LeapBotCE (d_train=20, 200k)"]),
+    ("LeapBotCE (d_train=40)", ["LeapBotCE (d_train=40)"]),
 ]
 
 
@@ -248,6 +252,42 @@ def parse_leapbot_results(path):
     }
 
 
+def parse_leapbotce_sweep(path):
+    """LeapBotCE delay_sweep_summary.json (scripts/summarize_leapbotce_delays.py).
+
+    One sweep root covers all four LIBERO suites, so split the aggregated
+    windows[] per task_suite. Returns {suite_key: {delay: row}} where
+    suite_key matches the report's SUITES tokens ("spatial", "object", ...).
+    """
+    try:
+        data = json.load(open(path))
+    except Exception:
+        return {}
+    by_suite = defaultdict(lambda: defaultdict(dict))
+    for w in data.get("windows", []):
+        d = w.get("delay_max")
+        if d is None:
+            continue
+        agg = defaultdict(lambda: [0, 0, defaultdict(int), []])
+        for t in w.get("tasks", []):
+            suite = str(t.get("task_suite", "")).removeprefix("libero_")
+            if suite not in SUITES:
+                continue
+            a = agg[suite]
+            a[0] += int(t.get("successes", 0))
+            a[1] += int(t.get("total", 0))
+            for k, v in (t.get("delay_histogram") or {}).items():
+                a[2][int(float(k))] += int(v)
+            m = t.get("actual_delay_mean")
+            if isinstance(m, (int, float)):
+                a[3].append((m, max(int(t.get("total", 0)), 1)))
+        for suite, (s, tot, hist, means) in agg.items():
+            md = (sum(m * wgt for m, wgt in means) / sum(wgt for _, wgt in means)
+                  if means else None)
+            by_suite[suite][d] = _row(s, tot, md, w.get("replans"), dict(hist))
+    return by_suite
+
+
 def collect():
     """Returns list of (baseline_key, run_label, {delay: row}, path)."""
     runs = []
@@ -430,6 +470,34 @@ def collect():
             runs.append(("LeapBot-DualLane-V2", root_name.replace("leapbot-dual-lane-v2", "lb-dual"),
                          parsed, f"{EVAL_ROOT}/{root_name}"))
 
+    # LeapBotCE: one delay_sweep_summary.json per model root (all four suites
+    # inside), produced by scripts/summarize_leapbotce_delays.py. Emit one
+    # entry per suite with a synthetic suite-tokened path so suite_of()
+    # routes it to the right table; consolidate() merges them back to the
+    # common sweep root for the appendix.
+    for path in sorted(glob.glob(f"{EVAL_ROOT}/leapbotce/**/delay_sweep_summary.json",
+                                 recursive=True)):
+        if "_archive" in path:
+            continue
+        rel = os.path.relpath(path, f"{EVAL_ROOT}/leapbotce")
+        # 注意：dtrain20_seed42_110k / _200k 等加长训练子目录必须放在
+        # "dtrain20" 之前判断（子串包含关系）。
+        if "dtrain20_seed42_110k" in rel:
+            method = "LeapBotCE (d_train=20, 110k)"
+        elif "dtrain20_seed42_200k" in rel:
+            method = "LeapBotCE (d_train=20, 200k)"
+        elif "dtrain20" in rel:
+            method = "LeapBotCE (d_train=20)"
+        elif "dtrain40" in rel:
+            method = "LeapBotCE (d_train=40)"
+        else:
+            continue
+        run_label = rel.split("/")[0]
+        by_suite = parse_leapbotce_sweep(path)
+        for suite, parsed in by_suite.items():
+            if parsed:
+                runs.append((method, run_label, parsed, f"{path}/libero_{suite}"))
+
     # Kairos: LIBERO-Plus category protocol (Camera Viewpoints 60-task subset,
     # 1 trial/task), one libero_plus_summary.json per completed delay run.
     # suite_of() tags these "kairos-plus" so they render appendix-only.
@@ -601,6 +669,10 @@ def render(runs):
     ap("| OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical |")
     ap("| Kairos † | LIBERO-Plus 类目协议 | external WAM adapter (DiT 4B+Qwen2.5-VL-7B) | Camera Viewpoints 60 任务子集×1 trial（全类目 1599） |")
     ap("| LeapBot-DualLane-V2 (在研) | 50 | inference=20, replan=10, wait=30 | dual-lane 双流在研模型 |")
+    ap("| LeapBotCE (d_train=20) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，全 LIBERO 四套件 50k 步，seed=1234 |")
+    ap("| LeapBotCE (d_train=20, 110k) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，d_train=20 加长轮在 110k 步（200k 计划中途，NCCL 崩溃前最后检查点）的评测，seed=1234 |")
+    ap("| LeapBotCE (d_train=20, 200k) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，d_train=20 加长轮完整 200k 步（若后续续训完成） |")
+    ap("| LeapBotCE (d_train=40) | 50 | inference=10, replan=10, wait=30 | 同上，训练时延上限 40 |")
     ap("")
 
     # group by baseline key
@@ -673,8 +745,11 @@ def render(runs):
     ap("| LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring：\"Delay the whole synchronized observation at every model replan\" | U{0..D} |")
     ap("| LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} |")
     ap("| Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} |")
+    ap("| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} |")
     ap("")
-    ap("**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot 为 U{1..D}（每次 replan 至少老化 1 步）。D≥5 时两者均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`，D ∈ {0,5,10,20,40}，replan 每 10 步。")
+    ap("**观测契约披露（重要）**：与上表单流全观测老化的基线不同，LeapBotCE 的延迟只作用于云端规划观测（图像+本体状态同源老化），边缘侧当前视角/本体状态保持新鲜——这是该方法的云边分工设计本身，评测如实按其原生协议执行。对比两条曲线时需注明：LeapBotCE 在延迟 D 下仍持有 D 步内新鲜的边缘观测，而基线的全观测已老化 D 步；因此 LeapBotCE 的保持率优势来自\"新鲜边缘补偿\"，论文引用时必须声明该契约差异（LEAPBOTCE.md 基线协议第 5 条）。")
+    ap("")
+    ap("**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}，replan 每 10 步。")
     ap("**审计链**：每个 trial 的 realized delay（`delay_samples`）、`delay_mean` 与 `delay_histogram` 均落盘于各自 results.json，可直接引用作论文协议证明。")
     ap("")
 
