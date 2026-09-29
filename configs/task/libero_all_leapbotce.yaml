@@ -1,0 +1,40 @@
+# @package _global_
+defaults:
+  - override /data: libero_all_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# LeapBotCE on the full LIBERO set (spatial + object + goal + 10, no-noops),
+# i.e. the dataset side of the released FastWAM libero_uncond_2cam224_1e-4
+# checkpoint, re-anchored through the CloudEdge delay wrapper.
+#
+# Training-length note: the full set is ~278k frames (~17.4k optimizer steps
+# per epoch at effective batch 16). The released FastWAM config trains 10
+# epochs (max_steps: null, num_epochs: 10); cap max_steps instead for shorter
+# runs. Effective batch is num_gpus * batch_size * gradient_accumulation_steps;
+# the validated LeapBotCE recipe keeps it at 16 (2 GPUs: batch_size 8, accum 1).
+batch_size: 8
+num_workers: 8
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+num_epochs: 10
+max_steps: null
+log_every: 10
+save_every: 2000
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 1
+weight_decay: 1.0e-2
+resume: null
+seed: 42
+model:
+  cloudedge:
+    # Resolve to half of max_steps (or half of the epoch budget) in
+    # LeapBotCE.set_training_step when left at -1.
+    stale_loss_warmup_steps: -1
+wandb:
+  project: leapbotce
+  name: libero_all_leapbotce
+MULTIRUN:
+  evaluator_script: experiments/libero/eval_libero_cloudedge.py
+  task_suite_names: [libero_spatial, libero_object, libero_goal, libero_10]
