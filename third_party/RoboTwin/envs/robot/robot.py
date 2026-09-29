@@ -132,7 +132,13 @@ class Robot:
                 self.right_conn.send({"cmd": "reset"})
                 _ = self.right_conn.recv()
         else:
-            if not isinstance(self.left_planner, CuroboPlanner) or not isinstance(self.right_planner, CuroboPlanner):
+            # Use getattr: a failed CuroboPlanner init in set_planner (e.g. under
+            # GPU memory pressure) can leave right_planner unset; the isinstance
+            # check below would then raise AttributeError on every reset forever.
+            # (Same defensive patch as the main RoboTwin checkout.)
+            left_ok = isinstance(getattr(self, "left_planner", None), CuroboPlanner)
+            right_ok = isinstance(getattr(self, "right_planner", None), CuroboPlanner)
+            if not left_ok or not right_ok:
                 self.set_planner(scene=scene)
 
         self.init_joints()
