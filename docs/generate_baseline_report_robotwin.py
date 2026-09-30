@@ -60,7 +60,13 @@ FOOTNOTES = """
   policy 侧动作维度, 且 aloha-agilex 与 dual_x5 维度一致: arm [6,6] / ee [1,1],
   状态/动作均 14 维)。
 - **帧延迟协议** (CloudEdgeVLA 风格): 单流全观测老化; 每次 replan 从
-  seed=1234 的 RNG 采样 d ~ U{0..D}; Motus replan 每 8 个控制步 (chunk=8)。
+  seed=1234 的 per-episode RNG 采样, replan 时观测取 hist[-1-d]。延迟分布
+  存在实现差异 (LIBERO 侧同样如此, 见 LIBERO 报告): X-WAM/Motus 为
+  d ~ U{0..D} (允许 0 = 新鲜观测), Fast-WAM 官方式实现为
+  d ~ U{1..min(D,len-1)} (至少 1 步老化; 首个 replan 前仅 1 帧历史时退化
+  为 0)。Fast-WAM 每 24 控制步 replan (官方 RoboTwin 默认 replan_steps=24),
+  Motus 每 8 步 (chunk=8), X-WAM 全 chunk (Ta=32) 执行。Fast-WAM 泳道
+  `skip_get_obs_within_replan=false`, 即老化窗口需要逐步渲染观测流。
 - **expert_check**: 采用 RoboTwin 评审标准做法 —— 脚本专家都失败的种子被跳过
   (种子消耗与策略无关, 跨延迟一致)。
 - **Motus 权重披露**: 官方仅公开 Stage-2 预训练底座 (HuggingFace,

@@ -2,7 +2,7 @@
 
 > 用途：跟踪全 LIBERO（四套件联合）CE 训练的进度、配置、时间与检查点位置。
 > 由训练看守脚本启动，人工/助手按训练节点回填"进度记录"表格。
-> 最后更新：2026-09-28 13:55（第 3 轮 d=20 加长训练 200k 步启动；全量时延评测并行进行中）
+> 最后更新：2026-09-30（训练迁移公司 AIFlow 平台，见第 7 节；110k 检查点与 50k dtrain20 全量评测并行进行中）
 
 ## 1. 实验概览
 
@@ -112,3 +112,24 @@ python scripts/summarize_leapbotce_delays.py /mnt/c2-worldmodel/2653853/baseline
 
 注意：200k 加长模型训完后需对其再跑一轮同协议评测（预计再 ~15 h @4 卡），
 结果目录约定 `baseline-evaluations/leapbotce/dtrain20_seed42_200k/`。
+
+## 7. 训练迁移：公司 AIFlow 平台（2026-09-30 起）
+
+调试服务器不再续训；后续加长训练（11.5 epoch 全 LIBERO）改走公司 AIFlow 自动
+申请显卡训练平台。配置文件：**`FastWAM/AIFlow_config.py`**（放在仓库根目录，
+申请资源时工作目录选到 FastWAM 根目录即可，平台按固定文件名自动拉起训练）。
+
+| 项 | 值 |
+| --- | --- |
+| 默认资源 | 8×H100/H200 自动适配（每卡 batch 按显存阈值表选：≥128GB→16，≥72GB→8；卡数读平台 GPU_NUM） |
+| 有效 batch | H100: 64（8×bs8）/ H200: 128（8×bs16）；H100-80G bs8 实测峰值 64.2GB，H200 bs16 预计 ~115-130GB |
+| 总步数 | 自动按 11.5 epoch × 277,713 帧 ÷ 有效 batch 折算：H100 ≈49.9k，H200 ≈25.0k（可 AI_FLOW_MAX_STEPS 覆盖） |
+| 学习率 | 自动按 √batch 从官方 1e-4@16 折算：有效 64→2e-4，128→2.8e-4（可 AI_FLOW_LR 固定，如复现 bs8/2e-4 配方） |
+| 其余超参 | cosine、wd 1e-2、clip 1.0、stale λ=0.5、warmup 自动=总步数/2、save 20000×5 |
+| 训练入口 | 复用 `scripts/train_leapbotce_libero_2653853.sh`（同一入口；多机经 NNODES/NODE_RANK/MASTER_ADDR/MASTER_PORT 透传给 train_zero1.sh） |
+| wandb | 打开 `--wandb`，project=leapbotce，name=libero_all_dtrain20_seed42_h100；代理经 PROXY_ENABLED/PROXY_HOST/PROXY_PORT 透传（启动脚本新增 PROXY_HOST 支持，默认 127.0.0.1 仅调试机有效；训练节点需设调试机内网 IP 或直连外网） |
+| NCCL | 集群稳定性四件套（CUMEM=0、ASYNC_ERROR_HANDLING=1、TIMEOUT=1200、GDR_LEVEL=LOC）已内置，勿动 |
+| 平台日志 | 工作目录下 `jinnTrainResult/<job>/train.log`（rank0）；checkpoint 仍在 `/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce/libero_all_dtrain20_seed42_h100/` |
+
+已验证：模拟平台 8 卡调用生成的 CMD 通过 `--dry-run` 全链路解析；断点续训用
+`AI_FLOW_RESUME` 填 DeepSpeed state 目录。

@@ -240,21 +240,23 @@ cd "${PROJECT_ROOT}"
 
 # -----------------------------------------------------------------------------
 # 临时代理：让 wandb 在线同步到账号（训练本身不依赖代理，代理断了只影响
-# wandb 上报，不影响训练继续跑）。端口可用 PROXY_PORT 环境变量覆盖。
+# wandb 上报，不影响训练继续跑）。地址/端口可用 PROXY_HOST / PROXY_PORT
+# 环境变量覆盖；PROXY_HOST 默认本机（调试机上跑训练的场景）。
 # -----------------------------------------------------------------------------
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-33716}"
-export http_proxy="http://127.0.0.1:${PROXY_PORT}"
-export https_proxy="http://127.0.0.1:${PROXY_PORT}"
+export http_proxy="http://${PROXY_HOST}:${PROXY_PORT}"
+export https_proxy="http://${PROXY_HOST}:${PROXY_PORT}"
 export HTTP_PROXY="${http_proxy}"
 export HTTPS_PROXY="${https_proxy}"
-export all_proxy="socks5://127.0.0.1:${PROXY_PORT}"
+export all_proxy="socks5://${PROXY_HOST}:${PROXY_PORT}"
 export ALL_PROXY="${all_proxy}"
 # 可用 PROXY_ENABLED=0 关掉代理（如代理客户端没开时）
 if [[ "${PROXY_ENABLED:-1}" == "1" ]]; then
   if wget http://www.baidu.com -O /dev/null -q --timeout=5 2>/dev/null; then
-    echo "[leapbotce] 代理工作正常 (127.0.0.1:${PROXY_PORT})，wandb 可在线同步"
+    echo "[leapbotce] 代理工作正常 (${PROXY_HOST}:${PROXY_PORT})，wandb 可在线同步"
   else
-    echo "[leapbotce] 警告: 代理 ${PROXY_PORT} 不可达，wandb 同步可能失败（不影响训练）"
+    echo "[leapbotce] 警告: 代理 ${PROXY_HOST}:${PROXY_PORT} 不可达，wandb 同步可能失败（不影响训练）"
   fi
 else
   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
