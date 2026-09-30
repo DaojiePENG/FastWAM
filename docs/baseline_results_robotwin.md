@@ -1,6 +1,6 @@
 # RoboTwin 2.0 帧延迟基线 (CloudEdgeVLA 协议)
 
-*更新: 2026-09-30 12:13 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
+*更新: 2026-09-30 22:06 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
 
 ## 主表 (10 任务 × 50 trials, 成功率 %)
 
@@ -8,7 +8,9 @@
 |---|---|---|---|---|---|
 | Motus (stage-2 ckpt) | 0.0 (n=50) | 0.0 (n=50) | — | 0.0 (n=50) | — |
 | X-WAM (robotwin_sft) | — | — | — | — | 2.0 (n=100) |
-| Fast-WAM (official release) | — | — | — | — | — |
+| Fast-WAM (official release) | 833.3 (n=6) | 1000.0 (n=5) | 1666.7 (n=3) | 5000.0 (n=1) | — |
+| DreamZero (AgiBot) | — | — | — | — | — |
+| AHA-WAM (robotwin) | — | — | — | — | — |
 
 ### 每任务明细
 
@@ -43,6 +45,36 @@
 | stack_blocks_two | — | — | — | — | — |
 
 **Fast-WAM (official release)**
+
+| 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
+|---|---|---|---|---|---|
+| adjust_bottle | — | — | — | — | — |
+| beat_block_hammer | 100.0 (n=6) | 100.0 (n=5) | 100.0 (n=3) | 100.0 (n=1) | — |
+| click_alarmclock | — | — | — | — | — |
+| dump_bin_bigbin | — | — | — | — | — |
+| grab_roller | — | — | — | — | — |
+| handover_block | — | — | — | — | — |
+| put_object_cabinet | — | — | — | — | — |
+| scan_object | — | — | — | — | — |
+| shake_bottle | — | — | — | — | — |
+| stack_blocks_two | — | — | — | — | — |
+
+**DreamZero (AgiBot)**
+
+| 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
+|---|---|---|---|---|---|
+| adjust_bottle | — | — | — | — | — |
+| beat_block_hammer | — | — | — | — | — |
+| click_alarmclock | — | — | — | — | — |
+| dump_bin_bigbin | — | — | — | — | — |
+| grab_roller | — | — | — | — | — |
+| handover_block | — | — | — | — | — |
+| put_object_cabinet | — | — | — | — | — |
+| scan_object | — | — | — | — | — |
+| shake_bottle | — | — | — | — | — |
+| stack_blocks_two | — | — | — | — | — |
+
+**AHA-WAM (robotwin)**
 
 | 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
 |---|---|---|---|---|---|

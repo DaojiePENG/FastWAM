@@ -47,6 +47,8 @@ METHOD_ROOTS = [
     ("Motus (stage-2 ckpt)", f"{EVAL_ROOT}/motus/robotwin_sweep"),
     ("X-WAM (robotwin_sft)", f"{EVAL_ROOT}/x-wam/robotwin_sweep"),
     ("Fast-WAM (official release)", f"{EVAL_ROOT}/fastwam/robotwin_sweep"),
+    ("DreamZero (AgiBot)", f"{EVAL_ROOT}/dreamzero/robotwin_sweep"),
+    ("AHA-WAM (robotwin)", f"{EVAL_ROOT}/ahawam/robotwin_sweep"),
 ]
 
 FOOTNOTES = """
