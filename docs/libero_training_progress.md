@@ -125,7 +125,7 @@ python scripts/summarize_leapbotce_delays.py /mnt/c2-worldmodel/2653853/baseline
 | 有效 batch | H100: 64（8×bs8）/ H200: 128（8×bs16）；H100-80G bs8 实测峰值 64.2GB，H200 bs16 预计 ~115-130GB |
 | 总步数 | 自动按 11.5 epoch × 277,713 帧 ÷ 有效 batch 折算：H100 ≈49.9k，H200 ≈25.0k（可 AI_FLOW_MAX_STEPS 覆盖） |
 | 学习率 | 自动按 √batch 从官方 1e-4@16 折算：有效 64→2e-4，128→2.8e-4（可 AI_FLOW_LR 固定，如复现 bs8/2e-4 配方） |
-| 其余超参 | cosine、wd 1e-2、clip 1.0、stale λ=0.5、warmup 自动=总步数/2、save 20000×5 |
+| 其余超参 | cosine、wd 1e-2、clip 1.0、stale λ=0.5、warmup 自动=总步数/2；checkpoint 按个数自动均分：`AI_FLOW_NUM_SAVE=5`（含最终 1 个），间隔=总步数÷5（H100≈9,981 步/个，H200≈4,991 步/个），最终步必存（trainer.py 结尾无条件 save） |
 | 训练入口 | 复用 `scripts/train_leapbotce_libero_2653853.sh`（同一入口；多机经 NNODES/NODE_RANK/MASTER_ADDR/MASTER_PORT 透传给 train_zero1.sh） |
 | wandb | 打开 `--wandb`，project=leapbotce，name=libero_all_dtrain20_seed42_h100；代理经 PROXY_ENABLED/PROXY_HOST/PROXY_PORT 透传（启动脚本新增 PROXY_HOST 支持，默认 127.0.0.1 仅调试机有效；训练节点需设调试机内网 IP 或直连外网） |
 | NCCL | 集群稳定性四件套（CUMEM=0、ASYNC_ERROR_HANDLING=1、TIMEOUT=1200、GDR_LEVEL=LOC）已内置，勿动 |

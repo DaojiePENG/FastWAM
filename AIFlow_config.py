@@ -106,10 +106,19 @@ AI_FLOW_STALE_LAMBDA = 0.5       # stale 损失权重上限（CloudEdge 抗时�
 AI_FLOW_STALE_WARMUP = -1        # stale 权重线性爬升步数；-1 = 自动取总步数/2
 
 # ─────────────────────────────────────────────────────────────────────
-# ④ 保存与恢复
+# ④ 保存与恢复：指定"存几个"而不是"隔多久存"
 # ─────────────────────────────────────────────────────────────────────
-AI_FLOW_SAVE_EVERY = 20000       # 每 N 步存一次 checkpoint（delta 权重 2GB + 可恢复状态 27GB）
-AI_FLOW_KEEP_CKPT = 5            # 最多保留最近 N 个 checkpoint（防共享盘写满）
+# 推荐用法：AI_FLOW_NUM_SAVE 填想保存的 checkpoint 总个数（含最终那一个），
+# 保存间隔 = 总步数 ÷ 个数（向上取整），随申请到的卡型自动缩放，不用手算：
+#   8×H100  总步数 49,902 → 每  9,981 步一个 → 10k/20k/30k/40k + 最终 49,902
+#   8×H200  总步数 24,951 → 每  4,991 步一个 →  5k/10k/15k/20k + 最终 24,951
+# （训练到总步数时 train.py 必存最终 checkpoint，与间隔是否整除无关，
+#   见 src/fastwam/trainer.py 训练循环结尾的 "[done] max_steps reached"）
+AI_FLOW_NUM_SAVE = 5             # checkpoint 总个数（中途均分 + 最终 1 个）
+AI_FLOW_SAVE_EVERY = 0           # 手动固定间隔（旧用法）：>0 时直接用它、忽略 NUM_SAVE；0 = 自动按个数均分
+AI_FLOW_KEEP_CKPT = 0            # 最多保留最近 N 个；0 = 自动 = NUM_SAVE（即全部保留）。
+                                 # 想省共享盘可改小（如 3），更早的会被自动清理。
+                                 # 注意每个 checkpoint ≈ 29GB（delta 权重 2GB + 可恢复状态 27GB）
 AI_FLOW_RESUME = ""              # 断点续训：填 DeepSpeed 状态目录，例如
                                  #   /mnt/c2-worldmodel/2653853/leapbot-ce/runs/
                                  #     libero_all_leapbotce/libero_all_dtrain20_seed42_h100/
@@ -347,6 +356,16 @@ def _build_cmd(params=None) -> str:
     eff_batch = _effective_batch(local_gpus, dist["nnodes"])
     lr = _lr_value(eff_batch)
 
+    # checkpoint 节奏：指定"存几个"（NUM_SAVE，含最终），间隔随总步数自动均分；
+    # SAVE_EVERY>0 时退回旧的固定间隔用法
+    num_save = max(int(_aiflow_value("AI_FLOW_NUM_SAVE") or 0), 0)
+    save_every = int(_aiflow_value("AI_FLOW_SAVE_EVERY") or 0)
+    if save_every <= 0:
+        save_every = max(-(-steps // max(num_save, 2)), 1)  # 向上取整：中途 N-1 个 + 最终 1 个
+    keep_ckpt = int(_aiflow_value("AI_FLOW_KEEP_CKPT") or 0)
+    if keep_ckpt <= 0:
+        keep_ckpt = max(num_save, 1)  # 默认全保留
+
     run_name = str(_aiflow_value("AI_FLOW_RUN_NAME") or "").strip()
     if not run_name:
         run_name = (f"libero_all_dtrain{_aiflow_value('AI_FLOW_DELAY')}"
@@ -375,8 +394,8 @@ def _build_cmd(params=None) -> str:
         "--workers", str(_aiflow_value("AI_FLOW_WORKERS")),
         "--stale-lambda", str(_aiflow_value("AI_FLOW_STALE_LAMBDA")),
         "--stale-warmup", str(_aiflow_value("AI_FLOW_STALE_WARMUP")),
-        "--save-every", str(_aiflow_value("AI_FLOW_SAVE_EVERY")),
-        "--keep-ckpt", str(_aiflow_value("AI_FLOW_KEEP_CKPT")),
+        "--save-every", str(save_every),
+        "--keep-ckpt", str(keep_ckpt),
         "--run-name", run_name,
     ]
     resume = str(_aiflow_value("AI_FLOW_RESUME") or "").strip()
@@ -470,12 +489,17 @@ def AutoTrain(**params) -> bool:
     gpus = _gpu_count()
     steps = _total_steps(gpus, dist["nnodes"])
     eff = _effective_batch(gpus, dist["nnodes"])
+    save_every = int(_aiflow_value("AI_FLOW_SAVE_EVERY") or 0)
+    if save_every <= 0:
+        save_every = max(-(-steps // max(int(_aiflow_value("AI_FLOW_NUM_SAVE") or 0), 2)), 1)
     print(f"[LeapBot AIFlow] task={_aiflow_value('AI_FLOW_TASK')}"
           f" d_train={_aiflow_value('AI_FLOW_DELAY')}"
           f" gpu={_gpu_name()}({GPU_NUM}×{dist['nnodes']}nodes)"
           f" bs={_gpu_batch_size()}/卡 eff_batch={eff}"
           f" steps={steps}(≈{steps * eff / int(_aiflow_value('AI_FLOW_DATA_FRAMES')):.1f} epoch)"
           f" lr={_lr_value(eff)} rank={dist['rank']}/{dist['nnodes']}")
+    print(f"[LeapBot AIFlow] checkpoint: 每 {save_every} 步存 1 个，共 "
+          f"{(steps - 1) // save_every + 1} 个（含最终）")
     print(f"[LeapBot AIFlow] CMD={cmd}")
     try:
         if log_path:
