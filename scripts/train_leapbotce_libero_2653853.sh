@@ -257,6 +257,14 @@ if [[ "${PROXY_ENABLED:-1}" == "1" ]]; then
     echo "[leapbotce] 代理工作正常 (${PROXY_HOST}:${PROXY_PORT})，wandb 可在线同步"
   else
     echo "[leapbotce] 警告: 代理 ${PROXY_HOST}:${PROXY_PORT} 不可达，wandb 同步可能失败（不影响训练）"
+    # wandb online 初始化在无外网时会重试 90s 后抛 CommError，曾把多机训练
+    # 卡死过（其它 rank 在 NCCL 集合通信上等满 600s 超时）。代理不通就自动
+    # 降级 offline：曲线落盘到 run 目录，之后 wandb sync <run目录>/wandb/latest-run 补传。
+    # 用户显式设了 WANDB_MODE 时不覆盖。
+    if [[ "${USE_WANDB:-0}" == "1" && -z "${WANDB_MODE:-}" ]]; then
+      export WANDB_MODE=offline
+      echo "[leapbotce] 已自动降级 WANDB_MODE=offline（训练不受影响，曲线可稍后 wandb sync 补传）"
+    fi
   fi
 else
   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY

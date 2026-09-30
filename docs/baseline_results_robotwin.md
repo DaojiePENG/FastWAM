@@ -1,6 +1,6 @@
 # RoboTwin 2.0 帧延迟基线 (CloudEdgeVLA 协议)
 
-*更新: 2026-09-30 01:37 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
+*更新: 2026-09-30 12:13 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
 
 ## 主表 (10 任务 × 50 trials, 成功率 %)
 

@@ -133,3 +133,25 @@ python scripts/summarize_leapbotce_delays.py /mnt/c2-worldmodel/2653853/baseline
 
 已验证：模拟平台 8 卡调用生成的 CMD 通过 `--dry-run` 全链路解析；断点续训用
 `AI_FLOW_RESUME` 填 DeepSpeed state 目录。
+
+**09-30 首次提交（8×H200，leapbot_ce_train-8329b664）失败与修复**：训练本体正常
+（DeepSpeed ZeRO-1 8 卡、bs16/有效 128 起来并跑了部分步），但 rank0 的
+`wandb.init` 在线模式被死代理（节点上 127.0.0.1:33716 拒连）卡 90s 后抛
+CommError，其余 7 rank 在梯度 ALLREDUCE 上等满 torch 默认 NCCL 600s 超时被
+watchdog 全杀 → 平台判 failed。细节：wandb 0.23 的 online init 失败会留下僵死
+服务状态，rank0 连退出清理都挂死（事故时 ps 里 9 个 train.py 的谜底）。
+三层修复：
+1. `src/fastwam/trainer.py::_init_wandb`：进 online 前先探活 api.wandb.ai
+   （2×10s，不校验证书，urllib 自动走代理环境变量），探不通直接 offline——
+   根本不给 wandb 在死网络里重试的机会；wandb.init 仍失败则禁用 wandb 并
+   teardown 清理，训练永不因遥测中断；`WANDB_MODE` 环境变量优先于 config
+   （显式 online 不拦；空串/非法值会被清掉——wandb 0.23 的 pydantic 校验
+   会因非法值直接抛错，这是测试中发现的坑）；
+2. `scripts/train_leapbotce_libero_2653853.sh`：代理连通性检测失败且未显式设
+   WANDB_MODE 时自动 `WANDB_MODE=offline`（曲线落盘 run 目录，事后
+   `wandb sync <run目录>/wandb/latest-run` 补传）；
+3. AIFlow 配置注释记录该坑。注意 `NCCL_TIMEOUT` 环境变量 torch 并不识别
+   （实际生效的是 torch 默认 600s），此前是无效导出。
+验证：leapbot-va 环境实测"offline 直启"与"死代理探活降级"两条路径均干净
+初始化/退出（rc=0）；训练本体在失败任务中已证明正常（ZeRO-1 8 卡 bs16 起来
+并跑了数百步），本次修复只动 wandb 遥测路径，不碰训练。

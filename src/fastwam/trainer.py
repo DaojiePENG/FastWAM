@@ -153,6 +153,30 @@ class Wan22Trainer:
         val_size = len(self.val_dataset) if self.val_dataset is not None else len(self.train_dataset)
         logger.info("Train/val dataset size: %d/%d", len(self.train_dataset), val_size)
 
+    @staticmethod
+    def _wandb_network_ok(timeout: float = 10.0, attempts: int = 2) -> bool:
+        """wandb 上报需要公网（直连或经 http_proxy/https_proxy 环境变量）。
+
+        urllib 会自动走代理环境变量，所以这一探针同时覆盖两种出口；
+        探不通就不该进 online 模式（wandb 0.23 的 online init 失败会留下
+        僵死的服务状态，进程退出时挂死——09-30 AIFlow 8×H200 事故根因）。
+        只做可达性检查，不做证书校验（个别环境的 CA 链会让探针误报，
+        而 wandb 客户端自己会正确处理 TLS）。
+        """
+        import ssl
+        import urllib.request
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        for _ in range(attempts):
+            try:
+                urllib.request.urlopen("https://api.wandb.ai", timeout=timeout, context=ctx)
+                return True
+            except Exception:
+                continue
+        return False
+
     def _init_wandb(self):
         if not self.wandb_enabled or not self.accelerator.is_main_process:
             return
@@ -163,19 +187,57 @@ class Wan22Trainer:
                 "wandb logging is enabled in config (`wandb.enabled=true`) but wandb is not installed."
             ) from e
 
-        self.wandb_run = wandb.init(
-            entity=self.cfg.wandb.workspace,
-            project=self.cfg.wandb.project,
-            name=self.cfg.wandb.name,
-            group=None if self.cfg.wandb.group in (None, "null", "") else str(self.cfg.wandb.group),
-            mode=self.cfg.wandb.mode,
-            dir=self.output_dir,
-        )
+        # 模式优先级：WANDB_MODE 环境变量 > config（wandb 对显式 mode= 参数的
+        # 优先级高于环境变量，所以必须在这里读环境变量再传入）。
+        # 启动脚本在代理不通时会自动设 WANDB_MODE=offline；
+        # 这里再兜一层底：要进 online 但外网探活失败，同样降级 offline，
+        # 避免 wandb.init 在死网络里重试、抛 CommError、留下僵死服务。
+        valid_modes = {"online", "offline", "shared", "disabled", "dryrun", "run"}
+        raw_env_mode = os.environ.get("WANDB_MODE", "").strip().lower()
+        if raw_env_mode in valid_modes:
+            mode = raw_env_mode
+        else:
+            if raw_env_mode:
+                # 非法值会让 wandb 内部 Settings 校验直接抛错（pydantic），
+                # 清掉环境变量，交给上面的 mode 参数。
+                os.environ.pop("WANDB_MODE", None)
+            mode = str(self.cfg.wandb.mode)
+        # 仅当 online 来自 config（自动决策）时才探活降级；用户显式
+        # WANDB_MODE=online 表示"我知道网络状况"，尊重其选择（init 失败
+        # 也有下面的 except 兜底，训练不受影响）。
+        if mode == "online" and raw_env_mode != "online" and not self._wandb_network_ok():
+            logger.warning(
+                "wandb online 模式但外网不可达（直连/代理均失败），自动降级 offline："
+                "曲线落盘到 %s/wandb/，之后可在有外网的机器上 wandb sync 补传",
+                self.output_dir,
+            )
+            mode = "offline"
+
+        # wandb 只是遥测，绝不能让异常带崩训练：init 失败就禁用并清理残留，
+        # 不做原地重试（失败尝试的服务状态会污染后续 init/退出）。
+        try:
+            self.wandb_run = wandb.init(
+                entity=self.cfg.wandb.workspace,
+                project=self.cfg.wandb.project,
+                name=self.cfg.wandb.name,
+                group=None if self.cfg.wandb.group in (None, "null", "") else str(self.cfg.wandb.group),
+                mode=mode,
+                dir=self.output_dir,
+            )
+        except Exception as exc:
+            logger.warning("wandb init failed in mode=%s (%s); continuing without wandb", mode, exc)
+            self.wandb_run = None
+            try:
+                wandb.teardown()
+            except Exception:
+                pass
+            return
         logger.info(
-            "Initialized wandb run: workspace=%s project=%s name=%s",
+            "Initialized wandb run: workspace=%s project=%s name=%s mode=%s",
             self.cfg.wandb.workspace,
             self.cfg.wandb.project,
             self.cfg.wandb.name,
+            mode,
         )
 
     def _wandb_log(self, payload: dict):

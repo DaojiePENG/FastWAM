@@ -132,7 +132,14 @@ AI_FLOW_RUN_NAME = ""            # wandb run 名 / 输出子目录名；留空 =
 #     (a) 把 AI_FLOW_PROXY_HOST 设为调试机内网 IP，且调试机代理客户端
 #         开"允许局域网连接"（监听 0.0.0.0）；
 #     (b) 若训练节点本身可直连外网，把 AI_FLOW_PROXY_ENABLED 设为 0。
-#   代理不可达时启动脚本只打警告，训练照常跑，wandb 缓存在本地稍后可补同步。
+#
+# ★ 09-30 事故教训：首次 AIFlow 提交（8×H200）就是死在这里——训练节点代理
+#   不通，wandb online 初始化重试 90s 后抛 CommError 弄死 rank0，其余 7 卡
+#   在 NCCL 集合通信上等满 600s 超时被 watchdog 全杀。现已双保险修复：
+#   启动脚本检测到代理不通会自动 WANDB_MODE=offline（曲线落盘到
+#   run 目录 /mnt/c2-worldmodel/.../<run名>/wandb/，训练完在调试机上
+#   wandb sync <run目录>/wandb/latest-run 补传即可看到曲线）；
+#   trainer.py 里 wandb.init 失败也会自动降级 offline，绝不再影响训练。
 AI_FLOW_PROXY_ENABLED = 1        # 1 = 走代理出网；0 = 不走代理
 AI_FLOW_PROXY_HOST = ""          # 代理地址；空 = 127.0.0.1（仅调试机本机有效）
 AI_FLOW_PROXY_PORT = 33716       # 代理端口（与调试机上代理客户端一致）
