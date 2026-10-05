@@ -44,6 +44,7 @@ TASKS = [
 # DreamZero, AHA-WAM, ...) as separate entries; each root must contain
 # delay_<D>/<task>/... cells as produced by the lane driver.
 METHOD_ROOTS = [
+    ("LeapBot-ce (ours, dual-stream)", f"{EVAL_ROOT}/leapbotce/robotwin_sweep"),
     ("Motus (stage-2 ckpt)", f"{EVAL_ROOT}/motus/robotwin_sweep"),
     ("X-WAM (robotwin_sft)", f"{EVAL_ROOT}/x-wam/robotwin_sweep"),
     ("Fast-WAM (official release)", f"{EVAL_ROOT}/fastwam/robotwin_sweep"),

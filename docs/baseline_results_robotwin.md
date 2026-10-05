@@ -1,18 +1,34 @@
 # RoboTwin 2.0 帧延迟基线 (CloudEdgeVLA 协议)
 
-*更新: 2026-09-30 22:06 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
+*更新: 2026-10-05 23:55 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
 
 ## 主表 (10 任务 × 50 trials, 成功率 %)
 
 | 方法 | D=0 | D=5 | D=10 | D=20 | D=40 |
 |---|---|---|---|---|---|
+| LeapBot-ce (ours, dual-stream) | — | — | — | — | — |
 | Motus (stage-2 ckpt) | 0.0 (n=50) | 0.0 (n=50) | — | 0.0 (n=50) | — |
 | X-WAM (robotwin_sft) | — | — | — | — | 2.0 (n=100) |
-| Fast-WAM (official release) | 833.3 (n=6) | 1000.0 (n=5) | 1666.7 (n=3) | 5000.0 (n=1) | — |
-| DreamZero (AgiBot) | — | — | — | — | — |
-| AHA-WAM (robotwin) | — | — | — | — | — |
+| Fast-WAM (official release) | **99.6** | **96.8** | **96.6** | **94.6** | **81.6** |
+| DreamZero (AgiBot) | — | — | 0.0 (n=50) | — | — |
+| AHA-WAM (robotwin) | **97.6** | **92.8** | **84.2** | **67.8** | **48.6** |
 
 ### 每任务明细
+
+**LeapBot-ce (ours, dual-stream)**
+
+| 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
+|---|---|---|---|---|---|
+| adjust_bottle | — | — | — | — | — |
+| beat_block_hammer | — | — | — | — | — |
+| click_alarmclock | — | — | — | — | — |
+| dump_bin_bigbin | — | — | — | — | — |
+| grab_roller | — | — | — | — | — |
+| handover_block | — | — | — | — | — |
+| put_object_cabinet | — | — | — | — | — |
+| scan_object | — | — | — | — | — |
+| shake_bottle | — | — | — | — | — |
+| stack_blocks_two | — | — | — | — | — |
 
 **Motus (stage-2 ckpt)**
 
@@ -48,23 +64,23 @@
 
 | 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
 |---|---|---|---|---|---|
-| adjust_bottle | — | — | — | — | — |
-| beat_block_hammer | 100.0 (n=6) | 100.0 (n=5) | 100.0 (n=3) | 100.0 (n=1) | — |
-| click_alarmclock | — | — | — | — | — |
-| dump_bin_bigbin | — | — | — | — | — |
-| grab_roller | — | — | — | — | — |
-| handover_block | — | — | — | — | — |
-| put_object_cabinet | — | — | — | — | — |
-| scan_object | — | — | — | — | — |
-| shake_bottle | — | — | — | — | — |
-| stack_blocks_two | — | — | — | — | — |
+| adjust_bottle | **100.0** | **100.0** | **100.0** | **100.0** | **90.0** |
+| beat_block_hammer | **100.0** | **94.0** | **100.0** | **96.0** | **80.0** |
+| click_alarmclock | **100.0** | **100.0** | **100.0** | **100.0** | **100.0** |
+| dump_bin_bigbin | **100.0** | **98.0** | **98.0** | **92.0** | **64.0** |
+| grab_roller | **100.0** | **100.0** | **100.0** | **100.0** | **100.0** |
+| handover_block | **96.0** | **100.0** | **94.0** | **86.0** | **44.0** |
+| put_object_cabinet | **100.0** | **84.0** | **82.0** | **90.0** | **74.0** |
+| scan_object | **100.0** | **92.0** | **92.0** | **86.0** | **88.0** |
+| shake_bottle | **100.0** | **100.0** | **100.0** | **96.0** | **96.0** |
+| stack_blocks_two | **100.0** | **100.0** | **100.0** | **100.0** | **80.0** |
 
 **DreamZero (AgiBot)**
 
 | 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
 |---|---|---|---|---|---|
 | adjust_bottle | — | — | — | — | — |
-| beat_block_hammer | — | — | — | — | — |
+| beat_block_hammer | — | — | **0.0** | — | — |
 | click_alarmclock | — | — | — | — | — |
 | dump_bin_bigbin | — | — | — | — | — |
 | grab_roller | — | — | — | — | — |
@@ -78,16 +94,16 @@
 
 | 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
 |---|---|---|---|---|---|
-| adjust_bottle | — | — | — | — | — |
-| beat_block_hammer | — | — | — | — | — |
-| click_alarmclock | — | — | — | — | — |
-| dump_bin_bigbin | — | — | — | — | — |
-| grab_roller | — | — | — | — | — |
-| handover_block | — | — | — | — | — |
-| put_object_cabinet | — | — | — | — | — |
-| scan_object | — | — | — | — | — |
-| shake_bottle | — | — | — | — | — |
-| stack_blocks_two | — | — | — | — | — |
+| adjust_bottle | **100.0** | **100.0** | **98.0** | **90.0** | **60.0** |
+| beat_block_hammer | **100.0** | **84.0** | **46.0** | **20.0** | **10.0** |
+| click_alarmclock | **100.0** | **100.0** | **100.0** | **100.0** | **100.0** |
+| dump_bin_bigbin | **96.0** | **88.0** | **84.0** | **54.0** | **30.0** |
+| grab_roller | **100.0** | **100.0** | **100.0** | **100.0** | **94.0** |
+| handover_block | **92.0** | **62.0** | **52.0** | **36.0** | **4.0** |
+| put_object_cabinet | **96.0** | **94.0** | **88.0** | **56.0** | **28.0** |
+| scan_object | **92.0** | **100.0** | **80.0** | **60.0** | **52.0** |
+| shake_bottle | **100.0** | **100.0** | **100.0** | **100.0** | **100.0** |
+| stack_blocks_two | **100.0** | **100.0** | **94.0** | **62.0** | **8.0** |
 
 
 ---
