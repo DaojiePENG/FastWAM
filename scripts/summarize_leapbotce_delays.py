@@ -83,7 +83,10 @@ def summarize(root: Path) -> dict:
                 (row["task_suite"], row["task_id"]): row["success_rate"] for row in task_rows
             }
         for row in task_rows:
-            baseline = baseline_by_task[(row["task_suite"], row["task_id"])]
+            # delay_0 若缺某任务 (如 39/40 补跑期的 libero_10 task8), 后续 delay
+            # 的同名任务行查不到基线 —— 用 .get 返回 None (retention 留空), 不能
+            # KeyError 炸掉整个汇总 (10-09 dtrain20 分支收官实测)。
+            baseline = baseline_by_task.get((row["task_suite"], row["task_id"]))
             row["retention_vs_delay_0"] = row["success_rate"] / baseline if baseline else None
         summary_rows.append(
             {
