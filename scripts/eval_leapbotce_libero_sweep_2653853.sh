@@ -106,8 +106,24 @@ PY="${FASTWAM_EVAL_PYTHON:-$(command -v python)}"
 [[ -x "$PY" ]] || fail "eval python not found after env_2653853.sh (set FASTWAM_EVAL_PYTHON)"
 "$PY" -c 'import torch' 2>/dev/null || fail "eval env lacks torch: $PY"
 
+# NVIDIA userland wiring (same proven pattern as the RoboTwin cluster sweep):
+# container-native Vulkan ICD wins if present; else wire the shared-storage
+# nvidia-graphics-<host_drv> package (VK ICD + LD_LIBRARY_PATH). Without a
+# version-matched userland, robosuite's per-device EGL dies with
+# "PLATFORM_DEVICE extension" in every worker.
+# 2026-10-09 h200 全量首跑实锤: 老探针只测 mujoco 默认设备 EGL (过了), worker
+# 走 robosuite 按设备 EGL 全灭 —— 探针必须走 worker 同款路径。
+# shellcheck disable=SC1091
+source /dahuafs/userdata/2653853/code/baseline_delay/nvidia_userland_wire.sh
+if [[ -n "${NW_WIRE_MISSING:-}" ]]; then
+  fail "no NVIDIA userland package for host driver $NW_WIRE_MISSING (have: $(ls -d /dahuafs/userdata/2653853/nvidia-graphics-*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')) — build it: nvidia-graphics-extract.sh <VER> <matching NVIDIA-Linux-x86_64-<VER>.run>"
+fi
+
 # Render + benchmark probe (mirrors the RoboTwin SAPIEN probe): a broken
 # pod GL stack otherwise burns every episode silently and still exits rc=0.
+# NOTE: this only covers the DEFAULT EGL device; the per-worker masked-GPU
+# path is probed separately after GPU discovery (probe 2) — 10-09 h200 实锤
+# 默认设备过、worker 全灭.
 PROBE_LOG=/tmp/leapbotce_libero_probe.log
 if ! "$PY" - >"$PROBE_LOG" 2>&1 <<'PYEOF'
 import contextlib
@@ -143,6 +159,31 @@ else
 fi
 N=${#GPUS[@]}
 [[ "$N" -ge 1 ]] || fail "no GPUs discovered"
+
+# ---------- probe 2: the EXACT worker EGL path (masked single GPU) ----------
+# Workers run with CUDA_VISIBLE_DEVICES=<one gpu> and FastWAM's libero_utils
+# remap patch; robosuite inits EGL via EGL_EXT_platform_device inside that
+# mask. Nodes where only the default device works (10-09 h200 全量首跑: probe 1
+# 过、全部 worker 死在 EGL init) die here with a diagnosis instead of burning
+# the allocation. Probe the LAST assigned card (worst case).
+PROBE2_LOG=/tmp/leapbotce_libero_probe_worker.log
+PROBE_GPU="${GPUS[$((N - 1))]}"
+if ! CUDA_VISIBLE_DEVICES="$PROBE_GPU" "$PY" - >"$PROBE2_LOG" 2>&1 <<'PYEOF'
+import os
+import experiments.libero.libero_utils  # noqa: F401  (applies the EGL remap patch)
+from robosuite.renderers.context.egl_context import EGLGLContext
+ctx = EGLGLContext(max_width=64, max_height=64, device_id=0)
+ctx.make_current()
+ctx.free()
+print("worker-path EGL OK (masked CUDA_VISIBLE_DEVICES)")
+PYEOF
+then
+  echo "[libero-sweep] WORKER-PATH PROBE FAILED on GPU $PROBE_GPU (wired userland: ${NVGL:-container-native})" >&2
+  echo "[libero-sweep] probe stderr (last 20 lines of $PROBE2_LOG):" >&2
+  tail -20 "$PROBE2_LOG" >&2 2>/dev/null || true
+  fail "worker EGL init failed (probe 2) — fix the userland/driver match before resubmitting"
+fi
+echo "[libero-sweep] worker-path probe OK (GPU $PROBE_GPU, wired: ${NVGL:-container-native})"
 
 # ---------- threads, cells, packing ----------
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
