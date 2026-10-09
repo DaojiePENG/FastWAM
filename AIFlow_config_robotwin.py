@@ -194,7 +194,7 @@ AI_FLOW_EXTRA_OVERRIDES: list[str] = []
 # ⑧ 环境（一般不动）
 # ─────────────────────────────────────────────────────────────────────
 AI_FLOW_CONDA_ENV = os.environ.get(
-    "AI_FLOW_CONDA_ENV", "/home/myuser/miniconda3/envs/leapbot-va"
+    "AI_FLOW_CONDA_ENV", "/dahuafs/userdata/2653853/code/.envs/leapbot-va"
 )                                # 共享家目录里的 conda 环境（含 torch/accelerate/diffsynth）
 AI_FLOW_DATA_FRAMES = 6075103    # RoboTwin 2.0 全量总帧数（算总步数用）
 
@@ -373,7 +373,14 @@ def _build_cmd(params=None) -> str:
     local_gpus = _gpu_count()
     steps = _total_steps(local_gpus, dist["nnodes"])
     conda_env = Path(str(_aiflow_value("AI_FLOW_CONDA_ENV")))
-    conda_init = conda_env.parent.parent / "etc" / "profile.d" / "conda.sh"
+    # 镜像瘦身 (10-09): 论文 envs 迁共享盘 .envs (非 conda root), conda.sh 不能
+    # 再从 env 路径上推 —— 与 scripts/env_2653853.sh 同款双 root 探测。
+    conda_root = next(
+        (Path(root) for root in ("/root/miniconda3", "/home/myuser/miniconda3")
+         if (Path(root) / "etc" / "profile.d" / "conda.sh").is_file()),
+        conda_env.parent.parent,
+    )
+    conda_init = conda_root / "etc" / "profile.d" / "conda.sh"
 
     batch_size = _gpu_batch_size()
     eff_batch = _effective_batch(local_gpus, dist["nnodes"])

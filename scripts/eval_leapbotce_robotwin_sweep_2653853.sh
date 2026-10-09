@@ -35,7 +35,7 @@ SWEEP_ROOT="/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/robotwin_s
 LOGDIR="${SWEEP_ROOT}/_cluster_logs"
 RUN_DIR="/mnt/c2-worldmodel/2653853/leapbot-ce/runs/robotwin_all_leapbotce/robotwin_all_dtrain20_seed42_h200_n2"
 WAN_ROOT="/mnt/c2-worldmodel/2653853/leapbot-ce/models"
-PY="${FASTWAM_EVAL_PYTHON:-/home/myuser/miniconda3/envs/fastwam-robotwin-2653853/bin/python}"
+PY="${FASTWAM_EVAL_PYTHON:-/dahuafs/userdata/2653853/code/.envs/fastwam-robotwin-2653853/bin/python}"
 ALL_TASKS=(beat_block_hammer adjust_bottle click_alarmclock dump_bin_bigbin grab_roller handover_block put_object_cabinet scan_object shake_bottle stack_blocks_two)
 
 echo "[cluster-sweep] start $(date '+%F %T') host=$(hostname)"

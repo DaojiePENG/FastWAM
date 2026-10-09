@@ -609,7 +609,7 @@ def make_figure(curves):
 
 
 # base python3 may lack matplotlib; retry with a conda env interpreter
-_FIG_FALLBACK_PY = "/home/myuser/miniconda3/envs/leapbot-va/bin/python"
+_FIG_FALLBACK_PY = "/dahuafs/userdata/2653853/code/.envs/leapbot-va/bin/python"
 
 
 def _make_figure_subprocess(curves):
