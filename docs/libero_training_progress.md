@@ -85,6 +85,14 @@ d=20 于 09-23 16:03 正常完成后，看守自动按 d=40 窗口重新标定�
 | 汇总 | 每 sweep 结束自动跑 `scripts/summarize_leapbotce_delays.py` → `delay_sweep_summary.json`；全部结束后自动重生成 `docs/baseline_results_libero.md`（LeapBotCE 行与其它 baseline 并列） |
 | 监控 | `tail /mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/driver2.log`；单 delay 日志在 `leapbotce/logs/` |
 
+**10-01 11:40 状态快照（200k 加长训练未完成，评测未扩容）**：200k 加长训练已于
+09-29 23:56 NCCL SIGABRT 中止（见第 5 节，⛔ 行），未触发评测扩容条件；当前
+110k 检查点评测**已全部结束**（driver_110k.log 10-01 09:40，报告已重生成），
+50k dtrain20 sweep 在 delay_5（30/40，GPU 1-3 每卡 1 worker，管理进程 662678），
+dtrain40 50k sweep 仍未启动（SKIP_D40=1，等空闲卡）。空闲卡实况：GPU 4/5/6 全空
+（RoboTwin 文本嵌入预计算 10-01 04:10 完成），GPU 0 有 110k 残留 26.5GB（本容器
+命名空间无对应进程，约 55GB 可用），GPU 7 桌面驻留 7.8GB。
+
 **09-28 晚间事故与恢复**：首跑 driver 在 22:03-23:22 期间因节点负载过高（load>300）
 + 一次存储卡顿（manager 进程 D 状态挂死、worker 状态文件 14h 不更新）级联失败：
 dtrain20 delay_0 完成 38/40、delay_20 完成 3/40，dtrain40 delay_0 完成 30/40，其余空。

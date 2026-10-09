@@ -59,6 +59,7 @@ METHODS = [
     ("LeapBotCE (d_train=20)", ["LeapBotCE (d_train=20)"]),
     ("LeapBotCE (d_train=20, 110k)", ["LeapBotCE (d_train=20, 110k)"]),
     ("LeapBotCE (d_train=20, 200k)", ["LeapBotCE (d_train=20, 200k)"]),
+    ("LeapBotCE (d_train=20, h200 25k)", ["LeapBotCE (d_train=20, h200 25k)"]),
     ("LeapBotCE (d_train=40)", ["LeapBotCE (d_train=40)"]),
 ]
 
@@ -480,12 +481,14 @@ def collect():
         if "_archive" in path:
             continue
         rel = os.path.relpath(path, f"{EVAL_ROOT}/leapbotce")
-        # 注意：dtrain20_seed42_110k / _200k 等加长训练子目录必须放在
+        # 注意：dtrain20_seed42_110k / _200k / _h200 等训练轮子目录必须放在
         # "dtrain20" 之前判断（子串包含关系）。
         if "dtrain20_seed42_110k" in rel:
             method = "LeapBotCE (d_train=20, 110k)"
         elif "dtrain20_seed42_200k" in rel:
             method = "LeapBotCE (d_train=20, 200k)"
+        elif "dtrain20_seed42_h200" in rel:
+            method = "LeapBotCE (d_train=20, h200 25k)"
         elif "dtrain20" in rel:
             method = "LeapBotCE (d_train=20)"
         elif "dtrain40" in rel:

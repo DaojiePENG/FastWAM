@@ -46,9 +46,13 @@ def write_worker_status(status_dir: Path, worker_id: str, status: str, message: 
 
 def read_worker_status(status_dir: Path, worker_id: str) -> dict | None:
     status_file = status_dir / f"worker_{worker_id}.json"
-    if not status_file.exists():
+    try:
+        return json.loads(status_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        # dpc 网络盘上 os.replace 瞬态 ENOENT / exists() 后被删的 TOCTOU 窗口
+        # 都可能走到这里 —— 监控循环把 None 当"非 idle"跳过即可,绝不能让
+        # manager 崩掉 (崩了走不到 finally, 全部 worker 孤儿化, 10-09 delay_10 实锤)。
         return None
-    return json.loads(status_file.read_text(encoding="utf-8"))
 
 
 def pop_task(

@@ -140,7 +140,12 @@ def run_evaluation(
     if not tasks:
         raise ValueError(f"Task file is empty: {task_file}")
 
-    worker_root = output_dir / ".worker_pool"
+    # 打包驱动 (eval_leapbotce_libero_sweep_2653853.sh) 会让同 delay 的多个
+    # (delay×suite) manager 共用一个 output_dir —— worker_pool 的 pending/lock/
+    # stop/status/logs/failed 都是固定名, 直接放 output_dir 下会互写队列,
+    # 按 task_suite_names 命名空间隔离 (结果文件仍直写 output_dir/<suite>/)。
+    suites_tag = "_".join(sorted({suite_name for suite_name, _ in tasks})) or "all"
+    worker_root = output_dir / f".worker_pool_{suites_tag}"
     pending_file = worker_root / "pending_tasks.txt"
     lock_file = worker_root / "pending_tasks.lock"
     stop_file = worker_root / "stop"
@@ -338,21 +343,21 @@ def main(cfg: DictConfig):
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # tasks.txt / manager_config.yaml 同样是固定名 —— 同 delay 多 manager 共存时
+    # 会互写 (不同 suite 的任务列表内容还不一样), 按 suite 命名空间隔离。
+    suites = list(manager.get("task_suite_names", DEFAULT_TASK_SUITE_NAMES))
+    suites_tag = "_".join(sorted(set(suites))) or "all"
     task_file_cfg = manager.get("task_file")
     if task_file_cfg:
         task_file = Path(os.path.expanduser(os.path.expandvars(str(task_file_cfg))))
         if not task_file.exists():
-            task_file = create_task_file(
-                task_file, list(manager.get("task_suite_names", DEFAULT_TASK_SUITE_NAMES))
-            )
+            task_file = create_task_file(task_file, suites)
         else:
             print(f"Using existing task list: {task_file}")
     else:
-        task_file = create_task_file(
-            output_dir / "tasks.txt", list(manager.get("task_suite_names", DEFAULT_TASK_SUITE_NAMES))
-        )
+        task_file = create_task_file(output_dir / f"tasks_{suites_tag}.txt", suites)
 
-    OmegaConf.save(config=cfg, f=str(output_dir / "manager_config.yaml"))
+    OmegaConf.save(config=cfg, f=str(output_dir / f"manager_config_{suites_tag}.yaml"))
     if bool(manager.get("create_only", False)):
         print("create_only=True; task list generated without starting workers.")
         return

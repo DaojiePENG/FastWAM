@@ -1,6 +1,6 @@
 # Baseline 帧延迟鲁棒性评测 — 实时结果
 
-> 自动生成于 **2026-09-22 17:42:08** · 生成器 `FastWAM/docs/generate_baseline_report.py`
+> 自动生成于 **2026-10-01 15:11:26** · 生成器 `FastWAM/docs/generate_baseline_report.py`
 > 刷新: `python FastWAM/docs/generate_baseline_report.py`（可随时重复执行，新结果目录自动纳入）
 
 **协议**（对齐 CloudEdgeVLA 的 frame-delay 设定）：单流全观测帧延迟。每次 replan 从 `seed=1234` 的 RNG 采样 d∈[0, D]，整组观测同时老化；扫描 D ∈ {0, 5, 10, 20, 40} 步。
@@ -18,6 +18,10 @@
 | OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical |
 | Kairos † | LIBERO-Plus 类目协议 | external WAM adapter (DiT 4B+Qwen2.5-VL-7B) | Camera Viewpoints 60 任务子集×1 trial（全类目 1599） |
 | LeapBot-DualLane-V2 (在研) | 50 | inference=20, replan=10, wait=30 | dual-lane 双流在研模型 |
+| LeapBotCE (d_train=20) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，全 LIBERO 四套件 50k 步，seed=1234 |
+| LeapBotCE (d_train=20, 110k) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，d_train=20 加长轮在 110k 步（200k 计划中途，NCCL 崩溃前最后检查点）的评测，seed=1234 |
+| LeapBotCE (d_train=20, 200k) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，d_train=20 加长轮完整 200k 步（若后续续训完成） |
+| LeapBotCE (d_train=40) | 50 | inference=10, replan=10, wait=30 | 同上，训练时延上限 40 |
 
 ## 主表：各方法成功率 (%) 对比 — 每个方法一行
 
@@ -32,6 +36,10 @@
 | StarWAM-SharedDiT | **98.2** | **73.4** | **35.4** | **8.8** | **1.2** |
 | Kairos † | — | — | — | — | — |
 | LeapBot-DualLane-V2 (在研) | 71.4(n=7) | 42.9(n=7) | 57.1(n=7) | 14.3(n=7) | 0.0(n=7) |
+| LeapBotCE (d_train=20) | — | — | — | — | — |
+| LeapBotCE (d_train=20, 110k) | — | — | — | — | — |
+| LeapBotCE (d_train=20, 200k) | — | — | — | — | — |
+| LeapBotCE (d_train=40) | — | — | — | — | — |
 
 加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)。`(n=k)` = 该延迟只有 k 回合（pilot/链路验证）。`—` = 该延迟尚未有结果。
 † Kairos 在其原生基准 LIBERO-Plus (Camera Viewpoints 类目) 上评测，与其他方法的 libero_spatial 不完全可比。
@@ -48,8 +56,11 @@
 | LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring："Delay the whole synchronized observation at every model replan" | U{0..D} |
 | LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} |
 | Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} |
+| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} |
 
-**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot 为 U{1..D}（每次 replan 至少老化 1 步）。D≥5 时两者均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`，D ∈ {0,5,10,20,40}，replan 每 10 步。
+**观测契约披露（重要）**：与上表单流全观测老化的基线不同，LeapBotCE 的延迟只作用于云端规划观测（图像+本体状态同源老化），边缘侧当前视角/本体状态保持新鲜——这是该方法的云边分工设计本身，评测如实按其原生协议执行。对比两条曲线时需注明：LeapBotCE 在延迟 D 下仍持有 D 步内新鲜的边缘观测，而基线的全观测已老化 D 步；因此 LeapBotCE 的保持率优势来自"新鲜边缘补偿"，论文引用时必须声明该契约差异（LEAPBOTCE.md 基线协议第 5 条）。
+
+**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}，replan 每 10 步。
 **审计链**：每个 trial 的 realized delay（`delay_samples`）、`delay_mean` 与 `delay_histogram` 均落盘于各自 results.json，可直接引用作论文协议证明。
 
 - **FastWAM**: n 按延迟取最多回合的来源：{0: (500, 'libero_spatial (+50t-20260919)'), 5: (500, 'libero_spatial (+50t-20260919)'), 10: (500, 'libero_spatial (+50t-20260919)'), 20: (500, 'libero_spatial (+50t-20260919)'), 40: (500, 'libero_spatial (+50t-20260919)')}；来源运行：libero_spatial (+50t-20260919)
@@ -333,12 +344,12 @@
 ## GPU / 进程快照（生成时刻）
 
 ```
-0, 25449 MiB, 3 %
-1, 25391 MiB, 3 %
-2, 0 MiB, 0 %
-3, 54713 MiB, 100 %
-4, 38829 MiB, 58 %
-5, 30117 MiB, 68 %
-6, 42763 MiB, 0 %
-7, 26123 MiB, 0 %
+0, 26565 MiB, 0 %
+1, 4 MiB, 0 %
+2, 6 MiB, 0 %
+3, 6 MiB, 0 %
+4, 4 MiB, 0 %
+5, 4 MiB, 0 %
+6, 4 MiB, 0 %
+7, 7807 MiB, 0 %
 ```
