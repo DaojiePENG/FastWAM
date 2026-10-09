@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .robot_video_dataset import RobotVideoDataset
 
@@ -40,6 +41,9 @@ class CloudEdgeRobotVideoDataset(torch.utils.data.Dataset):
         if processor is not None:
             processor.num_obs_steps = transitions + 1
             processor.num_image_steps = transitions + 1
+        # Remember the multi-camera layout so __getitem__ can split the fused
+        # cloud frame back into per-view edge observations.
+        self.concat_multi_camera = str(kwargs.get("concat_multi_camera") or "horizontal")
         self.dataset = RobotVideoDataset(**kwargs)
 
     @property
@@ -60,9 +64,36 @@ class CloudEdgeRobotVideoDataset(torch.utils.data.Dataset):
 
         current_cloud = sample["video"][:, current]
         stale_cloud = sample["video"][:, stale]
-        if current_cloud.shape[-1] % 2:
-            raise ValueError("LeapBotCE expects a horizontal two-camera image")
-        current_views = torch.stack(current_cloud.chunk(2, dim=-1), dim=0)
+        if self.concat_multi_camera == "robotwin":
+            # RoboTwin composite layout (RobotVideoDataset): top camera fills
+            # the upper 2/3 rows; the bottom row holds left/right wrist cams
+            # side by side. Splitting the finished composite is exact because
+            # the final resize is a no-op at [384, 320] and normalization is
+            # element-wise. The three views have different sizes (256x320 vs
+            # 128x160), so resize each to the SigLIP input size before
+            # stacking - identical to EdgeVisionEncoder's per-view
+            # F.interpolate, just done once on the dataloader workers.
+            height, width = current_cloud.shape[-2], current_cloud.shape[-1]
+            top_h = height - height // 3
+            views = [
+                current_cloud[:, :top_h],
+                current_cloud[:, top_h:, : width // 2],
+                current_cloud[:, top_h:, width // 2 :],
+            ]
+            current_views = torch.stack(
+                [
+                    F.interpolate(
+                        view.unsqueeze(0), size=(224, 224),
+                        mode="bilinear", align_corners=False,
+                    ).squeeze(0)
+                    for view in views
+                ],
+                dim=0,
+            )
+        else:
+            if current_cloud.shape[-1] % 2:
+                raise ValueError("LeapBotCE expects a horizontal two-camera image")
+            current_views = torch.stack(current_cloud.chunk(2, dim=-1), dim=0)
         output = {
             "cloud_current_image": current_cloud,
             "cloud_stale_image": stale_cloud,

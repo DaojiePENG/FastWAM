@@ -1,9 +1,10 @@
-"""AIFlow 平台训练入口：LeapBotCE 全 LIBERO（四套件联合）一键训练配置。
+"""AIFlow 平台训练入口：LeapBotCE RoboTwin 2.0（全量 27,500 demo）一键训练配置。
 
 ═══════════════════════════════════════════════════════════════════════
 使用方法（公司自动申请显卡训练）
 ═══════════════════════════════════════════════════════════════════════
-1. 申请训练资源时，工作目录选到本文件所在目录（FastWAM 仓库根目录）。
+1. 申请训练资源时，工作目录选到本文件所在目录（FastWAM 仓库根目录，leapbot-ce
+   开发树；LIBERO 的 leapbotce 训练同在这棵树）。
    平台约定：所选工作目录下必须存在名为 AIFlow_config.py 的脚本（名称固定），
    平台会 import 它、读取 __C.TRAIN.CMD 作为训练命令，并调用 AutoTrain(**params)
    真正拉起训练（多机时 params 里带 nodeips/myIp 等分配信息）。
@@ -12,6 +13,14 @@
    或 train.nodeN.log（其它节点）。
 3. 模型/数据/输出都在共享盘 /mnt/c2-worldmodel（scripts/env_2653853.sh 中
    定义），与调试机共用，checkpoint 不占本目录配额。
+
+⚠️ 提交本训练前必须改名：本文件平时叫 AIFlow_config_robotwin.py，因为本目录
+   的 AIFlow_config.py 是 LIBERO 训练配置（平台只认固定名）。提交 RoboTwin
+   训练时：
+     mv AIFlow_config.py AIFlow_config_libero.py   # LIBERO 配置先挪开
+     cp AIFlow_config_robotwin.py AIFlow_config.py
+   提交结束后换回来（RoboTwin 的申请是独立任务，不影响已提交的 LIBERO 训练，
+   平台在提交时会拷贝 userPath 快照）。
 
 放这里（FastWAM 根目录）而不是 scripts/ 的原因：
   - 平台把"所选工作目录"作为训练进程的运行目录，训练命令里全是相对路径
@@ -53,8 +62,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────
 # ① 训练任务：练什么
 # ─────────────────────────────────────────────────────────────────────
-AI_FLOW_TASK = "libero_all_leapbotce"  # 任务配置 configs/task/libero_all_leapbotce.yaml
-                                       # = LIBERO 四套件（spatial/object/goal/10）联合训练
+AI_FLOW_TASK = "robotwin_all_leapbotce"  # 任务配置 configs/task/robotwin_all_leapbotce.yaml
+                                         # = RoboTwin 2.0 全量 + CloudEdge 时延包装（3 相机）
 AI_FLOW_DELAY = 20    # d_train：训练时云端观测时延上限（U{1..D} 采样）。
                       #   20 = 主实验配方；改 40 可练 d=40 版本，其余不用动
 AI_FLOW_SEED = 42     # 训练随机种子（数据打乱/初始化；与之前 50k 轮一致）
@@ -62,37 +71,47 @@ AI_FLOW_SEED = 42     # 训练随机种子（数据打乱/初始化；与之前 
 # ─────────────────────────────────────────────────────────────────────
 # ② 批大小 / 学习率 / 总步数 —— 充分利用申请到的卡（H100/H200 自动适配）
 # ─────────────────────────────────────────────────────────────────────
-# 总数据量固定 277,713 帧（1,712 条 demo），换算关系：
-#   有效 batch = 卡数 × 每卡 batch × 累积
-#   总步数     = AI_FLOW_EPOCHS × 277713 ÷ 有效 batch（自动折算）
+# 官方配方（configs/task/robotwin_joint_3cam_384_1e-4.yaml）：每卡 batch 16、
+# lr 1e-4（8 卡 = 有效 batch 128）、5 epoch。总数据量 6,075,103 帧
+# （27,500 条 demo，LIBERO 全集的 21.9 倍），换算关系：
+#   有效 batch = 节点数 × 每节点卡数 × 每卡 batch
+#   总步数     = AI_FLOW_EPOCHS × 6075103 ÷ 有效 batch（自动折算）
 #
 # 两种填法：
 #   自动（推荐，默认）：AI_FLOW_BATCH_SIZE = 0 且 AI_FLOW_LR = 0
 #     每卡 batch 按 0 号卡显存查 AI_FLOW_BATCH_BY_VRAM_GB 阈值表：
-#       ≥128GB（H200-141G）→ 16；≥72GB（H100/A800-80G）→ 8；≥40GB → 4；更小 → 2
-#     学习率按 √(有效batch/16) × 1e-4 从官方配方折算（有效 128 → 2.8e-4）。
-#     申请到 H200 还是 H100 都不用改配置；H100 上结果与之前实测配方一致
-#     （bs8 / 2e-4）。
-#   手动固定：AI_FLOW_BATCH_SIZE=8、AI_FLOW_LR=2e-4 —— 想严格复现已验证的
-#     有效 batch 64 配方时用（代价：H200 上只用到一半显存）。
+#       ≥128GB（H200-141G）→ 16（=官方原值）；≥72GB（H100/H800-80G）→ 8
+#       （80G smoke 实测 bs8 峰值 61.2GB；bs12 估算 ~69GB 余量偏小，求稳取 8）
+#       ≥40GB → 4；更小 → 2
+#     学习率按 √(有效batch/128) × 1e-4 从官方配方折算（官方 eff128 → 1e-4 原值）。
+#     申请到 H200 还是 H100/H800 都不用改配置。
+#   手动固定：AI_FLOW_BATCH_SIZE=8、AI_FLOW_LR=7.1e-5 —— 80G 卡 8 卡机严格折算时用。
 #
-# 参考组合（lr 按 √batch 从官方 1e-4@16 折算）：
-#   ┌───────────────────────┬──────────┬───────────────┬─────────┐
-#   │ 组合                  │ 有效batch │ 总步数        │ lr      │
-#   ├───────────────────────┼──────────┼───────────────┼─────────┤
-#   │ 官方配方（2卡×bs8）    │ 16       │ 50k/2.9ep     │ 1.0e-4  │
-#   │ 8×H100 自动 ★         │ 64       │ ≈49.9k/11.5ep │ 2e-4    │
-#   │ 8×H200 自动 ★         │ 128      │ ≈25.0k/11.5ep │ 2.8e-4  │
-#   └───────────────────────┴──────────┴───────────────┴─────────┘
-# H100-80G 上 bs8 实测峰值 64.2GB；H200-141GB 上 bs16 预计 ~115-130GB，
-# 万一 OOM 把 AI_FLOW_BATCH_SIZE 钉到 12 或 8（lr 同步手动给固定值）。
+# ⚠️ 本任务吞吐瓶颈在 dataloader（每样本要解 3 路 mp4 各 53 帧，GPU 计算
+#   只占 ~10-20%），加大每卡 batch 不会更快，卡数是唯一加速杠杆。
+#   调试机实测每 worker ~0.4 样本/s（共享盘高负载时，2026-09-30），集群空闲
+#   时预计 0.6-0.8；总耗时 = 3040 万样本(5ep) ÷ (卡数×8workers×每worker速率)：
+#   ┌──────────────────────┬──────────┬──────────┬──────────────┬─────────────────┐
+#   │ 组合                 │ 有效batch │ 5ep 总步数│ lr           │ 5 epoch 预计耗时│
+#   ├──────────────────────┼──────────┼──────────┼──────────────┼─────────────────┤
+#   │ 8×H200 自动 ★        │ 128      │ ≈237.3k  │ 1e-4（官方） │ 7-14 天         │
+#   │ 16×H200(2机) 自动 ★  │ 256      │ ≈118.7k  │ 1.4e-4       │ 3.5-7 天        │
+#   │ 24×H200(3机) 自动    │ 384      │ ≈79.1k   │ 1.7e-4       │ 2.3-4.6 天      │
+#   │ 32×H200(4机) 自动    │ 512      │ ≈59.3k   │ 2e-4         │ 1.7-3.4 天      │
+#   │ 16×H800(2机) 自动    │ 128      │ ≈237.3k  │ 1e-4         │ 7-14 天         │
+#   └──────────────────────┴──────────┴──────────┴──────────────┴─────────────────┘
+#   （区间下限 = 集群 CPU 快且共享盘空闲的乐观值；上限 = 调试机实测速率直接
+#     外推。建议开跑前在集群节点用 --steps 20 实测 sec/step 校准，见
+#     daojie_leap_configs/train_guide.md）
+# 万一 OOM 把 AI_FLOW_BATCH_SIZE 钉小一档（lr 同步手动给固定值）。
 AI_FLOW_BATCH_SIZE = 0     # 0 = 按显存自动选；>0 = 固定每卡 batch
-AI_FLOW_ACCUM = 1          # 梯度累积步数；自动选的 batch 已够大，保持 1（不牺牲吞吐）
-AI_FLOW_LR = 0             # 0 = 按有效 batch 自动折算；>0 = 固定（如 2e-4）
+AI_FLOW_ACCUM = 1          # 梯度累积步数；自动档已对齐官方，保持 1
+AI_FLOW_LR = 0             # 0 = 按有效 batch 自动折算；>0 = 固定（如 1e-4）
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 显存(GB)阈值 → 每卡 batch，从上往下取第一个满足的
-AI_FLOW_EPOCHS = 11.5      # 训练多少个 epoch（之前 50k 步只练了 2.9，欠拟合；
-                           # 中止的 200k 计划约 11.5 epoch，这里对齐）
+AI_FLOW_EPOCHS = 5.0       # 训练多少个 epoch（对齐官方 RoboTwin 配方 5 epoch；
+                           # 8×H200 有效 batch 128 时 ≈ 23.7 万步。想先快速验证可改 1.0
+                           # （≈4.7 万步），或用 AI_FLOW_MAX_STEPS 直接定总步数）
 AI_FLOW_MAX_STEPS = 0      # >0 时直接指定总步数（覆盖 EPOCHS 折算）；0 = 自动
 
 # ─────────────────────────────────────────────────────────────────────
@@ -110,8 +129,8 @@ AI_FLOW_STALE_WARMUP = -1        # stale 权重线性爬升步数；-1 = 自动�
 # ─────────────────────────────────────────────────────────────────────
 # 推荐用法：AI_FLOW_NUM_SAVE 填想保存的 checkpoint 总个数（含最终那一个），
 # 保存间隔 = 总步数 ÷ 个数（向上取整），随申请到的卡型自动缩放，不用手算：
-#   8×H100  总步数 49,902 → 每  9,981 步一个 → 10k/20k/30k/40k + 最终 49,902
-#   8×H200  总步数 24,951 → 每  4,991 步一个 →  5k/10k/15k/20k + 最终 24,951
+#   8×H200  总步数 237,309 → 每 47,462 步一个 → 47k/95k/142k/190k + 最终 237,309
+#   16×H200 总步数 118,654 → 每 23,731 步一个 → 24k/47k/71k/95k + 最终 118,654
 # （训练到总步数时 train.py 必存最终 checkpoint，与间隔是否整除无关，
 #   见 src/fastwam/trainer.py 训练循环结尾的 "[done] max_steps reached"）
 AI_FLOW_NUM_SAVE = 5             # checkpoint 总个数（中途均分 + 最终 1 个）
@@ -121,7 +140,7 @@ AI_FLOW_KEEP_CKPT = 0            # 最多保留最近 N 个；0 = 自动 = NUM_S
                                  # 注意每个 checkpoint ≈ 29GB（delta 权重 2GB + 可恢复状态 27GB）
 AI_FLOW_RESUME = ""              # 断点续训：填 DeepSpeed 状态目录，例如
                                  #   /mnt/c2-worldmodel/2653853/leapbot-ce/runs/
-                                 #     libero_all_leapbotce/libero_all_dtrain20_seed42_h100/
+                                 #     robotwin_all_leapbotce/robotwin_all_dtrain20_seed42_h200/
                                  #     checkpoints/state
                                  # 留空 = 从头训。注意续训需与原 run 的卡数/batch 一致
 
@@ -131,7 +150,7 @@ AI_FLOW_RESUME = ""              # 断点续训：填 DeepSpeed 状态目录，�
 AI_FLOW_WANDB = 1                # 1 = 打开 wandb 在线上报（train.yaml 默认关闭，这里强制打开）
 AI_FLOW_WANDB_PROJECT = "leapbotce"  # wandb 项目名（与之前几轮一致，方便对比曲线）
 AI_FLOW_RUN_NAME = ""            # wandb run 名 / 输出子目录名；留空 = 自动取
-                                 #   libero_all_dtrain{D}_seed{S}_{显卡型号}
+                                 #   robotwin_all_dtrain{D}_seed{S}_{显卡型号}
                                  #   （如 _h100 / _h200，避免不同卡的 run 混目录）
                                  # 注意：同名会续写同一输出目录，重跑请改名
 #
@@ -177,7 +196,7 @@ AI_FLOW_EXTRA_OVERRIDES: list[str] = []
 AI_FLOW_CONDA_ENV = os.environ.get(
     "AI_FLOW_CONDA_ENV", "/home/myuser/miniconda3/envs/leapbot-va"
 )                                # 共享家目录里的 conda 环境（含 torch/accelerate/diffsynth）
-AI_FLOW_DATA_FRAMES = 277713     # 四套件联合训练总帧数（算总步数用）
+AI_FLOW_DATA_FRAMES = 6075103    # RoboTwin 2.0 全量总帧数（算总步数用）
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -185,7 +204,7 @@ AI_FLOW_DATA_FRAMES = 277713     # 四套件联合训练总帧数（算总步数
 # ═══════════════════════════════════════════════════════════════════════
 
 REPO_ROOT = Path(__file__).resolve().parent
-LAUNCHER_REL = Path("scripts") / "train_leapbotce_libero_2653853.sh"
+LAUNCHER_REL = Path("scripts") / "train_leapbotce_robotwin_2653853.sh"
 
 
 def _q(value) -> str:
@@ -253,7 +272,7 @@ def _gpu_vram_gb() -> float:
 def _gpu_tag() -> str:
     """显卡短标签（run 目录名用）：h200 / h100 / a100 / gpu。"""
     name = _gpu_name().lower()
-    for key in ("h200", "h100", "a100", "a800", "l40", "a40"):
+    for key in ("h200", "h800", "h100", "a100", "a800", "l40", "a40"):
         if key in name:
             return key
     return "gpu"
@@ -282,11 +301,15 @@ def _effective_batch(local_gpus: int, nnodes: int) -> int:
 
 
 def _lr_value(eff_batch: int) -> str:
-    """学习率：显式指定(>0)优先，否则按 √batch 从官方 1e-4@有效16 折算。"""
+    """学习率：显式指定(>0)优先，否则按 √batch 从官方 1e-4@有效128 折算。
+
+    官方 RoboTwin 配方（robotwin_joint_3cam_384_1e-4.yaml）：每卡 batch 16
+    × 8 卡 = 有效 batch 128，lr 1e-4；其它有效 batch 按 √ 缩放。
+    """
     explicit = float(_aiflow_value("AI_FLOW_LR") or 0)
     if explicit > 0:
         return str(_aiflow_value("AI_FLOW_LR"))
-    return f"{1.0e-4 * (eff_batch / 16.0) ** 0.5:.2g}"
+    return f"{1.0e-4 * (eff_batch / 128.0) ** 0.5:.2g}"
 
 
 def _parse_dist_url(value):
@@ -342,7 +365,7 @@ def _total_steps(local_gpus: int, nnodes: int) -> int:
 def _build_cmd(params=None) -> str:
     """拼训练 shell 命令：cd 仓库 → conda → 环境变量 → 启动脚本。
 
-    训练本体统一走 scripts/train_leapbotce_libero_2653853.sh（与调试机同一入口，
+    训练本体统一走 scripts/train_leapbotce_robotwin_2653853.sh（与调试机同一入口，
     它自己 source env_2653853.sh 拿模型/数据路径，不需要在这里重复 export）。
     """
     workdir = _repo_workdir()
@@ -368,7 +391,7 @@ def _build_cmd(params=None) -> str:
 
     run_name = str(_aiflow_value("AI_FLOW_RUN_NAME") or "").strip()
     if not run_name:
-        run_name = (f"libero_all_dtrain{_aiflow_value('AI_FLOW_DELAY')}"
+        run_name = (f"robotwin_all_dtrain{_aiflow_value('AI_FLOW_DELAY')}"
                     f"_seed{_aiflow_value('AI_FLOW_SEED')}_{_gpu_tag()}")
     if dist["nnodes"] > 1:
         run_name = f"{run_name}_n{dist['nnodes']}"

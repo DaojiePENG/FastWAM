@@ -5,6 +5,7 @@ import os
 import re
 import uuid
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import hydra
@@ -25,7 +26,10 @@ logger = get_logger(__name__)
 DEFAULT_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B"
 DEFAULT_TOKENIZER_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B"
 DEFAULT_CONTEXT_LEN = 128
-DEFAULT_BATCH_SIZE = 16
+DEFAULT_BATCH_SIZE = 64
+# 缓存文件并发写入线程数（共享盘小文件 IO 延迟高，串行写是瓶颈）
+_SAVE_WORKERS = int(os.environ.get("TEXT_EMBED_SAVE_WORKERS", "16"))
+_save_pool = ThreadPoolExecutor(max_workers=_SAVE_WORKERS)
 
 
 def _init_distributed():
@@ -252,23 +256,18 @@ def main(cfg: DictConfig):
     prompts = prompts[rank::world_size] if is_distributed else prompts
 
     if not overwrite:
-        fully_cached_local = 0
-        prompts_to_encode: list[str] = []
-        for prompt in prompts:
+        # 并发扫已缓存文件（共享盘逐个 stat 92 万次太慢）
+        def _is_cached(prompt: str) -> bool:
             hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
             filename = f"{hashed}.t5_len{context_len}.{enc_id}.pt"
-            fully_cached = True
-            for cache_dir in cache_dirs:
-                cache_path = cache_dir / filename
-                if not cache_path.exists():
-                    fully_cached = False
-                    break
-            if fully_cached:
-                fully_cached_local += 1
-                for cache_dir in cache_dirs:
-                    stats[str(cache_dir)]["skip"] += 1
-            else:
-                prompts_to_encode.append(prompt)
+            return all((cache_dir / filename).exists() for cache_dir in cache_dirs)
+
+        with ThreadPoolExecutor(max_workers=64) as _scan_pool:
+            cached_flags = list(_scan_pool.map(_is_cached, prompts, chunksize=64))
+        prompts_to_encode = [p for p, ok in zip(prompts, cached_flags) if not ok]
+        fully_cached_local = len(prompts) - len(prompts_to_encode)
+        for cache_dir in cache_dirs:
+            stats[str(cache_dir)]["skip"] += fully_cached_local
 
         prompts = prompts_to_encode
 
@@ -335,9 +334,14 @@ def main(cfg: DictConfig):
                         else:
                             stats[key]["new"] += 1
 
-                        _atomic_torch_save(payload, cache_path)
+                        # 共享盘上逐个 torch.save 是纯延迟瓶颈（~100ms/文件，
+                        # 92 万 prompt 单线程要 >10 小时）；写入互相独立，
+                        # 用线程池并发落盘，GPU 编码不再等 IO。
+                        _save_pool.submit(_atomic_torch_save, payload, cache_path)
 
                 pbar.update(len(batch_prompts))
+
+    _save_pool.shutdown(wait=True)
 
     over_length_global = over_length_prompts
     if is_distributed:

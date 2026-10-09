@@ -1,0 +1,42 @@
+# @package _global_
+defaults:
+  - override /data: robotwin_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# LeapBotCE on the full RoboTwin 2.0 set (FastWAM release, 27,500 demos,
+# ~6.08M frames — 21.9x LIBERO). The data side re-anchors the official
+# robotwin_joint_3cam_384 recipe (3 cameras, 14-dim action/state, 384x320
+# fused frame) through the CloudEdge delay wrapper; the model side is the
+# same LeapBotCE stack as LIBERO with edge_vision.num_views=3 for the extra
+# wrist cameras.
+#
+# Training-length note: one epoch is ~6.08M frames (~47.5k optimizer steps at
+# effective batch 128 on 8xH200, ~94.9k at effective batch 64). The official
+# RoboTwin recipe trains 5 epochs; keep num_epochs=5 for the full run or cap
+# max_steps for a shorter pass. Effective batch is
+# num_gpus * batch_size * gradient_accumulation_steps.
+batch_size: 8
+num_workers: 8
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+num_epochs: 5
+max_steps: null
+log_every: 10
+save_every: 5000
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 1
+weight_decay: 1.0e-2
+resume: null
+seed: 42
+model:
+  edge_vision:
+    # RoboTwin has 3 cameras (high + left/right wrist); LIBERO uses 2.
+    num_views: 3
+  cloudedge:
+    # Resolve to half of max_steps in LeapBotCE.set_training_step when -1.
+    stale_loss_warmup_steps: -1
+wandb:
+  project: leapbotce
+  name: robotwin_all_leapbotce

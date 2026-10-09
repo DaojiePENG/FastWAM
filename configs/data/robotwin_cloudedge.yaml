@@ -1,0 +1,71 @@
+train:
+  _target_: fastwam.datasets.lerobot.cloudedge_robot_video_dataset.CloudEdgeRobotVideoDataset
+  # LeapBotCE on the released FastWAM RoboTwin 2.0 training set
+  # (27,500 episodes / 6,075,103 frames / fps 50, same source as the official
+  # robotwin_joint_3cam_384 recipe). Paths are absolute so the same config
+  # works on the debug node and on cluster training nodes.
+  dataset_dirs:
+    - /mnt/c2-worldmodel/training_data/robotwin2.0-fastwam/robotwin2.0
+  # CloudEdge delay wrapper: the cloud observation is delayed by a step count
+  # sampled uniformly from 1..max_delay_steps (history-degenerate windows fall
+  # back to the current frame). num_frames / action_video_freq_ratio /
+  # processor.num_obs_steps are derived inside the wrapper as
+  # ceil((max_delay_steps + action_horizon)/4)*4 + 1 and need not be set here
+  # (delay=20, horizon=32 -> a 53-frame window, 53 video frames, 32 actions).
+  max_delay_steps: 20
+  action_horizon: 32
+  shape_meta:
+    images:
+      - key: cam_high
+        raw_shape: [3, 480, 640]
+        shape: [3, 240, 320]
+      - key: cam_left_wrist
+        raw_shape: [3, 480, 640]
+        shape: [3, 240, 320]
+      - key: cam_right_wrist
+        raw_shape: [3, 480, 640]
+        shape: [3, 240, 320]
+    action:
+      - key: default
+        raw_shape: 14 # before transform
+        shape: 14 # after transform
+    state:
+      - key: default
+        raw_shape: 14 # before transform
+        shape: 14 # after transform
+  global_sample_stride: 1
+  video_size: [384, 320] # fused 3-camera frame: top cam over left/right wrists
+  camera_key: null
+  val_set_proportion: 0.0
+  is_training_set: true
+  pretrained_norm_stats: /mnt/c2-worldmodel/training_data/robotwin2.0-fastwam/dataset_stats.json
+  skip_padding_as_possible: false
+  concat_multi_camera: "robotwin"
+  processor:
+    _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+    shape_meta: ${data.train.shape_meta}
+    num_obs_steps: 53 # overwritten by the CloudEdge wrapper (max_delay+horizon path)
+    num_output_cameras: 3
+    action_output_dim: 14
+    proprio_output_dim: 14
+
+    # action & state normalization
+    action_state_transforms: null
+    use_stepwise_action_norm: False
+    norm_default_mode: "z-score"
+    norm_exception_mode: null
+
+    action_state_merger:
+      _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+
+    train_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [240, 320]
+    val_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [240, 320]
+  text_embedding_cache_dir: /mnt/c2-worldmodel/2653853/leapbot-ce/text_embeds/robotwin
+  use_text_embed_cache: true
+  context_len: 128
