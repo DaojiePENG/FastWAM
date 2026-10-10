@@ -53,6 +53,19 @@ except ImportError:
 # smoke 开关：空串 = 全量 5 延迟 × 10 任务；填值 = 只跑子集（1 卡即可验证）
 AI_FLOW_DELAYS = os.environ.get("AI_FLOW_DELAYS", "").strip()
 AI_FLOW_TASKS = os.environ.get("AI_FLOW_TASKS", "").strip()
+# 任务名拆单快捷键（优先于 AI_FLOW_DELAYS）：任务名含标记即锁定 delay 子集，
+# 如 leapbot_ce_eval_robotwin_d0510 只跑 D∈{0,5,10}，…_d2040 只跑 {20,40}。
+# 先剥掉平台追加的 "-<8hex>" 哈希尾巴再匹配，避免哈希里的 d5/d0 假命中。
+_raw_name = os.path.basename(os.environ.get("JinnTrainResult", "")).lower()
+_tail = _raw_name.rsplit("-", 1)[-1]
+_TASK_NAME = _raw_name[:-len(_tail) - 1] if len(_tail) == 8 and all(c in "0123456789abcdef" for c in _tail) else _raw_name
+for _tok, _sub in (("d0510", "0 5 10"), ("d2040", "20 40"),
+                   ("d1020", "10 20"), ("d05", "0 5"),
+                   ("d0", "0"), ("d5", "5"), ("d10", "10"),
+                   ("d20", "20"), ("d40", "40")):
+    if _tok in _TASK_NAME:
+        AI_FLOW_DELAYS = _sub
+        break
 # checkpoint："latest" = 训练 run 下最新 step_*.pt；或具体 ckpt 绝对路径
 AI_FLOW_CKPT = os.environ.get("AI_FLOW_CKPT", "latest")
 
