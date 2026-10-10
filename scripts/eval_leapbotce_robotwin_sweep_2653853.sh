@@ -71,7 +71,10 @@ if [[ -n "${NW_WIRE_MISSING:-}" ]]; then
   fail "no NVIDIA userland package for host driver $NW_WIRE_MISSING (have: $(ls -d /dahuafs/userdata/2653853/nvidia-graphics-*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')) — build it: nvidia-graphics-extract.sh <VER> <matching NVIDIA-Linux-x86_64-<VER>.run>"
 fi
 PROBE_LOG=/tmp/leapbotce_render_probe.log
-if ! "$PY" -c 'import sapien.core as sapien; e = sapien.Engine(); e.set_renderer(sapien.SapienRenderer())' \
+# VK_LOADER_DEBUG=error: if the probe fails we get the Vulkan loader's own
+# verdict (ICD rejected / rmapi handshake) in PROBE_LOG, not just SAPIEN's
+# generic "failed to find a rendering device" (2026-10-10 h200 verdict chain).
+if ! env VK_LOADER_DEBUG=error "$PY" -c 'import sapien.core as sapien; e = sapien.Engine(); e.set_renderer(sapien.SapienRenderer())' \
     2>"$PROBE_LOG"; then
   echo "[cluster-sweep] RENDER PROBE FAILED (host driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1); wired: ${NVGL:-container-native})" >&2
   echo "[cluster-sweep] probe stderr (last 20 lines of $PROBE_LOG):" >&2
