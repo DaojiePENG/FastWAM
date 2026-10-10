@@ -53,7 +53,12 @@ from urllib.parse import urlparse
 
 try:
     import torch
-except ImportError:
+    if not hasattr(torch, "cuda"):
+        torch = None  # 平台镜像 (leapbot_lite:v1, py3.12) 里有同名 torch stub/
+                      # 残包: import 成功但无 .cuda —— 实锤 21835144 秒挂
+                      # (AttributeError: module 'torch' has no attribute 'cuda'),
+                      # 统一当 None 处理, 真正的训练跑在 shell 里激活的 conda env。
+except Exception:  # noqa: BLE001 - 平台镜像 torch 残包 import 阶段也可能炸
     torch = None
 
 try:
@@ -263,13 +268,17 @@ def _gpu_count() -> int:
         return max(int(_aiflow_value("AI_FLOW_GPU_NUM")), 1)
     if os.environ.get("GPU_NUM"):
         return max(int(os.environ["GPU_NUM"]), 1)
-    if torch is not None and torch.cuda.is_available():
-        return max(torch.cuda.device_count(), 1)
+    if torch is not None and hasattr(torch, "cuda"):
+        try:
+            if torch.cuda.is_available():
+                return max(torch.cuda.device_count(), 1)
+        except Exception:  # noqa: BLE001 - torch 残包/驱动异常一律走兜底
+            pass
     return 1
 
 
 def _gpu_name() -> str:
-    if torch is None or not torch.cuda.is_available():
+    if torch is None or not hasattr(torch, "cuda"):
         return "unknown"
     try:
         return torch.cuda.get_device_name(0)
@@ -279,7 +288,7 @@ def _gpu_name() -> str:
 
 def _gpu_vram_gb() -> float:
     """0 号卡显存（GB）；探测不到返回 0，由调用方走保守兜底。"""
-    if torch is None or not torch.cuda.is_available():
+    if torch is None or not hasattr(torch, "cuda"):
         return 0.0
     try:
         return torch.cuda.get_device_properties(0).total_memory / 2**30

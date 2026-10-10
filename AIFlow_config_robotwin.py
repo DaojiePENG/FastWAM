@@ -14,13 +14,10 @@
 3. 模型/数据/输出都在共享盘 /mnt/c2-worldmodel（scripts/env_2653853.sh 中
    定义），与调试机共用，checkpoint 不占本目录配额。
 
-⚠️ 提交本训练前必须改名：本文件平时叫 AIFlow_config_robotwin.py，因为本目录
-   的 AIFlow_config.py 是 LIBERO 训练配置（平台只认固定名）。提交 RoboTwin
-   训练时：
-     mv AIFlow_config.py AIFlow_config_libero.py   # LIBERO 配置先挪开
-     cp AIFlow_config_robotwin.py AIFlow_config.py
-   提交结束后换回来（RoboTwin 的申请是独立任务，不影响已提交的 LIBERO 训练，
-   平台在提交时会拷贝 userPath 快照）。
+⚠️ dispatcher 时代（10-10 改造）：本文件常驻不改名。任务名含 robotwin（且不含
+   eval/bench）即被根 AIFlow_config.py 自动路由到本文件。提交 = AIFlow 建任务，
+   任务名如 `leapbot_ce_train_robotwin`，工作目录（userPath）选 FastWAM 仓库根，
+   无需任何改名/覆盖操作。
 
 放这里（FastWAM 根目录）而不是 scripts/ 的原因：
   - 平台把"所选工作目录"作为训练进程的运行目录，训练命令里全是相对路径
@@ -44,7 +41,11 @@ from urllib.parse import urlparse
 
 try:
     import torch
-except ImportError:
+    if not hasattr(torch, "cuda"):
+        torch = None  # 平台镜像 (leapbot_lite:v1, py3.12) 里有同名 torch stub/
+                      # 残包: import 成功但无 .cuda —— LIBERO 训练变体实锤
+                      # 21835144 秒挂, 统一当 None 处理
+except Exception:  # noqa: BLE001 - 平台镜像 torch 残包 import 阶段也可能炸
     torch = None
 
 try:
@@ -245,13 +246,17 @@ def _gpu_count() -> int:
         return max(int(_aiflow_value("AI_FLOW_GPU_NUM")), 1)
     if os.environ.get("GPU_NUM"):
         return max(int(os.environ["GPU_NUM"]), 1)
-    if torch is not None and torch.cuda.is_available():
-        return max(torch.cuda.device_count(), 1)
+    if torch is not None and hasattr(torch, "cuda"):
+        try:
+            if torch.cuda.is_available():
+                return max(torch.cuda.device_count(), 1)
+        except Exception:  # noqa: BLE001 - torch 残包/驱动异常一律走兜底
+            pass
     return 1
 
 
 def _gpu_name() -> str:
-    if torch is None or not torch.cuda.is_available():
+    if torch is None or not hasattr(torch, "cuda"):
         return "unknown"
     try:
         return torch.cuda.get_device_name(0)
@@ -261,7 +266,7 @@ def _gpu_name() -> str:
 
 def _gpu_vram_gb() -> float:
     """0 号卡显存（GB）；探测不到返回 0，由调用方走保守兜底。"""
-    if torch is None or not torch.cuda.is_available():
+    if torch is None or not hasattr(torch, "cuda"):
         return 0.0
     try:
         return torch.cuda.get_device_properties(0).total_memory / 2**30
