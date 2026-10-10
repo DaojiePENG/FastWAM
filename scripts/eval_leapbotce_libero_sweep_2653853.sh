@@ -76,6 +76,12 @@ RUN_DIR="${RUN_DIR:-/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbo
 EVAL_ROOT="/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce"
 LOG_DIR="${EVAL_ROOT}/logs"
 
+# Platform-task stdout lives only in the AIFlow UI; mirror everything to the
+# shared logs dir so preflight/wire failures (NW_WIRE_MISSING=<driver ver>,
+# probe failures) are diagnosable from the debug node without UI access.
+mkdir -p "${LOG_DIR}" 2>/dev/null
+exec > >(tee -a "${LOG_DIR}/driver_platform_${TAG:-leapbotce}_$(date +%m%d_%H%M%S).log") 2>&1
+
 CKPT="${LEAPBOTCE_CKPT:-latest}"
 TAG="${LIBERO_EVAL_TAG:-dtrain20_seed42_h200}"
 read -ra DELAY_ARR <<< "${LIBERO_EVAL_DELAYS:-0 5 10 20 40}"
