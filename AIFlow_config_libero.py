@@ -1,6 +1,24 @@
 """AIFlow 平台训练入口：LeapBotCE 全 LIBERO（四套件联合）一键训练配置。
 
 ═══════════════════════════════════════════════════════════════════════
+★ 当前用途（10-10 定）：dtrain20_seed42_200k 线断点续训 110k → 200k
+═══════════════════════════════════════════════════════════════════════
+该线 09-28 在调试机 4×H800 PCIe 启动（eff batch 16 = 4卡×bs4、lr 1e-4、
+cosine、max_steps=200k），09-29 于 111,470 步 NCCL SIGABRT 中止。DeepSpeed
+全量可恢复状态完整在盘（state/step_110000/，按 4 rank 分片），下方常改区已
+按「整状态续训」配好：提交任务名 `leapbot_ce_train_libero`，申请 4 卡单节点
+（H200 优先，比原机 H800 PCIe 快 ~1.3×；剩余 88,530 步 ≈ 20-24h）。
+
+两条铁律：
+  ① 续训 world size 必须 = 4（ZeRO-1 优化器状态按 4 rank 分片，换卡数无法
+     整状态恢复）——常改区已把 AI_FLOW_GPU_NUM 钉死 4，AutoTrain 里另有守卫，
+     world ≠ 4 快速失败；
+  ② 续训写到新 run 目录 dtrain20_seed42_200k_resume/（原目录只读不动，作
+     溯源锚点）。跑完到 200k 后做 LIBERO 评测要切
+     AIFlow_config_eval_libero.py 的 RUN_DIR → dtrain20_seed42_200k_resume、
+     TAG → dtrain20_seed42_200k（step_200000），别再复用 110k 的 tag。
+
+═══════════════════════════════════════════════════════════════════════
 使用方法（公司自动申请显卡训练）
 ═══════════════════════════════════════════════════════════════════════
 1. 申请训练资源时，工作目录选到本文件所在目录（FastWAM 仓库根目录）。
@@ -58,6 +76,11 @@ AI_FLOW_TASK = "libero_all_leapbotce"  # 任务配置 configs/task/libero_all_le
 AI_FLOW_DELAY = 20    # d_train：训练时云端观测时延上限（U{1..D} 采样）。
                       #   20 = 主实验配方；改 40 可练 d=40 版本，其余不用动
 AI_FLOW_SEED = 42     # 训练随机种子（数据打乱/初始化；与之前 50k 轮一致）
+AI_FLOW_GPU_NUM = 4   # 续训铁律①：DeepSpeed 状态按 4 rank 分片保存（09-28 原轮
+                      # = 4×H800 PCIe），world size 必须 = 4 才能整状态恢复。
+                      # 钉死 4 → 无论平台实际给几张卡（4 或 8 卡节点），都只跑
+                      # 4 进程取前 4 张卡。从头训的新轮次要改卡数时，把这里改回
+                      # None 或删掉本行即可。
 
 # ─────────────────────────────────────────────────────────────────────
 # ② 批大小 / 学习率 / 总步数 —— 充分利用申请到的卡（H100/H200 自动适配）
@@ -86,14 +109,20 @@ AI_FLOW_SEED = 42     # 训练随机种子（数据打乱/初始化；与之前 
 #   └───────────────────────┴──────────┴───────────────┴─────────┘
 # H100-80G 上 bs8 实测峰值 64.2GB；H200-141GB 上 bs16 预计 ~115-130GB，
 # 万一 OOM 把 AI_FLOW_BATCH_SIZE 钉到 12 或 8（lr 同步手动给固定值）。
-AI_FLOW_BATCH_SIZE = 0     # 0 = 按显存自动选；>0 = 固定每卡 batch
-AI_FLOW_ACCUM = 1          # 梯度累积步数；自动选的 batch 已够大，保持 1（不牺牲吞吐）
-AI_FLOW_LR = 0             # 0 = 按有效 batch 自动折算；>0 = 固定（如 2e-4）
+AI_FLOW_BATCH_SIZE = 4     # 续训对齐 09-28 原轮：4卡 × bs4 × accum1 = 有效 batch 16，
+                           # 与 state/step_110000 保存时的动力学完全一致（学习率/调度器/
+                           # 优化器状态都按这个有效 batch 保存）。切勿放开让显存表自动
+                           # 选 16 —— 那是世界尺寸不变但每卡 batch 翻 4 倍，优化轨迹
+                           # 会偏离原轮。
+AI_FLOW_ACCUM = 1          # 梯度累积步数；原轮就是 1，保持
+AI_FLOW_LR = 0.0001        # 与原轮一致（整状态续训时调度器状态会从 checkpoint 恢复，
+                           # 这里主要影响命令行展示与日志；显式写死防歧义）
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 显存(GB)阈值 → 每卡 batch，从上往下取第一个满足的
-AI_FLOW_EPOCHS = 11.5      # 训练多少个 epoch（之前 50k 步只练了 2.9，欠拟合；
-                           # 中止的 200k 计划约 11.5 epoch，这里对齐）
-AI_FLOW_MAX_STEPS = 0      # >0 时直接指定总步数（覆盖 EPOCHS 折算）；0 = 自动
+AI_FLOW_EPOCHS = 11.5      # 仅 MAX_STEPS=0 时的自动折算用；续训轮被下面 MAX_STEPS 覆盖
+AI_FLOW_MAX_STEPS = 200000  # 续训目标 = 原轮计划的 200k（cosine 终点、stale 损失
+                            # warmup=max_steps/2=100k 都以此为基准；恢复后从 110k
+                            # 继续走 88,530 步到顶）。从头训新轮次时改回 0 = 按 EPOCHS 折算
 
 # ─────────────────────────────────────────────────────────────────────
 # ③ 其余训练超参（官方/已验证默认值，一般不动）
@@ -114,26 +143,34 @@ AI_FLOW_STALE_WARMUP = -1        # stale 权重线性爬升步数；-1 = 自动�
 #   8×H200  总步数 24,951 → 每  4,991 步一个 →  5k/10k/15k/20k + 最终 24,951
 # （训练到总步数时 train.py 必存最终 checkpoint，与间隔是否整除无关，
 #   见 src/fastwam/trainer.py 训练循环结尾的 "[done] max_steps reached"）
-AI_FLOW_NUM_SAVE = 5             # checkpoint 总个数（中途均分 + 最终 1 个）
+AI_FLOW_NUM_SAVE = 10            # checkpoint 总个数（含最终）；MAX_STEPS=200000 时
+                                 # 间隔 = 200000/10 = 20000 步 → 恢复后实际会存
+                                 # 120k/140k/160k/180k/200k 共 5 个新 ckpt（≈145GB）
 AI_FLOW_SAVE_EVERY = 0           # 手动固定间隔（旧用法）：>0 时直接用它、忽略 NUM_SAVE；0 = 自动按个数均分
 AI_FLOW_KEEP_CKPT = 0            # 最多保留最近 N 个；0 = 自动 = NUM_SAVE（即全部保留）。
-                                 # 想省共享盘可改小（如 3），更早的会被自动清理。
+                                 # 清理只作用于新 run 目录，原目录的 90k/100k/110k 不受影响。
                                  # 注意每个 checkpoint ≈ 29GB（delta 权重 2GB + 可恢复状态 27GB）
-AI_FLOW_RESUME = ""              # 断点续训：填 DeepSpeed 状态目录，例如
-                                 #   /mnt/c2-worldmodel/2653853/leapbot-ce/runs/
-                                 #     libero_all_leapbotce/libero_all_dtrain20_seed42_h100/
-                                 #     checkpoints/state
-                                 # 留空 = 从头训。注意续训需与原 run 的卡数/batch 一致
+AI_FLOW_RESUME = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+                  "libero_all_leapbotce/dtrain20_seed42_200k/"
+                  "checkpoints/state/step_110000")
+                                 # 断点续训：DeepSpeed 全量状态目录（optimizer/scheduler/
+                                 # 步数/dataloader 进度/RNG 都恢复），该目录按 4 rank
+                                 # 分片保存 → world size 必须 = 4（铁律①，AutoTrain 有守卫）。
+                                 # 留空 = 从头训。给 step_XXXXXX.pt 文件 = 只加载权重
+                                 # （步数归零、优化器丢，仅当整状态不可用时才考虑）
 
 # ─────────────────────────────────────────────────────────────────────
 # ⑤ wandb 在线同步与临时代理（训练不受影响，只影响上报）
 # ─────────────────────────────────────────────────────────────────────
 AI_FLOW_WANDB = 1                # 1 = 打开 wandb 在线上报（train.yaml 默认关闭，这里强制打开）
 AI_FLOW_WANDB_PROJECT = "leapbotce"  # wandb 项目名（与之前几轮一致，方便对比曲线）
-AI_FLOW_RUN_NAME = ""            # wandb run 名 / 输出子目录名；留空 = 自动取
-                                 #   libero_all_dtrain{D}_seed{S}_{显卡型号}
-                                 #   （如 _h100 / _h200，避免不同卡的 run 混目录）
-                                 # 注意：同名会续写同一输出目录，重跑请改名
+AI_FLOW_RUN_NAME = "dtrain20_seed42_200k_resume"
+                                 # wandb run 名 / 输出子目录名（铁律②）：续训必须用
+                                 # 新目录名，绝不写回原 run 目录（dtrain20_seed42_200k
+                                 # 保持只读作溯源锚点）。留空 = 自动取
+                                 # libero_all_dtrain{D}_seed{S}_{显卡型号}——那会撞上
+                                 # 已有的 25k 轮 libero_all_dtrain20_seed42_h200 目录，
+                                 # 续训轮禁止留空。
 #
 # 临时代理（wandb 出网用）。代理客户端目前跑在调试机上：
 #   - 默认 PROXY_HOST 为空 → 启动脚本用 127.0.0.1，只在调试机上训练时可达；
@@ -485,6 +522,19 @@ def AutoTrain(**params) -> bool:
         print(f"[LeapBot AIFlow] 错误: 工作目录 {workdir} 下找不到 {LAUNCHER_REL}，"
               "请确认申请资源时工作目录选到 FastWAM 仓库根目录")
         return False
+
+    # 续训 world-size 守卫（铁律①）：DeepSpeed ZeRO-1 优化器状态按 rank 分片，
+    # state/step_110000 是 4 rank（4×H800 PCIe）保存的 —— world ≠ 4 时 load
+    # 要么缺 rank 文件报错、要么分片错位，宁可这里快速失败也别烧一次申请。
+    resume = str(_aiflow_value("AI_FLOW_RESUME") or "").strip()
+    if resume and Path(resume).is_dir():
+        dist_guard = _dist_args(params)
+        world = _gpu_count() * dist_guard["nnodes"]
+        if world != 4:
+            print(f"[LeapBot AIFlow] 错误: 续训状态 {resume} 按 4 rank 保存，"
+                  f"当前 world size = {_gpu_count()}卡 × {dist_guard['nnodes']}节点 = {world}。"
+                  "请申请 4 卡 1 节点（或清空 AI_FLOW_RESUME 从头训）")
+            return False
 
     cmd = _build_cmd(params)
     __C.TRAIN.CMD = cmd
