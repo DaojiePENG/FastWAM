@@ -13,7 +13,7 @@ import。「提交前 cp 改名」的 dance 在多任务并行排队时会串味
 扫描本目录的 AIFlow_config_<后缀>.py：后缀按下划线分词、**分词全部命中任务
 名即为候选，最长后缀胜出**（长 = 更具体）：
 
-    任务名含 eval + robotwin → AIFlow_config_eval_robotwin（RoboTwin ours 评测）
+    任务名含 eval + robotwin → AIFlow_config_eval_robotwin（RoboTwin ours 评测，任务名如：leapbot_ce_eval_robotwin）
     任务名含 robotwin        → AIFlow_config_robotwin    （RoboTwin 训练）
     任务名含 eval            → AIFlow_config_eval_libero （LIBERO ours 评测）
     任务名含 libero          → AIFlow_config_libero      （LIBERO 训练）

@@ -1,18 +1,16 @@
 """AIFlow 平台评测入口：LeapBotCE (ours) RoboTwin 2.0 云延迟 sweep。
 
 ═══════════════════════════════════════════════════════════════════════
-使用方法（公司自动申请显卡评测）—— ⚠️ 本文件默认**未激活**
+使用方法（公司自动申请显卡评测）—— 经树根 AIFlow_config.py dispatcher 路由
 ═══════════════════════════════════════════════════════════════════════
-本树根的 `AIFlow_config.py` 是**活跃训练配置**（LIBERO 训练线）。本评测文件
-以 `AIFlow_config_eval_robotwin.py` 备用名存放，申请 LeapBotCE RoboTwin 评测
-前先做换名 dance（训练已结束、平台快照不受影响）：
+本文件以备用名 `AIFlow_config_eval_robotwin.py` 存放；树根的
+`AIFlow_config.py` 是常驻 dispatcher（10-10 改造），任务名含 `eval`+`robotwin`
+即自动路由到本文件（如 `leapbot_ce_eval_robotwin`），**无需任何换名 dance**：
 
-    cd /dahuafs/userdata/2653853/code/FastWAM
-    mv AIFlow_config.py AIFlow_config_libero.py
-    cp AIFlow_config_eval_robotwin.py AIFlow_config.py
+    提交评测：任务名 leapbot_ce_eval_robotwin（或 …_smoke），userPath 选
+    /dahuafs/userdata/2653853/code/FastWAM，8 卡起。
 
-1. 申请评测资源时，工作目录（userPath）选到本文件所在目录（FastWAM 仓库根）。
-   平台约定：工作目录下必须有名为 AIFlow_config.py 的脚本，平台 import 它、
+1. 平台约定：userPath 下必须有名为 AIFlow_config.py 的脚本，平台 import 它、
    以 `cfg` 读取 __C.TRAIN.CMD 作为命令（非空 CMD → CUSTOM_CMD 分支直接 shell 执行）。
 2. 评测命令统一走 scripts/eval_leapbotce_robotwin_sweep_2653853.sh：
    自动探测平台分配的卡、按显存 PACK 泳道（80G→2/卡，141G→3/卡）、
