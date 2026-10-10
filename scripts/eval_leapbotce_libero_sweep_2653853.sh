@@ -5,9 +5,16 @@
 # so the cluster-trained LIBERO checkpoint is collected under the same
 # protocol as every other row in docs/baseline_results_libero.md.
 #
-# Target checkpoint: the cluster run libero_all_dtrain20_seed42_h200
-# (full-LIBERO joint training, d_train=20, seed 42, batch 16, max_steps 24,951
-# = 10 epochs, finished 2026-10-01; final ckpt step_024951.pt).
+# Target checkpoint: the 200k-step line run dtrain20_seed42_200k (d_train=20,
+# seed 42, local debug node, target max_steps 200,000 — NCCL SIGABRT abort at
+# 111,470 steps on 2026-09-29; saved through step_110000.pt). Default
+# LEAPBOTCE_CKPT=latest therefore resolves to step_110000.pt today and will
+# auto-upgrade if training is resumed to 200k — NOTE the result TAG is
+# checkpoint-specific: re-evaluating a different ckpt into the same TAG would
+# mix provenance (manager skips existing results), so bump the TAG then.
+# (Previous target was the cluster 25k run libero_all_dtrain20_seed42_h200;
+# its partial sweep — 104/200 task files — stays under tag
+# dtrain20_seed42_h200 and can be finished later by pointing RUN_DIR/TAG back.)
 #
 # Protocol (identical to the local rows): delays D ∈ {0,5,10,20,40}; D>0
 # samples the per-episode delay from U{1..D} on the CLOUD stream only
@@ -72,7 +79,7 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/env_2653853.sh"
 cd "${PROJECT_ROOT}"
 
-RUN_DIR="${RUN_DIR:-/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce/libero_all_dtrain20_seed42_h200}"
+RUN_DIR="${RUN_DIR:-/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce/dtrain20_seed42_200k}"
 EVAL_ROOT="/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce"
 LOG_DIR="${EVAL_ROOT}/logs"
 
@@ -83,7 +90,7 @@ mkdir -p "${LOG_DIR}" 2>/dev/null
 exec > >(tee -a "${LOG_DIR}/driver_platform_${TAG:-leapbotce}_$(date +%m%d_%H%M%S).log") 2>&1
 
 CKPT="${LEAPBOTCE_CKPT:-latest}"
-TAG="${LIBERO_EVAL_TAG:-dtrain20_seed42_h200}"
+TAG="${LIBERO_EVAL_TAG:-dtrain20_seed42_110k}"
 read -ra DELAY_ARR <<< "${LIBERO_EVAL_DELAYS:-0 5 10 20 40}"
 NUM_TRIALS="${NUM_TRIALS:-50}"
 SEED="${SEED:-1234}"

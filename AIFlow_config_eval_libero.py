@@ -1,17 +1,12 @@
 """AIFlow 平台评测入口：LeapBotCE (ours) LIBERO 云延迟 sweep（h200 集群训练轮）。
 
 ═══════════════════════════════════════════════════════════════════════
-使用方法（公司自动申请显卡评测）—— ⚠️ 本文件默认**未激活**
+使用方法（公司自动申请显卡评测）—— dispatcher 时代：本文件常驻不改名
 ═══════════════════════════════════════════════════════════════════════
-本树根的 `AIFlow_config.py` 是**活跃训练配置**（LIBERO 训练线，h200 集群轮
-libero_all_dtrain20_seed42_h200 已于 2026-10-01 跑完：max_steps 24,951 =
-10 epochs，final ckpt step_024951.pt）。本评测文件以
-`AIFlow_config_eval_libero.py` 备用名存放。提交评测资源前按既有流程把本
-文件内容复制/覆盖到 `AIFlow_config.py`（训练已结束、平台快照不受影响）：
-
-    cd /dahuafs/userdata/2653853/code/FastWAM
-    # AIFlow_config_libero.py 已是训练配置的既有备份；按需刷新后：
-    cp AIFlow_config_eval_libero.py AIFlow_config.py
+本树根 `AIFlow_config.py` 已是常驻 dispatcher（10-10 改造）：任务名含
+eval+libero（或 bench+libero 同义归一）即自动路由到本文件，**无需任何改名/
+覆盖操作**。提交 = AIFlow 建任务，任务名如 `leapbot_ce_eval_libero`，
+工作目录（userPath）选 FastWAM 仓库根。
 
 1. 申请评测资源时，工作目录（userPath）选到本文件所在目录（FastWAM 仓库根）。
    平台约定：工作目录下必须有名为 AIFlow_config.py 的脚本，平台 import 它、
@@ -22,8 +17,7 @@ libero_all_dtrain20_seed42_h200 已于 2026-10-01 跑完：max_steps 24,951 =
    `LIBERO_LIBERO_PACK=1` 回退单 manager 全卡串行模式）、
    D ∈ {0,5,10,20,40} × 4 套件 × 10 任务 × 50 trials、崩溃重试、幂等续跑；
    结果落公共盘
-   /mnt/c2-worldmodel/.../baseline-evaluations/leapbotce/dtrain20_seed42_h200/，
-   报告生成器归入行 "LeapBotCE (d_train=20, h200 25k)"。
+   /mnt/c2-worldmodel/.../baseline-evaluations/leapbotce/dtrain20_seed42_110k/。
    预计时长：16×H200 ≈ 2.5-3h；8×H200 ≈ 6h；8×H800 ≈ 12h（详见
    daojie_leap_configs/leapbot_ce_eval_libero.md §3.0 卡数表）。
 3. smoke（强烈建议先跑一次验证 pod 环境，GL/mujoco 问题在 preflight 即报）：
@@ -32,8 +26,10 @@ libero_all_dtrain20_seed42_h200 已于 2026-10-01 跑完：max_steps 24,951 =
    即 10 任务 × 2 trials = 20 episodes，几分钟内出结果。⚠️ smoke 必须用独立
    TAG —— manager 会跳过已有结果的任务，写进正式 tag 会污染正式 sweep。
    验证通过后清空这些开关再全量提交（smoke tag 留着不影响正式结果）。
-4. checkpoint：默认 LEAPBOTCE_CKPT=latest（h200 run 下最新的 step_*.pt，
-   即终 ckpt step_024951.pt）。也可经 AI_FLOW_CKPT 指定具体某个。
+4. checkpoint：默认 LEAPBOTCE_CKPT=latest（200k 线 run dtrain20_seed42_200k
+   下最新 step_*.pt = step_110000.pt；该线 09-29 中止于 111,470 步，若日后
+   续训到 200k，latest 自动升级到新 ckpt —— 届时**必须换新 TAG**，否则新旧
+   ckpt 结果混在同一 tag 里）。也可经 AI_FLOW_CKPT 指定具体某个。
 
 与 AIFlow_config_eval_robotwin.py（RoboTwin 评测行）同构；与
 fastwam_official/AIFlow_config.py（Fast-WAM baseline 行）互不相干。
