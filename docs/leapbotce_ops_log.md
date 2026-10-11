@@ -49,6 +49,22 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（14:38）a3 重提后秒挂（节点抽奖）：.envs 死 shebang 已全量修复
+- **现象**：a3_grid 重提后落在节点 10.194.160.30，2 分钟内死：
+  `train_zero1.sh: line 111: .envs/leapbot-va/bin/accelerate: cannot execute:
+  required file not found`。a1/a2 落在的节点正常（已在步进，ETA ~31-38h，
+  **不用动它们**）。
+- **根因**：envs 从 miniconda3 迁到 code/.envs 时**没有重写 console 脚本的
+  shebang**——accelerate 等 1245 个脚本仍指向
+  `#!/home/myuser/miniconda3/envs/<env>/bin/python3.10`，而该路径已随迁移
+  清除。有 pod 本地残留旧 miniconda3 的节点能侥幸解析 → 节点抽奖；
+  a3 抽到的节点没有 → 秒挂。18 个 env 全有雷（leapbot-va 内 85/144 脚本）。
+- **修复**：`.envs/*/bin/` 全量重写 shebang →
+  `#!/dahuafs/userdata/2653853/code/.envs/<env>/bin/python`（绝对共享盘路径，
+  与节点无关）；18 个 env 清零，`accelerate` 本机实测可执行。对已运行任务
+  无影响（进程已起，解释器在 exec 时已解析）。
+- **下一步**：**只重提 a3_grid**，a1/a2 继续跑。
+
 ### 2026-10-11（下午）消融三线首提全挂 → edge 前缀 K/V 维度 bug 当日修复
 - **现象**：a1_codec / a2_decoder / a3_grid 三个任务全部"训练程序错误"，
   各自启动后 1-2 分钟死于第一个训练 step。
