@@ -49,6 +49,18 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（晚 2）主线翻转为"开 K/V 解码器版"（LeapBotCEPaper f1987c4）
+- 用户拍板：**最终版本讲开解码器的（A2 recipe = a2_decoder run）**，tied K=V
+  （A1 = a1_codec run）降为消融行，专门量化解码器在零传输成本下的贡献。
+  在训三线不用动：a2_decoder = full 主线，a1_codec = tied 消融，a3_grid = grid 消融。
+- 论述修正两处代码事实（读 `cloud_kv_adapter.py` 核实）：
+  ① 解码器是**纯线性**低秩瓶颈 `dec_up(dec_down(z))`，无 GELU（旧 KV adapter
+  才带 GELU + 零初始化；新解码器默认初始化、非零初始化）；② 逐层 scale
+  初始化为 1。eq:edgekv 已按线性形式重写。
+- 接口参数账 9M → **12M**（codec 6.3M 云侧 + 解码器 3.1M 边缘 + 前缀投影
+  2.4M）；摘要/引言/图注/实验/补充材料/结论全部同步，真机节边缘阶段行
+  加了 K/V decode。main.pdf 11 页 / suppl 4 页，0 未定义引用。
+
 ### 2026-10-11（晚）论文重构至 codec 主线 + 真机时延节（LeapBotCEPaper 9f4a75a）
 - **题目**改为 "LeapBot-CE: Planning-Token Codec for Delay-Robust Cloud-Edge
   Manipulation with Frozen World Models"。主线 = CloudPlanningCodec（z 载荷
