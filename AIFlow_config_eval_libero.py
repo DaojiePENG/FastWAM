@@ -68,8 +68,19 @@ AI_FLOW_DELAYS = os.environ.get("AI_FLOW_DELAYS", "").strip()
 AI_FLOW_TAG = os.environ.get("AI_FLOW_TAG", "").strip()
 AI_FLOW_SUITES = os.environ.get("AI_FLOW_SUITES", "").strip()
 AI_FLOW_TRIALS = os.environ.get("AI_FLOW_TRIALS", "").strip()
-# checkpoint："latest" = h200 训练 run 下最新 step_*.pt；或具体 ckpt 绝对路径
+# checkpoint："latest" = RUN_DIR 下最新 step_*.pt；或具体 ckpt 绝对路径
 AI_FLOW_CKPT = os.environ.get("AI_FLOW_CKPT", "latest")
+# 训练 run 目录：评测从这读 config.yaml / dataset_stats.json / latest ckpt。
+# 默认 = 200k 原目录（与 sweep 脚本默认一致）。评 200k 续训结果或 codec
+# 消融线时必须改这里，例如：
+#   .../runs/libero_all_leapbotce/dtrain20_seed42_200k_resume   （200k 续训结果）
+#   .../runs/libero_all_leapbotce_codec/codec_a1_seed42_h200    （A1 消融线）
+AI_FLOW_RUN_DIR = os.environ.get("AI_FLOW_RUN_DIR", "").strip() or (
+    "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce/"
+    "dtrain20_seed42_200k")
+# eval-time hydra overrides 透传（A4 消融 =
+# model.cloudedge.edge_prefix_enabled=false，必须换独立 TAG）。
+AI_FLOW_EVAL_EXTRA = os.environ.get("AI_FLOW_EVAL_EXTRA", "").strip()
 
 SWEEP_REL = Path("scripts") / "eval_leapbotce_libero_sweep_2653853.sh"
 
@@ -108,9 +119,12 @@ def _build_cmd() -> str:
         smoke += f" LIBERO_EVAL_SUITES={_q(AI_FLOW_SUITES)}"
     if AI_FLOW_TRIALS:
         smoke += f" NUM_TRIALS={_q(AI_FLOW_TRIALS)}"
+    if AI_FLOW_EVAL_EXTRA:
+        smoke += f" LIBERO_EVAL_EXTRA={_q(AI_FLOW_EVAL_EXTRA)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
-        f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)}{smoke} "
+        f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)} RUN_DIR={_q(AI_FLOW_RUN_DIR)}"
+        f"{smoke} "
         f"bash {_q(SWEEP_REL)}"
     )
 
