@@ -15,7 +15,7 @@ from fastwam.models.wan22.leapbotce import (
     LeapBotCE,
     stale_loss_weight,
 )
-from fastwam.models.wan22.cloud_kv_adapter import CloudKVAdapter
+from fastwam.models.wan22.cloud_kv_adapter import CloudKVAdapter, CloudPlanningCodec
 from fastwam.models.wan22 import leapbotce_edge_train_factory
 from fastwam.trainer import Wan22Trainer
 
@@ -37,6 +37,202 @@ def test_stale_loss_curriculum():
     assert stale_loss_weight(200, 100, 0.5) == pytest.approx(0.5)
     with pytest.raises(ValueError):
         stale_loss_weight(1, 10, 1.1)
+
+
+def test_cloud_planning_codec_compresses_payload_and_supports_decoder():
+    torch.manual_seed(0)
+    cache_k = [torch.randn(2, 12, 6) for _ in range(3)]
+    cache_v = [torch.randn(2, 12, 6) for _ in range(3)]
+
+    codec = CloudPlanningCodec(num_layers=3, cache_dim=6, pool_grid=(2, 3), bottleneck_dim=8)
+    out_k, out_v = codec(cache_k, cache_v, (2, 6))
+    assert len(out_k) == 3 and len(out_v) == 3
+    for key, value in zip(out_k, out_v):
+        assert key.shape == (2, 6, 6)  # M = pool_grid product replaces the 12-token cache
+        torch.testing.assert_close(key, value)  # no decoder: K == V at every layer
+    assert out_k[0].dtype == cache_v[0].dtype
+
+    codec_dec = CloudPlanningCodec(
+        num_layers=3, cache_dim=6, pool_grid=(2, 3), bottleneck_dim=8,
+        use_kv_decoder=True, decoder_rank=4)
+    dec_k, dec_v = codec_dec(cache_k, cache_v, (2, 6))
+    assert not torch.equal(dec_k[0], dec_v[0])  # decoder decouples addressing from content
+
+    with pytest.raises(ValueError, match="layer count"):
+        codec(cache_k[:1], cache_v[:1], (2, 6))
+    with pytest.raises(ValueError, match="Token grid"):
+        codec(cache_k, cache_v, (3, 6))
+    with pytest.raises(ValueError, match="channel mismatch"):
+        codec([torch.zeros(2, 12, 5) for _ in range(3)],
+              [torch.zeros(2, 12, 5) for _ in range(3)], (2, 6))
+
+
+def test_cloud_planning_codec_layer_mixture_is_softmax_and_learnable():
+    codec = CloudPlanningCodec(num_layers=3, cache_dim=4, pool_grid=(1, 2), bottleneck_dim=4)
+    with torch.no_grad():
+        codec.layer_logits.copy_(torch.tensor([4.0, 0.0, 0.0]))
+    cache_v = [torch.randn(1, 2, 4) * (idx + 1) for idx in range(3)]
+    cache_k = [torch.zeros(1, 2, 4) for _ in range(3)]
+    out_k, out_v = codec(cache_k, cache_v, (1, 2))
+    weights = torch.softmax(torch.tensor([4.0, 0.0, 0.0]), dim=0)
+    mixed = sum(w * v for w, v in zip(weights, cache_v))
+    mlp = codec.out_proj(torch.nn.functional.gelu(codec.in_proj(codec.norm(mixed))))
+    torch.testing.assert_close(out_v[0], mlp, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(out_k[0], mlp, atol=1e-6, rtol=1e-5)  # K == V without decoder
+    out_v[0].sum().backward()
+    assert codec.layer_logits.grad is not None
+    assert codec.layer_logits.grad.abs().sum() > 0
+
+
+def test_edge_encoder_select_mode_picks_cls_and_topk_patches():
+    torch.manual_seed(0)
+
+    class TinyTokenVision(nn.Module):
+        embed_dim = 4
+        num_prefix_tokens = 1
+
+        def __init__(self):
+            super().__init__()
+            self.tok = nn.Linear(3, 4)
+
+        def forward_features(self, image):
+            batch = image.shape[0]
+            cls = self.tok(image.mean(dim=(-1, -2))).unsqueeze(1)
+            patches = self.tok(image.permute(0, 2, 3, 1).reshape(batch, -1, 3))
+            return torch.cat([cls, patches], dim=1)
+
+    backbone = TinyTokenVision()
+    encoder = EdgeVisionEncoder(
+        text_dim=8, num_views=2, encoder=backbone, embed_dim=4, freeze=True,
+        mode="select", edge_dim=6, tokens_per_view=3, num_layers=2)
+    views = torch.rand(2, 2, 3, 224, 224)
+    output = encoder(views)
+    assert output.shape == (2, 6, 6)  # 2 views x (1 cls + 2 patches), edge_dim 6
+
+    flat = views.flatten(0, 1)
+    flat = (flat - 0.5) / 0.5
+    feats = backbone.forward_features(flat)
+    cls = feats[:, 0]
+    patches = feats[:, 1:]
+    scores = torch.cosine_similarity(patches, cls.unsqueeze(1).expand_as(patches), dim=-1)
+    topk = scores.topk(2, dim=1).indices
+    expected_tokens = torch.cat(
+        [feats[:, :1], torch.gather(patches, 1, topk.unsqueeze(-1).expand(-1, -1, 4))], dim=1)
+    expected = encoder.projector.proj(expected_tokens.reshape(2, 6, 4))
+    torch.testing.assert_close(output, expected)
+
+    output.sum().backward()
+    assert all(parameter.grad is None for parameter in backbone.parameters())
+    assert encoder.projector.proj.weight.grad is not None
+
+    # Per-layer K/V scales only enter through the prefix expansion path.
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.mot = SimpleNamespace(num_layers=2)
+    model.edge_vision = encoder
+    prefix = encoder(views)
+    prefix_k, prefix_v = model._edge_prefix_kv(prefix)
+    (prefix_k[1].sum() + prefix_v[0].sum()).backward()
+    assert encoder.projector.scale_k.grad is not None
+    assert encoder.projector.scale_v.grad is not None
+
+
+def test_edge_prefix_kv_expands_per_layer_scales():
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.mot = SimpleNamespace(num_layers=2)
+    model.edge_vision = SimpleNamespace(
+        mode="select",
+        projector=SimpleNamespace(scale_k=torch.tensor([1.0, 2.0]),
+                                  scale_v=torch.tensor([0.5, 0.5])))
+    prefix = torch.ones(1, 3, 4)
+    prefix_k, prefix_v = model._edge_prefix_kv(prefix)
+    assert len(prefix_k) == 2 and len(prefix_v) == 2
+    torch.testing.assert_close(prefix_k[0], prefix)
+    torch.testing.assert_close(prefix_k[1], 2.0 * prefix)
+    torch.testing.assert_close(prefix_v[0], 0.5 * prefix)
+
+
+def test_edge_encoder_grid_selection_is_uniform():
+    torch.manual_seed(0)
+
+    class TinyTokenVision(nn.Module):
+        embed_dim = 4
+        num_prefix_tokens = 1
+
+        def __init__(self):
+            super().__init__()
+            self.tok = nn.Linear(3, 4)
+
+        def forward_features(self, image):
+            batch = image.shape[0]
+            cls = self.tok(image.mean(dim=(-1, -2))).unsqueeze(1)
+            patches = self.tok(image.permute(0, 2, 3, 1).reshape(batch, -1, 3))
+            return torch.cat([cls, patches], dim=1)
+
+    backbone = TinyTokenVision()
+    encoder = EdgeVisionEncoder(
+        text_dim=8, num_views=1, encoder=backbone, embed_dim=4, freeze=True,
+        mode="select", edge_dim=6, tokens_per_view=3, num_layers=2,
+        selection="grid")
+    views = torch.rand(2, 1, 3, 224, 224)
+    output = encoder(views)
+    assert output.shape == (2, 3, 6)
+
+    flat = views.flatten(0, 1)
+    flat = (flat - 0.5) / 0.5
+    feats = backbone.forward_features(flat)
+    patches = feats[:, 1:]
+    keep_idx = torch.linspace(0, patches.shape[1] - 1, 2).round().long()
+    expected_tokens = torch.cat([feats[:, :1], patches[:, keep_idx]], dim=1)
+    expected = encoder.projector.proj(expected_tokens.reshape(2, 3, 4))
+    torch.testing.assert_close(output, expected)
+
+
+def test_edge_prefix_switch_gates_prefix_encoding():
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    views = torch.zeros(1, 2, 3, 8, 8)
+    model.edge_vision = SimpleNamespace(mode="select")
+    model.edge_prefix_enabled = False
+    assert model._encode_edge_prefix(views) is None
+    model.edge_vision = SimpleNamespace(mode="pooled")
+    assert model._encode_edge_prefix(views) is None
+
+
+def test_codec_checkpoint_roundtrip_and_mode_mismatch(tmp_path):
+    def make_shell(with_codec, mode="select"):
+        model = LeapBotCE.__new__(LeapBotCE)
+        nn.Module.__init__(model)
+        model.action_expert = nn.Linear(3, 3)
+        model.edge_vision = SimpleNamespace(projector=nn.Linear(3, 3), mode=mode)
+        model.proprio_encoder = None
+        model.cloud_kv_adapter = None
+        model.cloud_kv_codec = (
+            CloudPlanningCodec(num_layers=2, cache_dim=4, pool_grid=(1, 2))
+            if with_codec else None)
+        model.edge_num_views = 2
+        model.stale_loss_lambda_max = 0.5
+        model.stale_loss_warmup_steps = 1
+        model.torch_dtype = torch.float32
+        return model
+
+    source = make_shell(with_codec=True)
+    with torch.no_grad():
+        source.cloud_kv_codec.scale_k.fill_(1.5)
+        source.cloud_kv_codec.out_proj.bias.fill_(0.25)
+    path = tmp_path / "codec_delta.pt"
+    source.save_checkpoint(path)
+
+    restored = make_shell(with_codec=True)
+    restored.load_checkpoint(path)
+    torch.testing.assert_close(restored.cloud_kv_codec.scale_k, source.cloud_kv_codec.scale_k)
+    torch.testing.assert_close(restored.cloud_kv_codec.out_proj.bias, source.cloud_kv_codec.out_proj.bias)
+
+    with pytest.raises(ValueError, match="cloud_kv_codec"):
+        make_shell(with_codec=False).load_checkpoint(path)
+    with pytest.raises(ValueError, match="edge_vision_mode"):
+        make_shell(with_codec=True, mode="pooled").load_checkpoint(path)
 
 
 def test_cloud_kv_adapter_is_identity_then_learns_residual():
@@ -87,9 +283,10 @@ def test_cloud_kv_adapter_checkpoint_roundtrip(tmp_path):
         model = LeapBotCE.__new__(LeapBotCE)
         nn.Module.__init__(model)
         model.action_expert = nn.Linear(3, 3)
-        model.edge_vision = SimpleNamespace(projector=nn.Linear(3, 3))
+        model.edge_vision = SimpleNamespace(projector=nn.Linear(3, 3), mode="pooled")
         model.proprio_encoder = None
         model.cloud_kv_adapter = CloudKVAdapter(num_layers=2, cache_dim=4, rank=2)
+        model.cloud_kv_codec = None
         model.edge_num_views = 2
         model.stale_loss_lambda_max = 0.5
         model.stale_loss_warmup_steps = 1
@@ -152,6 +349,32 @@ def test_edge_factory_registers_optional_cloud_adapter(monkeypatch):
         "cloud_kv_adapter",
     }
     assert output.dit["cloud_kv_adapter"] is output.cloud_kv_adapter
+
+
+def test_edge_factory_registers_planning_codec(monkeypatch):
+    class TinyLeapBotCE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.action_expert = nn.Linear(2, 2)
+            self.edge_vision = SimpleNamespace(projector=nn.Linear(2, 2))
+            self.cloud_kv_adapter = None
+            self.cloud_kv_codec = CloudPlanningCodec(
+                num_layers=1, cache_dim=4, pool_grid=(1, 2))
+
+    model = TinyLeapBotCE()
+    monkeypatch.setattr(
+        leapbotce_edge_train_factory,
+        "_create_local_leapbotce",
+        lambda **_kwargs: model,
+    )
+    output = leapbotce_edge_train_factory.create_leapbotce()
+    assert output is model
+    assert set(output.dit.keys()) == {
+        "action_expert",
+        "edge_vision_projector",
+        "cloud_kv_codec",
+    }
+    assert output.dit["cloud_kv_codec"] is output.cloud_kv_codec
 
 
 def test_cloud_encoding_applies_kv_adapter_at_cache_boundary():
@@ -223,6 +446,7 @@ def test_dataset_keeps_cloud_image_and_proprio_time_aligned(monkeypatch):
     dataset = CloudEdgeRobotVideoDataset.__new__(CloudEdgeRobotVideoDataset)
     dataset.max_delay_steps = 2
     dataset.action_horizon = 2
+    dataset.concat_multi_camera = "horizontal"
     sample = {
         "video": torch.arange(5, dtype=torch.float32).view(1, 5, 1, 1).expand(3, 5, 1, 2),
         "image_is_pad": torch.zeros(5, dtype=torch.bool),
@@ -314,6 +538,7 @@ def test_sync_wrapper_matches_two_stage_edge_inference_with_fixed_seed():
     model.device = torch.device("cpu")
     model.torch_dtype = torch.float32
     model.edge_num_views = 2
+    model.edge_vision = SimpleNamespace(mode="pooled", projector=nn.Linear(8, 4))
     model.action_expert = SimpleNamespace(action_dim=2)
     model.infer_action_scheduler = TinyInferenceScheduler()
     model.proprio_dim = 8
@@ -337,11 +562,13 @@ def test_sync_wrapper_matches_two_stage_edge_inference_with_fixed_seed():
         observed["edge_context"] = cache_context
         return cache_context, cache_mask
 
-    def predict_from_cache(cache_arg, noisy_action, timestep, edge_context_arg, edge_mask):
+    def predict_from_cache(cache_arg, noisy_action, timestep, edge_context_arg, edge_mask,
+                           edge_prefix=None):
         assert cache_arg is cache
         assert timestep.shape == (1,)
         assert edge_context_arg is observed["edge_context"]
         assert edge_mask.shape == (1, 3)
+        assert edge_prefix is None  # pooled edge vision carries no prefix K/V
         return torch.full_like(noisy_action, 0.5)
 
     model.encode_cloud = encode_cloud

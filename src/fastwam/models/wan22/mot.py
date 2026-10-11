@@ -535,6 +535,8 @@ class MoT(nn.Module):
         video_cache_k: list[torch.Tensor],
         video_cache_v: list[torch.Tensor],
         action_attention_mask: torch.Tensor,
+        edge_prefix_k: Optional[list[torch.Tensor]] = None,
+        edge_prefix_v: Optional[list[torch.Tensor]] = None,
     ) -> torch.Tensor:
         expert = self.mixtures["action"]
         x = action_tokens
@@ -557,10 +559,18 @@ class MoT(nn.Module):
                 freqs=action_freqs,
                 t_mod=action_t_mod,
             )
+            if edge_prefix_k is not None and edge_prefix_v is not None:
+                keys = torch.cat(
+                    [video_cache_k[layer_idx], edge_prefix_k[layer_idx], k_action], dim=1)
+                values = torch.cat(
+                    [video_cache_v[layer_idx], edge_prefix_v[layer_idx], v_action], dim=1)
+            else:
+                keys = torch.cat([video_cache_k[layer_idx], k_action], dim=1)
+                values = torch.cat([video_cache_v[layer_idx], v_action], dim=1)
             mixed = flash_attention(
                 q=q_action,
-                k=torch.cat([video_cache_k[layer_idx], k_action], dim=1),
-                v=torch.cat([video_cache_v[layer_idx], v_action], dim=1),
+                k=keys,
+                v=values,
                 num_heads=self.num_heads,
                 ctx_mask=action_attention_mask.to(device=q_action.device),
             )

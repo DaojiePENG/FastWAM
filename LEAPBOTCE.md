@@ -151,6 +151,57 @@ repository default uses ZeRO-1; checkpoint retention is intentionally set to
 one latest weight and one resumable state. The latter can be large, so archive
 or remove it only after confirming that training will not be resumed.
 
+### Cloud planning codec and edge prefix (select mode)
+
+The frozen-cloud baseline transmits the full 30-layer per-layer cache
+(~36 MB per replan) while the edge contributes a single pooled vision token
+(~0.7% of the per-layer KV budget). Two model-side changes address both ends
+(`docs/leapbotce_dualstream_gap_analysis.md` §7):
+
+- **CloudPlanningCodec** (`cloud_kv_adapter.py`): the 30-layer value-cache
+  stack is spatially average-pooled (LIBERO token grid 7x14 -> 7x8 = 56
+  tokens), mixed across depth by a learnable softmax, and passed through a
+  bottleneck MLP (3072 -> 1024 -> 3072). The result `z` is the entire
+  cloud-to-edge payload (~0.69 MB fp32 / ~0.34 MB fp16 per replan, ~52x
+  smaller than the raw cache). `z` is broadcast to all 30 layers with
+  per-layer learned `scale_k`/`scale_v`. With `use_kv_decoder: false` the
+  same vector serves as K and V (K = V = z); with `true`, low-rank
+  projections decouple addressing from content at the edge while the
+  transmitted payload stays `z`.
+- **Edge prefix (select mode)** (`leapbotce.py`): the frozen SigLIP encoder
+  returns per-patch tokens; per view, `tokens_per_view` tokens are selected
+  by cosine similarity to a reference feature (timm SigLIP exposes no CLS
+  token, so the mean patch feature is the reference; `selection: grid` picks
+  uniformly spaced patches instead as the A3 ablation) and projected to
+  3072-d by `EdgePrefixProjector`. Each ActionDiT self-attention layer
+  concatenates `[cloud z, edge prefix, action tokens]` in that order; the
+  language/proprio context is unchanged. With 56 cloud + 10 edge + 32 action
+  tokens the edge holds ~10% of the per-layer KV budget.
+
+Train with the dedicated recipe (h200-proven optimization: 8 GPUs x batch 16
+= effective 128, lr 2.8e-4, full cosine over 24951 steps):
+
+```bash
+bash scripts/train_zero1.sh 8 task=libero_all_leapbotce_codec \
+  output_dir=./runs/libero_all_leapbotce_codec/a1_seed42 seed=42
+```
+
+Ablation switches (run the small-scale ablation on LIBERO before fixing the
+RoboTwin recipe):
+
+- **A1 (main)**: the recipe above, `use_kv_decoder: false`.
+- **A2 (decoder)**: add `model.cloudedge.kv_codec.use_kv_decoder=true`.
+- **A3 (selection)**: add `model.edge_vision.selection=grid` (uniform
+  spacing instead of reference-similarity top-k).
+- **A4 (edge contribution, eval-time)**: evaluate with
+  `model.cloudedge.edge_prefix_enabled=false`; the model then falls back to
+  the cloud-only two-way attention with no retraining.
+
+RoboTwin's token grid is 12x10, so its recipe must override
+`model.cloudedge.kv_codec.pool_grid=[6,10]`. Codec and edge-vision settings
+are stored in checkpoints and restored by `load_checkpoint` (a mode mismatch
+raises); `experiments/libero/eval_libero_cloudedge.py` needs no changes.
+
 ## LIBERO Delay Evaluation
 
 The cloud path receives a temporally consistent delayed observation: both

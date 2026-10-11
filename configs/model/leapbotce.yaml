@@ -16,6 +16,14 @@ edge_vision:
   pretrained: true
   freeze: true
   checkpoint_path: /mnt/c2-worldmodel/2653853/leapbot-ce/checkpoints/siglip-base/model.safetensors
+  # "pooled": both views -> one context token (legacy frozen-cloud recipe).
+  # "select": prefix tokens per view -> per-layer prefix K/V beside the cloud
+  # tokens (works with the full cache or the compressed planning tokens).
+  mode: pooled
+  tokens_per_view: 5
+  # How select mode picks per-view patch tokens: "topk" = most CLS/reference-
+  # similar (semantic), "grid" = uniformly spaced (geometry coverage, A3).
+  selection: topk
 cloudedge:
   stale_loss_lambda_max: 0.5
   stale_loss_warmup_steps: 1000
@@ -25,6 +33,21 @@ cloudedge:
     enabled: false
     rank: 64
     dropout: 0.0
+  # Optional planning codec: compresses the 30-layer cache into
+  # pool_grid[0] * pool_grid[1] planning tokens (the cloud-to-edge payload).
+  # LIBERO token grid is 7x14; pool to 7x8=56.  RoboTwin grid is 12x10;
+  # override pool_grid there (e.g. [6, 10]=60).
+  kv_codec:
+    enabled: false
+    pool_grid: [7, 8]
+    bottleneck_dim: 1024
+    use_kv_decoder: false
+    decoder_rank: 256
+    dropout: 0.0
+  # A4 ablation switch: set false (e.g. at eval time) to drop the edge prefix
+  # K/V and fall back to cloud-only attention.  Training keeps it on unless
+  # explicitly overridden.
+  edge_prefix_enabled: true
 
 video_dit_config:
   has_image_input: false

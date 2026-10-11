@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .cloud_kv_adapter import CloudKVAdapter
+from .cloud_kv_adapter import CloudKVAdapter, CloudPlanningCodec
 from .fastwam import FastWAM
 from fastwam.utils.logging_config import get_logger
 
@@ -22,13 +22,36 @@ class CloudPlanningCache:
     video_tokens_per_frame: int
 
 
+class EdgePrefixProjector(nn.Module):
+    """Trainable per-token projection for the select-mode edge prefix."""
+
+    def __init__(self, embed_dim: int, edge_dim: int, num_layers: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(int(embed_dim), int(edge_dim))
+        self.scale_k = nn.Parameter(torch.ones(int(num_layers)))
+        self.scale_v = nn.Parameter(torch.ones(int(num_layers)))
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        return self.proj(tokens)
+
+
 class EdgeVisionEncoder(nn.Module):
-    """Frozen per-view SigLIP encoder with a trainable context projector."""
+    """Frozen per-view SigLIP encoder with a trainable context projector.
+
+    ``mode="pooled"`` (legacy) projects both globally pooled views into a
+    single ``text_dim`` context token.  ``mode="select"`` keeps per-patch
+    tokens, picks the CLS token plus the top-(k-1) CLS-similar patches per
+    view, and projects each selected token to ``edge_dim`` for injection as
+    per-layer prefix K/V beside the cloud planning tokens.
+    """
 
     def __init__(self, text_dim: int, num_views: int = 2,
                  model_name: str = "vit_base_patch16_siglip_224",
                  pretrained: bool = True, freeze: bool = True,
-                 encoder: Optional[nn.Module] = None, embed_dim: Optional[int] = None):
+                 encoder: Optional[nn.Module] = None, embed_dim: Optional[int] = None,
+                 mode: str = "pooled", edge_dim: Optional[int] = None,
+                 tokens_per_view: int = 5, num_layers: int = 30,
+                 selection: str = "topk"):
         super().__init__()
         if encoder is None:
             try:
@@ -39,10 +62,25 @@ class EdgeVisionEncoder(nn.Module):
         self.encoder = encoder
         self.num_views = int(num_views)
         self.embed_dim = int(embed_dim or getattr(encoder, "embed_dim"))
-        self.projector = nn.Sequential(
-            nn.Linear(self.num_views * self.embed_dim, int(text_dim)),
-            nn.GELU(), nn.LayerNorm(int(text_dim)),
-        )
+        self.mode = str(mode)
+        if self.mode not in ("pooled", "select"):
+            raise ValueError(f"`mode` must be 'pooled' or 'select', got {mode!r}")
+        if self.mode == "pooled":
+            self.projector = nn.Sequential(
+                nn.Linear(self.num_views * self.embed_dim, int(text_dim)),
+                nn.GELU(), nn.LayerNorm(int(text_dim)),
+            )
+        else:
+            self.edge_dim = int(edge_dim or text_dim)
+            self.tokens_per_view = int(tokens_per_view)
+            if self.tokens_per_view < 1:
+                raise ValueError("`tokens_per_view` must be >= 1")
+            self.selection = str(selection)
+            if self.selection not in ("topk", "grid"):
+                raise ValueError(
+                    f"`selection` must be 'topk' or 'grid', got {selection!r}")
+            self.projector = EdgePrefixProjector(
+                self.embed_dim, self.edge_dim, int(num_layers))
         self.register_buffer("image_mean", torch.tensor([0.5] * 3).view(1, 1, 3, 1, 1))
         self.register_buffer("image_std", torch.tensor([0.5] * 3).view(1, 1, 3, 1, 1))
         self.freeze = bool(freeze)
@@ -50,13 +88,19 @@ class EdgeVisionEncoder(nn.Module):
             self.encoder.requires_grad_(False)
             self.encoder.eval()
 
+    @property
+    def num_prefix_tokens(self) -> int:
+        if self.mode == "select":
+            return self.num_views * self.tokens_per_view
+        return 1
+
     def train(self, mode: bool = True):
         super().train(mode)
         if self.freeze:
             self.encoder.eval()
         return self
 
-    def forward(self, views: torch.Tensor) -> torch.Tensor:
+    def _normalize_views(self, views: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if views.ndim != 5 or views.shape[1] != self.num_views or views.shape[2] != 3:
             raise ValueError(f"Expected [B,{self.num_views},3,H,W], got {tuple(views.shape)}")
         views = views.to(device=self.image_mean.device)
@@ -68,15 +112,80 @@ class EdgeVisionEncoder(nn.Module):
         views = (views - self.image_mean) / self.image_std
         encoder_dtype = next(self.encoder.parameters()).dtype
         flat = views.flatten(0, 1).to(dtype=encoder_dtype)
+        return flat, views
+
+    def _encoder_tokens(self, flat: torch.Tensor) -> torch.Tensor:
+        """Return per-token features ``[B*V, S, D]`` from the frozen encoder."""
         if self.freeze:
             with torch.no_grad():
-                features = self.encoder(flat)
+                if hasattr(self.encoder, "forward_features"):
+                    features = self.encoder.forward_features(flat)
+                    if features.ndim == 3:
+                        return features
+                pooled = self.encoder(flat)
         else:
-            features = self.encoder(flat)
-        if features.ndim == 3:
-            features = features.mean(dim=1)
-        features = features.reshape(batch_size, self.num_views * self.embed_dim)
-        return self.projector(features.to(dtype=self.projector[0].weight.dtype)).unsqueeze(1)
+            if hasattr(self.encoder, "forward_features"):
+                features = self.encoder.forward_features(flat)
+                if features.ndim == 3:
+                    return features
+            pooled = self.encoder(flat)
+        raise RuntimeError(
+            "Edge encoder did not expose per-token features; select mode "
+            "requires an encoder with `forward_features` returning [B, S, D]."
+        )
+
+    def _select_tokens(self, flat: torch.Tensor) -> torch.Tensor:
+        tokens = self._encoder_tokens(flat)
+        num_prefix = int(getattr(self.encoder, "num_prefix_tokens", 1))
+        if tokens.shape[1] <= num_prefix:
+            raise RuntimeError(
+                f"Edge encoder returned {tokens.shape[1]} tokens with "
+                f"{num_prefix} prefix tokens; no patches left to select."
+            )
+        patches = tokens[:, num_prefix:]
+        if num_prefix > 0:
+            reference = tokens[:, :num_prefix].mean(dim=1)
+        else:
+            # Some encoders (e.g. timm SigLIP) expose no CLS/prefix tokens;
+            # fall back to the mean patch feature as the selection reference.
+            reference = patches.mean(dim=1)
+        scores = torch.cosine_similarity(
+            patches, reference.unsqueeze(1).expand_as(patches), dim=-1)
+        keep = max(self.tokens_per_view - num_prefix, 0)
+        selected = patches
+        if keep > 0:
+            if self.selection == "grid":
+                # Uniformly spaced patches: geometry-coverage ablation (A3).
+                step_idx = torch.linspace(
+                    0, patches.shape[1] - 1, keep, device=patches.device
+                ).round().long()
+                selected = patches[:, step_idx]
+            else:
+                topk = scores.topk(keep, dim=1).indices
+                selected = torch.gather(
+                    patches, 1, topk.unsqueeze(-1).expand(-1, -1, patches.shape[-1]))
+        prefix_tokens = torch.cat([tokens[:, :num_prefix], selected], dim=1)
+        return prefix_tokens
+
+    def forward(self, views: torch.Tensor) -> torch.Tensor:
+        flat, views = self._normalize_views(views)
+        batch_size = views.shape[0]
+        if self.mode == "pooled":
+            if self.freeze:
+                with torch.no_grad():
+                    features = self.encoder(flat)
+            else:
+                features = self.encoder(flat)
+            if features.ndim == 3:
+                features = features.mean(dim=1)
+            features = features.reshape(batch_size, self.num_views * self.embed_dim)
+            projector_dtype = self.projector[0].weight.dtype
+            return self.projector(features.to(dtype=projector_dtype)).unsqueeze(1)
+        prefix_tokens = self._select_tokens(flat)
+        prefix_tokens = prefix_tokens.reshape(
+            batch_size, self.num_prefix_tokens, self.embed_dim)
+        projector_dtype = self.projector.proj.weight.dtype
+        return self.projector(prefix_tokens.to(dtype=projector_dtype))
 
 
 def stale_loss_weight(step: int, warmup_steps: int, maximum: float) -> float:
@@ -94,15 +203,27 @@ class LeapBotCE(FastWAM):
                  edge_num_views=2, edge_vision_pretrained=True, edge_vision_freeze=True,
                  stale_loss_lambda_max=0.5, stale_loss_warmup_steps=1,
                  edge_vision_encoder=None, edge_vision_embed_dim=None,
+                 edge_vision_mode="pooled", edge_vision_tokens_per_view=5,
+                 edge_vision_selection="topk",
                  cloud_kv_adapter_enabled=False, cloud_kv_adapter_rank=64,
-                 cloud_kv_adapter_dropout=0.0, **kwargs):
+                 cloud_kv_adapter_dropout=0.0,
+                 cloud_kv_codec_enabled=False, cloud_kv_codec_pool_grid=None,
+                 cloud_kv_codec_bottleneck_dim=1024, cloud_kv_codec_use_decoder=False,
+                 cloud_kv_codec_decoder_rank=256, cloud_kv_codec_dropout=0.0,
+                 edge_prefix_enabled=True,
+                 **kwargs):
         super().__init__(*args, **kwargs)
         self.edge_vision = EdgeVisionEncoder(
             self.text_dim, edge_num_views, edge_vision_model_name,
             edge_vision_pretrained, edge_vision_freeze,
             edge_vision_encoder, edge_vision_embed_dim,
+            mode=edge_vision_mode, tokens_per_view=edge_vision_tokens_per_view,
+            num_layers=int(self.mot.num_layers), selection=edge_vision_selection,
         ).to(device=self.device, dtype=self.torch_dtype)
         self.edge_num_views = int(edge_num_views)
+        # Eval-time ablation switch (A4): set False to drop the edge prefix
+        # K/V entirely and fall back to the cloud-only two-way attention.
+        self.edge_prefix_enabled = bool(edge_prefix_enabled)
         self.stale_loss_lambda_max = float(stale_loss_lambda_max)
         self.stale_loss_warmup_steps = int(stale_loss_warmup_steps)
         self.training_step = 0
@@ -114,6 +235,28 @@ class LeapBotCE(FastWAM):
                 cache_dim=cache_dim,
                 rank=int(cloud_kv_adapter_rank),
                 dropout=float(cloud_kv_adapter_dropout),
+            ).to(device=self.device, dtype=self.torch_dtype)
+        self.cloud_kv_codec = None
+        if bool(cloud_kv_codec_enabled):
+            if cloud_kv_codec_pool_grid is None:
+                raise ValueError(
+                    "`cloud_kv_codec_pool_grid` (e.g. [7, 8]) is required when "
+                    "the cloud planning codec is enabled."
+                )
+            if bool(cloud_kv_adapter_enabled):
+                raise ValueError(
+                    "Enable either the per-layer KV adapter or the planning "
+                    "codec, not both."
+                )
+            cache_dim = int(self.mot.num_heads) * int(self.mot.attn_head_dim)
+            self.cloud_kv_codec = CloudPlanningCodec(
+                num_layers=int(self.mot.num_layers),
+                cache_dim=cache_dim,
+                pool_grid=list(cloud_kv_codec_pool_grid),
+                bottleneck_dim=int(cloud_kv_codec_bottleneck_dim),
+                use_kv_decoder=bool(cloud_kv_codec_use_decoder),
+                decoder_rank=int(cloud_kv_codec_decoder_rank),
+                dropout=float(cloud_kv_codec_dropout),
             ).to(device=self.device, dtype=self.torch_dtype)
 
     def set_training_step(self, step: int, total_steps: Optional[int] = None):
@@ -151,6 +294,20 @@ class LeapBotCE(FastWAM):
         mask = torch.ones((context.shape[0], 1), device=context.device, dtype=torch.bool)
         return torch.cat([context, token], 1), torch.cat([context_mask, mask], 1)
 
+    def _video_token_grid(self, latents: torch.Tensor) -> tuple[int, int]:
+        patch_t, patch_h, patch_w = getattr(self.video_expert, "patch_size", (1, 2, 2))
+        del patch_t
+        if latents.ndim != 5:
+            raise ValueError(f"Expected latents [B,C,T,H,W], got {tuple(latents.shape)}")
+        grid_h = latents.shape[-2] // int(patch_h)
+        grid_w = latents.shape[-1] // int(patch_w)
+        if grid_h <= 0 or grid_w <= 0:
+            raise ValueError(
+                f"Cannot derive a token grid from latents {tuple(latents.shape)} "
+                f"with patch ({patch_h}, {patch_w})."
+            )
+        return grid_h, grid_w
+
     def _encode_cloud_tensor(self, input_image, cloud_context, cloud_context_mask,
                              edge_context=None, edge_context_mask=None):
         if input_image.ndim != 4:
@@ -166,13 +323,21 @@ class LeapBotCE(FastWAM):
             video_tokens.shape[1], tokens_per_frame, video_tokens.device)
         cache_k, cache_v = self.mot.prefill_video_cache_tensor(
             video_tokens, video_freqs, video_t_mod, video_context, video_context_mask, video_mask)
+        planning_seq_len = int(video_tokens.shape[1])
+        tokens_per_frame_out = int(tokens_per_frame)
         cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
         if cloud_kv_adapter is not None:
             cache_k, cache_v = cloud_kv_adapter(cache_k, cache_v)
+        cloud_kv_codec = getattr(self, "cloud_kv_codec", None)
+        if cloud_kv_codec is not None:
+            cache_k, cache_v = cloud_kv_codec(
+                cache_k, cache_v, self._video_token_grid(latents))
+            planning_seq_len = cloud_kv_codec.num_tokens
+            tokens_per_frame_out = cloud_kv_codec.num_tokens
         if edge_context is None:
             edge_context, edge_context_mask = cloud_context, cloud_context_mask
         return CloudPlanningCache(cache_k, cache_v, edge_context, edge_context_mask,
-                                  int(video_tokens.shape[1]), int(tokens_per_frame))
+                                  planning_seq_len, tokens_per_frame_out)
 
     @torch.no_grad()
     def encode_cloud(self, input_image, prompt=None, context=None, context_mask=None,
@@ -206,12 +371,37 @@ class LeapBotCE(FastWAM):
             cloud_context, cloud_context_mask, context, context_mask
         )
 
-    def _predict_from_cache(self, cache, noisy_action, timestep, edge_context, edge_mask):
-        action_mask = torch.ones((noisy_action.shape[1], cache.video_seq_len + noisy_action.shape[1]),
+    def _encode_edge_prefix(self, current_views):
+        """Encode current views into per-layer prefix K/V in select mode."""
+        if self.edge_vision.mode != "select":
+            return None
+        if not getattr(self, "edge_prefix_enabled", True):
+            return None
+        return self.edge_vision(current_views.to(self.device, self.torch_dtype))
+
+    def _edge_prefix_kv(self, edge_prefix):
+        if edge_prefix is None:
+            return None, None
+        projector = self.edge_vision.projector
+        layers = int(self.mot.num_layers)
+        keys = [edge_prefix * projector.scale_k[l].to(edge_prefix.dtype)
+                for l in range(layers)]
+        values = [edge_prefix * projector.scale_v[l].to(edge_prefix.dtype)
+                  for l in range(layers)]
+        return keys, values
+
+    def _predict_from_cache(self, cache, noisy_action, timestep, edge_context, edge_mask,
+                            edge_prefix=None):
+        prefix_k, prefix_v = self._edge_prefix_kv(edge_prefix)
+        planning_len = cache.video_seq_len
+        if edge_prefix is not None:
+            planning_len += int(edge_prefix.shape[1])
+        action_mask = torch.ones((noisy_action.shape[1], planning_len + noisy_action.shape[1]),
                                  device=noisy_action.device, dtype=torch.bool)
         return self._denoise_action_with_video_cache(
             noisy_action, timestep, edge_context, edge_mask,
-            cache.video_cache_k, cache.video_cache_v, action_mask)
+            cache.video_cache_k, cache.video_cache_v, action_mask,
+            edge_prefix_k=prefix_k, edge_prefix_v=prefix_v)
 
     def training_loss(self, sample, tiled=False):
         del tiled
@@ -221,9 +411,11 @@ class LeapBotCE(FastWAM):
         edge_context, edge_mask = self._with_proprio(
             context, context_mask, edge_proprio, "edge"
         )
-        edge_context, edge_mask = self._edge_context(
-            edge_context, edge_mask, sample["edge_current_views"]
-        )
+        edge_prefix = self._encode_edge_prefix(sample["edge_current_views"])
+        if edge_prefix is None:
+            edge_context, edge_mask = self._edge_context(
+                edge_context, edge_mask, sample["edge_current_views"]
+            )
         noise = torch.randn_like(action)
         timestep = self.train_action_scheduler.sample_training_t(action.shape[0], self.device, action.dtype)
         noisy = self.train_action_scheduler.add_noise(action, noise, timestep)
@@ -247,8 +439,10 @@ class LeapBotCE(FastWAM):
         stale = self._encode_cloud_tensor(
             sample["cloud_stale_image"], stale_context, stale_context_mask, context, context_mask
         )
-        pred_fresh = self._predict_from_cache(fresh, noisy, timestep, edge_context, edge_mask)
-        pred_stale = self._predict_from_cache(stale, noisy, timestep, edge_context, edge_mask)
+        pred_fresh = self._predict_from_cache(
+            fresh, noisy, timestep, edge_context, edge_mask, edge_prefix)
+        pred_stale = self._predict_from_cache(
+            stale, noisy, timestep, edge_context, edge_mask, edge_prefix)
         valid = None
         if sample.get("action_is_pad") is not None:
             valid = (~sample["action_is_pad"].to(self.device, torch.bool)).float()
@@ -283,8 +477,9 @@ class LeapBotCE(FastWAM):
         edge_context, edge_mask = self._with_proprio(
             planning_cache.context, planning_cache.context_mask, edge_proprio, "edge"
         )
-        edge_context, edge_mask = self._edge_context(
-            edge_context, edge_mask, current_views)
+        edge_prefix = self._encode_edge_prefix(current_views)
+        if edge_prefix is None:
+            edge_context, edge_mask = self._edge_context(edge_context, edge_mask, current_views)
         generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
         action = torch.randn((planning_cache.context.shape[0], action_horizon, self.action_expert.action_dim),
                              generator=generator, device=rand_device).to(self.device, self.torch_dtype)
@@ -292,7 +487,8 @@ class LeapBotCE(FastWAM):
             num_inference_steps, self.device, action.dtype, shift_override=sigma_shift)
         for step_t, delta in zip(timesteps, deltas):
             timestep = step_t.expand(action.shape[0]).to(self.device, action.dtype)
-            prediction = self._predict_from_cache(planning_cache, action, timestep, edge_context, edge_mask)
+            prediction = self._predict_from_cache(
+                planning_cache, action, timestep, edge_context, edge_mask, edge_prefix)
             action = self.infer_action_scheduler.step(prediction, delta, action)
         return {"action": action[0].float().cpu()}
 
@@ -323,12 +519,16 @@ class LeapBotCE(FastWAM):
                    "edge_vision_projector": self.edge_vision.projector.state_dict(),
                    "method": "LeapBotCE", "step": step, "torch_dtype": str(self.torch_dtype),
                    "leapbotce_meta": {"edge_num_views": self.edge_num_views,
+                                       "edge_vision_mode": self.edge_vision.mode,
                                        "stale_loss_lambda_max": self.stale_loss_lambda_max,
                                        "stale_loss_warmup_steps": self.stale_loss_warmup_steps}}
         cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
         if cloud_kv_adapter is not None:
             payload["cloud_kv_adapter"] = cloud_kv_adapter.state_dict()
             payload["leapbotce_meta"]["cloud_kv_adapter"] = cloud_kv_adapter.config()
+        if self.cloud_kv_codec is not None:
+            payload["cloud_kv_codec"] = self.cloud_kv_codec.state_dict()
+            payload["leapbotce_meta"]["cloud_kv_codec"] = self.cloud_kv_codec.config()
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()
         if optimizer is not None:
@@ -343,6 +543,13 @@ class LeapBotCE(FastWAM):
                 payload["edge_vision_projector"], strict=True)
             if self.proprio_encoder is not None and "proprio_encoder" in payload:
                 self.proprio_encoder.load_state_dict(payload["proprio_encoder"], strict=True)
+            checkpoint_mode = payload.get("leapbotce_meta", {}).get("edge_vision_mode")
+            if checkpoint_mode is not None and checkpoint_mode != self.edge_vision.mode:
+                raise ValueError(
+                    f"Checkpoint was trained with edge_vision_mode={checkpoint_mode!r} but "
+                    f"the model uses {self.edge_vision.mode!r}; rebuild the model with the "
+                    "matching mode before loading."
+                )
             adapter_state = payload.get("cloud_kv_adapter")
             if adapter_state is not None:
                 cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
@@ -356,6 +563,19 @@ class LeapBotCE(FastWAM):
                 logger.warning(
                     "Checkpoint has no cloud_kv_adapter state; keeping the adapter at its "
                     "zero-initialized identity."
+                )
+            codec_state = payload.get("cloud_kv_codec")
+            if codec_state is not None:
+                if self.cloud_kv_codec is None:
+                    raise ValueError(
+                        "Checkpoint contains a cloud_kv_codec, but the model was created "
+                        "with cloud_kv_codec_enabled=False."
+                    )
+                self.cloud_kv_codec.load_state_dict(codec_state, strict=True)
+            elif self.cloud_kv_codec is not None:
+                raise ValueError(
+                    "The model expects a cloud_kv_codec, but the checkpoint has none; "
+                    "rebuild the model with the matching codec configuration."
                 )
             if optimizer is not None and "optimizer" in payload:
                 optimizer.load_state_dict(payload["optimizer"])

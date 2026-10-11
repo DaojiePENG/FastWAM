@@ -709,6 +709,8 @@ class FastWAM(torch.nn.Module):
         video_cache_k: list[torch.Tensor],
         video_cache_v: list[torch.Tensor],
         action_attention_mask: torch.Tensor,
+        edge_prefix_k: Optional[list[torch.Tensor]] = None,
+        edge_prefix_v: Optional[list[torch.Tensor]] = None,
     ) -> torch.Tensor:
         (
             action_tokens,
@@ -732,6 +734,8 @@ class FastWAM(torch.nn.Module):
             video_cache_k=video_cache_k,
             video_cache_v=video_cache_v,
             action_attention_mask=action_attention_mask,
+            edge_prefix_k=edge_prefix_k,
+            edge_prefix_v=edge_prefix_v,
         )
         return self.action_expert.post(action_tokens)
 
