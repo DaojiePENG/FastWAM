@@ -49,6 +49,30 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（下午）codec 消融评测链路调通（本地卡 4,5 冒烟 a1/a2/a3 全过）
+- 背景：三条消融训练在跑（~0.2 step/s，首个 ckpt save_every=8317 预计当晚
+  落盘），趁等待把评测代码和 AIFlow 启动脚本先调通。三个 run 都还没有
+  ckpt → 用**合成 ckpt** 冒烟：200k 真实 action_expert/proprio_encoder +
+  随机初始化 codec/select 投影（load_checkpoint 守卫允许，冒烟只验链路
+  不验质量，成功率 0% 是预期正确）。
+- **sweep 脚本改动**（`42a04c9`）：原写死 `task=libero_all_leapbotce`
+  （frozen-cloud），codec ckpt 会在加载期 ValueError。现从
+  RUN_DIR/config.yaml **自动推导** task（kv_codec.enabled → codec task）
+  并把 kv_codec/edge_vision 字段钉成 eval 覆盖（pool_grid/use_kv_decoder/
+  selection/mode/tokens_per_view/num_views + edge_prefix_enabled=false 时
+  透传）；LIBERO_EVAL_TASK 可强制覆盖。AIFlow eval 配置加
+  AI_FLOW_EVAL_TASK 透传 + 三条消融线 RUN_DIR 注释（只需换 RUN_DIR +
+  新 TAG，task 不用手设）。
+- **冒烟结果**（GPU 4,5 空闲卡，D=0 × libero_spatial × 2 trials，
+  PACK=1 legacy 模式，独立 TAG smoke_codec_*_1011）：
+  a1 codec 10/10 ✓ / a2 解码器 10/10 ✓ / a3 grid 10/10 ✓（各 ~7-13 min，
+  manager config 证实 select/grid/use_kv_decoder 覆盖全部生效；
+  replans=800/20ep 符合 chunk=10 节奏 schema）。fake run dir 留在
+  `runs/libero_all_leapbotce_codec/_smoke_codec_a{1,2,3}/`（各 2GB）可复用。
+- **正式评测提交口令**（真实 ckpt 落盘后）：AIFlow_config_eval_libero.py
+  常改区 RUN_DIR→对应 codec run、TAG→新名（如 codec_a1_seed42_h200），
+  其余不动。
+
 ### 2026-10-11（14:38）a3 重提后秒挂（节点抽奖）：.envs 死 shebang 已全量修复
 - **现象**：a3_grid 重提后落在节点 10.194.160.30，2 分钟内死：
   `train_zero1.sh: line 111: .envs/leapbot-va/bin/accelerate: cannot execute:
