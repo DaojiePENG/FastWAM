@@ -1,6 +1,6 @@
 # Baseline 帧延迟鲁棒性评测 — 实时结果
 
-> 自动生成于 **2026-10-01 15:11:26** · 生成器 `FastWAM/docs/generate_baseline_report.py`
+> 自动生成于 **2026-10-11 12:34:58** · 生成器 `FastWAM/docs/generate_baseline_report.py`
 > 刷新: `python FastWAM/docs/generate_baseline_report.py`（可随时重复执行，新结果目录自动纳入）
 
 **协议**（对齐 CloudEdgeVLA 的 frame-delay 设定）：单流全观测帧延迟。每次 replan 从 `seed=1234` 的 RNG 采样 d∈[0, D]，整组观测同时老化；扫描 D ∈ {0, 5, 10, 20, 40} 步。
@@ -14,8 +14,8 @@
 | FastWAM | 50 | num_inference_steps=10, replan=10 | 官方 release ckpt (libero_uncond_2cam224) |
 | StarWAM-MoT | 50 | inference=8, action=8, replan=10, wait=10 | 官方 recipe starwam_libero_mot_wan22_5b |
 | StarWAM-SharedDiT | 50 | inference=16, action=16, replan=10 | 官方 recipe shared_dit_wan22_5b |
-| LingBot-VA | 50 | 官方 libero server 配置 | server+client 官方流程 |
-| OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical |
+| LingBot-VA | 50 | 官方 libero server 配置 | server+client 官方流程；延迟按其原生 chunk 抽样（~46 次/ep） |
+| OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical；延迟每控制步抽样（579 次/ep @D=40） |
 | Kairos † | LIBERO-Plus 类目协议 | external WAM adapter (DiT 4B+Qwen2.5-VL-7B) | Camera Viewpoints 60 任务子集×1 trial（全类目 1599） |
 | LeapBot-DualLane-V2 (在研) | 50 | inference=20, replan=10, wait=30 | dual-lane 双流在研模型 |
 | LeapBotCE (d_train=20) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，全 LIBERO 四套件 50k 步，seed=1234 |
@@ -27,41 +27,45 @@
 
 **LIBERO-spatial，按帧延迟扫描。单元格 = 成功率 (%)；每格数据取该延迟下回合数最多的运行（n 标注见下）**
 
-| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |
-|---|---|---|---|---|---|
-| FastWAM | **97.4** | **74.6** | **36.4** | **11.0** | **2.2** |
-| OpenWAM (dual-system) | **99.6** | **87.6** | **62.2** | **31.2** | **10.4** |
-| LingBot-VA | 20.0(n=10) | — | 20.0(n=10) | — | 10.0(n=10) |
-| StarWAM-MoT | **98.0** | **74.4** | **35.2** | **13.6** | **1.0** |
-| StarWAM-SharedDiT | **98.2** | **73.4** | **35.4** | **8.8** | **1.2** |
-| Kairos † | — | — | — | — | — |
-| LeapBot-DualLane-V2 (在研) | 71.4(n=7) | 42.9(n=7) | 57.1(n=7) | 14.3(n=7) | 0.0(n=7) |
-| LeapBotCE (d_train=20) | — | — | — | — | — |
-| LeapBotCE (d_train=20, 110k) | — | — | — | — | — |
-| LeapBotCE (d_train=20, 200k) | — | — | — | — | — |
-| LeapBotCE (d_train=40) | — | — | — | — | — |
+| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |
+|---|---|---|---|---|---|---|
+| FastWAM | **97.4** | **74.6** | **36.4** | **11.0** | **2.2** | 39.9 |
+| OpenWAM (dual-system) | **99.6** | **87.6** | **62.2** | **31.2** | **10.4** | 580.6 |
+| LingBot-VA | 20.0(n=10) | — | 20.0(n=10) | — | 10.0(n=10) | 46.3 |
+| StarWAM-MoT | **98.0** | **74.4** | **35.2** | **13.6** | **1.0** | 39.9 |
+| StarWAM-SharedDiT | **98.2** | **73.4** | **35.4** | **8.8** | **1.2** | 39.8 |
+| Kairos † | — | — | — | — | — | — |
+| LeapBot-DualLane-V2 (在研) | 71.4(n=7) | 42.9(n=7) | 57.1(n=7) | 14.3(n=7) | 0.0(n=7) | 66.0 |
+| LeapBotCE (d_train=20) | **57.6** | **58.0** | **56.2** | **55.6** | **49.8** | 25.9 |
+| LeapBotCE (d_train=20, 110k) | **57.2** | **56.6** | **58.6** | **54.6** | **50.8** | 26.1 |
+| LeapBotCE (d_train=20, 200k) | — | — | — | — | — | — |
+| LeapBotCE (d_train=20, h200 25k) | — | — | — | — | — | — |
+| LeapBotCE (d_train=40) | — | — | — | — | — | — |
 
 加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)。`(n=k)` = 该延迟只有 k 回合（pilot/链路验证）。`—` = 该延迟尚未有结果。
+**replans/ep (D=40)** = audit 实测的每回合延迟抽样次数（策略消费一次延迟观测并提交动作记一次；来源：各仓库 results.json / audit jsonl 的 `replans` 或 `delay_samples` 计数，D=40 窗口）。`—` = 无 audit 数据。含义与跨环境警示见下方「延迟剂量披露」。
 † Kairos 在其原生基准 LIBERO-Plus (Camera Viewpoints 类目) 上评测，与其他方法的 libero_spatial 不完全可比。
 
 ### 帧延迟协议实现备注（CloudEdgeVLA 式单流全观测老化）
 
 **核心保证：所有方法的延迟均作用于完整观测流（图像 + 本体状态 + 全部模态一起老化），模拟云端部署时整包观测的网络老化；不存在只延迟图像的实现。** 每次 replan 采样一个延迟 d，取 d 步之前的完整观测 dict 交给策略。逐方法核查（代码路径相对各自仓库根目录）：
 
-| 方法 | 延迟实现 | 机制 | 采样区间 |
-|---|---|---|---|
-| FastWAM | `experiments/libero/eval_libero_delayed.py` + `experiments/libero/cloudedge_delay.py` | `history.append(obs)` 存 env 完整观测 dict → `delayed_obs` 整体传 `_predict_action_chunk`；results 标注 `delay_protocol: single_stream_full_observation` | U{1..D} |
-| StarWAM-MoT/SharedDiT | `examples/libero/rollout.py`（`history.append(obs)` → `_predict_action_chunk(obs=delayed_obs)`） | env 原始 obs 全量入 deque | U{1..D} |
-| OpenWAM (dual-system) | `benchmarks/libero/single_eval.py`（`_snapshot_observation` deep-copy 全 dict → `policy.act(delayed_obs)`，`send_state=True`） | 图像+状态全模态在延迟载荷内 | U{0..D} |
-| LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring："Delay the whole synchronized observation at every model replan" | U{0..D} |
-| LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} |
-| Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} |
-| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} |
+| 方法 | 延迟实现 | 机制 | 采样区间 | 抽样节奏 |
+|---|---|---|---|---|
+| FastWAM | `experiments/libero/eval_libero_delayed.py` + `experiments/libero/cloudedge_delay.py` | `history.append(obs)` 存 env 完整观测 dict → `delayed_obs` 整体传 `_predict_action_chunk`；results 标注 `delay_protocol: single_stream_full_observation` | U{1..D} | 每 10 控制步（chunk=10） |
+| StarWAM-MoT/SharedDiT | `examples/libero/rollout.py`（`history.append(obs)` → `_predict_action_chunk(obs=delayed_obs)`） | env 原始 obs 全量入 deque | U{1..D} | 每 10 控制步（chunk=10） |
+| OpenWAM (dual-system) | `benchmarks/libero/single_eval.py`（`_snapshot_observation` deep-copy 全 dict → `policy.act(delayed_obs)`，`send_state=True`） | 图像+状态全模态在延迟载荷内 | U{0..D} | **每控制步**（`policy.act` 每 step 采样一次；D=40 实测 579 次/ep） |
+| LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring："Delay the whole synchronized observation at every model replan" | U{0..D} | 每 10 控制步（replan=10） |
+| LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} | 每原生 chunk（一次 infer 执行整块动作，实测 ~46 次/ep） |
+| Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} | 同 OpenWAM snapshot 模式（协议复核中） |
+| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} | 每 10 控制步（replan=10） |
 
 **观测契约披露（重要）**：与上表单流全观测老化的基线不同，LeapBotCE 的延迟只作用于云端规划观测（图像+本体状态同源老化），边缘侧当前视角/本体状态保持新鲜——这是该方法的云边分工设计本身，评测如实按其原生协议执行。对比两条曲线时需注明：LeapBotCE 在延迟 D 下仍持有 D 步内新鲜的边缘观测，而基线的全观测已老化 D 步；因此 LeapBotCE 的保持率优势来自"新鲜边缘补偿"，论文引用时必须声明该契约差异（LEAPBOTCE.md 基线协议第 5 条）。
 
-**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}，replan 每 10 步。
+**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}。**抽样节奏按方法不同**（见上表「抽样节奏」列）：chunk=10 系统每 10 控制步采样一次，OpenWAM 每控制步采样一次，LingBot 按其原生 chunk——跨方法比较延迟剂量时必须把节奏一并披露。
 **审计链**：每个 trial 的 realized delay（`delay_samples`）、`delay_mean` 与 `delay_histogram` 均落盘于各自 results.json，可直接引用作论文协议证明。
+
+**延迟剂量披露（replans/ep 列）**：延迟观测的毒害剂量 ≈ 抽样次数 × 实际老化深度，`replans/ep (D=40)` 列给出前者（audit 实测）。LIBERO 各 chunk=10 系统抽样节奏与回合上限相同（每 10 控制步一抽、回台上限 400 步 → 上限 40 次/ep）；D=40 实测 FastWAM / StarWAM×2 为 39.8-39.9（几乎全失败 → 回合跑满）而 LeapBotCE 为 25.9-26.1（成功率过半 → 成功回合提前收尾）——同节奏下这一剂量差异是成功率的**结果**而非原因，解读时方向别搞反。OpenWAM 是真正的例外：其 `policy.act` 每控制步抽样一次（D=40 实测 ~581 次/ep，剂量最高）却最鲁棒——双系统快环在慢规划之间持续提供新鲜执行信号，是架构补偿而非低剂量；说明剂量是必要披露维度但非唯一变量。跨环境对比时节奏与剂量必须一并披露：RoboTwin 泳道 Fast-WAM 官方默认 24 步 replan（实测 16.5 次/ep，仅为 LIBERO 泳道节奏的四成）、AHA-WAM 逐步 replan（实测 ~450 次/ep，27×），详见 `baseline_results_robotwin.md` 的「Fast-WAM 曲线为何远好于 LIBERO 泳道」归因小节。
 
 - **FastWAM**: n 按延迟取最多回合的来源：{0: (500, 'libero_spatial (+50t-20260919)'), 5: (500, 'libero_spatial (+50t-20260919)'), 10: (500, 'libero_spatial (+50t-20260919)'), 20: (500, 'libero_spatial (+50t-20260919)'), 40: (500, 'libero_spatial (+50t-20260919)')}；来源运行：libero_spatial (+50t-20260919)
 - **OpenWAM (dual-system)**: n 按延迟取最多回合的来源：{0: (500, 'libero-spatial-50t-20260919'), 10: (500, 'libero-spatial-50t-20260919'), 20: (500, 'libero-spatial-50t-20260919'), 40: (500, 'libero-spatial-50t-20260919'), 5: (500, 'libero-spatial-50t-20260919')}；来源运行：libero-spatial-50t-20260919
@@ -69,52 +73,69 @@
 - **StarWAM-MoT**: n 按延迟取最多回合的来源：{0: (500, 'libero-spatial-mot-50t-20260919'), 10: (500, 'libero-spatial-mot-50t-20260919'), 20: (500, 'libero-spatial-mot-50t-20260919'), 40: (500, 'libero-spatial-mot-50t-20260919'), 5: (500, 'libero-spatial-mot-50t-20260919')}；来源运行：libero-spatial-mot-50t-20260919
 - **StarWAM-SharedDiT**: n 按延迟取最多回合的来源：{0: (500, 'libero-spatial-sharedit-50t-20260919'), 10: (500, 'libero-spatial-sharedit-50t-20260919'), 20: (500, 'libero-spatial-sharedit-50t-20260919'), 40: (500, 'libero-spatial-sharedit-50t-20260919'), 5: (500, 'libero-spatial-sharedit-50t-20260919')}；来源运行：libero-spatial-sharedit-50t-20260919
 - **LeapBot-DualLane-V2 (在研)**: n 按延迟取最多回合的来源：{0: (7, 'lb-dual-full-20260919'), 10: (7, 'lb-dual-full-20260919'), 20: (7, 'lb-dual-full-20260919'), 40: (7, 'lb-dual-full-20260919'), 5: (7, 'lb-dual-full-20260919')}；来源运行：lb-dual-full-20260919
+- **LeapBotCE (d_train=20)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20'), 5: (500, 'dtrain20'), 10: (500, 'dtrain20'), 20: (500, 'dtrain20'), 40: (500, 'dtrain20')}；来源运行：dtrain20
+- **LeapBotCE (d_train=20, 110k)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20_seed42_110k'), 5: (500, 'dtrain20_seed42_110k'), 10: (500, 'dtrain20_seed42_110k'), 20: (500, 'dtrain20_seed42_110k'), 40: (500, 'dtrain20_seed42_110k')}；来源运行：dtrain20_seed42_110k
 
 
 ## LIBERO-object（帧延迟扫描，同协议：delay_seed=1234，replan=10，D∈{0,5,10,20,40}）
 
-| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |
-|---|---|---|---|---|---|
-| FastWAM | **99.4** | **91.0** | **43.8** | **2.6** | **0.0** |
-| OpenWAM (dual-system) | **99.8** | **97.2** | **91.2** | **64.2** | **10.6** |
-| StarWAM-MoT | **99.0** | **92.0** | **49.0** | **7.4** | **0.0** |
-| StarWAM-SharedDiT | **99.8** | **92.8** | **71.0** | **24.8** | **0.2** |
+| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |
+|---|---|---|---|---|---|---|
+| FastWAM | **99.4** | **91.0** | **43.8** | **2.6** | **0.0** | 40.0 |
+| OpenWAM (dual-system) | **99.8** | **97.2** | **91.2** | **64.2** | **10.6** | 586.3 |
+| StarWAM-MoT | **99.0** | **92.0** | **49.0** | **7.4** | **0.0** | — |
+| StarWAM-SharedDiT | **99.8** | **92.8** | **71.0** | **24.8** | **0.2** | 40.0 |
+| LeapBotCE (d_train=20) | **89.0** | **88.2** | **88.8** | **89.8** | **89.0** | 18.0 |
+| LeapBotCE (d_train=20, 110k) | **81.8** | **78.8** | **79.0** | **74.6** | **69.2** | 23.3 |
 
 加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)；`(n=k)` = 该延迟只有 k 回合（进行中/pilot）。
+replans/ep (D=40) = audit 实测的每回合延迟抽样次数（延迟观测消费次数），含义见主表下方披露；`—` = 该模型 D=40 无 audit 数据。
 - **FastWAM**: n 按延迟取最多回合的来源：{0: (500, '50t-20260919'), 10: (500, '50t-20260919'), 20: (500, '50t-20260919'), 40: (500, '50t-20260919'), 5: (500, '50t-20260919')}；来源运行：50t-20260919
 - **OpenWAM (dual-system)**: n 按延迟取最多回合的来源：{0: (500, 'libero-object-50t-20260920'), 10: (500, 'libero-object-50t-20260920'), 20: (500, 'libero-object-50t-20260920'), 40: (500, 'libero-object-50t-20260920'), 5: (500, 'libero-object-50t-20260920')}；来源运行：libero-object-50t-20260920
 - **StarWAM-MoT**: n 按延迟取最多回合的来源：{0: (500, 'libero-object-mot-50t-20260920'), 10: (500, 'libero-object-mot-50t-20260920'), 20: (500, 'libero-object-mot-50t-20260920'), 40: (500, 'libero-object-mot-50t-20260920'), 5: (500, 'libero-object-mot-50t-20260920')}；来源运行：libero-object-mot-50t-20260920
 - **StarWAM-SharedDiT**: n 按延迟取最多回合的来源：{0: (500, 'libero-object-sharedit-50t-20260920'), 10: (500, 'libero-object-sharedit-50t-20260920'), 20: (500, 'libero-object-sharedit-50t-20260920'), 40: (500, 'libero-object-sharedit-50t-20260920'), 5: (500, 'libero-object-sharedit-50t-20260920')}；来源运行：libero-object-sharedit-50t-20260920
+- **LeapBotCE (d_train=20)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20'), 5: (500, 'dtrain20'), 10: (500, 'dtrain20'), 20: (500, 'dtrain20'), 40: (500, 'dtrain20')}；来源运行：dtrain20
+- **LeapBotCE (d_train=20, 110k)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20_seed42_110k'), 5: (500, 'dtrain20_seed42_110k'), 10: (500, 'dtrain20_seed42_110k'), 20: (500, 'dtrain20_seed42_110k'), 40: (500, 'dtrain20_seed42_110k')}；来源运行：dtrain20_seed42_110k
 
 ## LIBERO-goal（帧延迟扫描，同协议：delay_seed=1234，replan=10，D∈{0,5,10,20,40}）
 
-| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |
-|---|---|---|---|---|---|
-| FastWAM | **97.2** | **86.0** | **61.6** | **29.2** | **8.2** |
-| OpenWAM (dual-system) | **98.8** | **92.6** | **81.4** | **56.4** | **26.0** |
-| StarWAM-MoT | **98.4** | **83.0** | **56.2** | **31.2** | **9.8** |
-| StarWAM-SharedDiT | **98.2** | **85.2** | **63.0** | **36.0** | **11.2** |
+| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |
+|---|---|---|---|---|---|---|
+| FastWAM | **97.2** | **86.0** | **61.6** | **29.2** | **8.2** | 38.7 |
+| OpenWAM (dual-system) | **98.8** | **92.6** | **81.4** | **56.4** | **26.0** | 519.6 |
+| StarWAM-MoT | **98.4** | **83.0** | **56.2** | **31.2** | **9.8** | 38.7 |
+| StarWAM-SharedDiT | **98.2** | **85.2** | **63.0** | **36.0** | **11.2** | 38.0 |
+| LeapBotCE (d_train=20) | **44.0** | **40.8** | **40.2** | **39.0** | **35.6** | 31.8 |
+| LeapBotCE (d_train=20, 110k) | **46.8** | **48.2** | **45.4** | **43.6** | **38.6** | 30.0 |
 
 加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)；`(n=k)` = 该延迟只有 k 回合（进行中/pilot）。
+replans/ep (D=40) = audit 实测的每回合延迟抽样次数（延迟观测消费次数），含义见主表下方披露；`—` = 该模型 D=40 无 audit 数据。
 - **FastWAM**: n 按延迟取最多回合的来源：{0: (500, '50t-20260919'), 10: (500, '50t-20260919'), 20: (500, '50t-20260919'), 40: (500, '50t-20260919'), 5: (500, '50t-20260919')}；来源运行：50t-20260919
 - **OpenWAM (dual-system)**: n 按延迟取最多回合的来源：{0: (500, 'libero-goal-50t-20260920'), 10: (500, 'libero-goal-50t-20260920'), 20: (500, 'libero-goal-50t-20260920'), 40: (500, 'libero-goal-50t-20260920'), 5: (500, 'libero-goal-50t-20260920')}；来源运行：libero-goal-50t-20260920
 - **StarWAM-MoT**: n 按延迟取最多回合的来源：{0: (500, 'libero-goal-mot-50t-20260920'), 10: (500, 'libero-goal-mot-50t-20260920'), 20: (500, 'libero-goal-mot-50t-20260920'), 40: (500, 'libero-goal-mot-50t-20260920'), 5: (500, 'libero-goal-mot-50t-20260920')}；来源运行：libero-goal-mot-50t-20260920
 - **StarWAM-SharedDiT**: n 按延迟取最多回合的来源：{0: (500, 'libero-goal-sharedit-50t-20260920'), 10: (500, 'libero-goal-sharedit-50t-20260920'), 20: (500, 'libero-goal-sharedit-50t-20260920'), 40: (500, 'libero-goal-sharedit-50t-20260920'), 5: (500, 'libero-goal-sharedit-50t-20260920')}；来源运行：libero-goal-sharedit-50t-20260920
+- **LeapBotCE (d_train=20)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20'), 5: (500, 'dtrain20'), 10: (500, 'dtrain20'), 20: (500, 'dtrain20'), 40: (500, 'dtrain20')}；来源运行：dtrain20
+- **LeapBotCE (d_train=20, 110k)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20_seed42_110k'), 5: (500, 'dtrain20_seed42_110k'), 10: (500, 'dtrain20_seed42_110k'), 20: (500, 'dtrain20_seed42_110k'), 40: (500, 'dtrain20_seed42_110k')}；来源运行：dtrain20_seed42_110k
 
 ## LIBERO-10（帧延迟扫描，同协议：delay_seed=1234，replan=10，D∈{0,5,10,20,40}）
 
-| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |
-|---|---|---|---|---|---|
-| FastWAM | **94.4** | **75.6** | **36.8** | **7.4** | **0.4** |
-| OpenWAM (dual-system) | **98.6** | **91.2** | **73.6** | **34.6** | **6.4** |
-| StarWAM-MoT | **94.0** | **79.0** | **41.4** | **8.4** | **0.8** |
-| StarWAM-SharedDiT | **97.0** | **80.0** | **55.0** | **12.2** | **1.0** |
+| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |
+|---|---|---|---|---|---|---|
+| FastWAM | **94.4** | **75.6** | **36.8** | **7.4** | **0.4** | 69.9 |
+| OpenWAM (dual-system) | **98.6** | **91.2** | **73.6** | **34.6** | **6.4** | 689.3 |
+| StarWAM-MoT | **94.0** | **79.0** | **41.4** | **8.4** | **0.8** | 69.9 |
+| StarWAM-SharedDiT | **97.0** | **80.0** | **55.0** | **12.2** | **1.0** | 69.8 |
+| LeapBotCE (d_train=20) | 39.8(n=450) | **35.8** | 40.0(n=450) | 40.2(n=450) | 35.1(n=450) | 57.1 |
+| LeapBotCE (d_train=20, 110k) | **74.0** | **64.2** | **69.8** | **65.0** | **62.4** | 45.8 |
 
 加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)；`(n=k)` = 该延迟只有 k 回合（进行中/pilot）。
+replans/ep (D=40) = audit 实测的每回合延迟抽样次数（延迟观测消费次数），含义见主表下方披露；`—` = 该模型 D=40 无 audit 数据。
 - **FastWAM**: n 按延迟取最多回合的来源：{0: (500, '50t-20260920'), 10: (500, '50t-20260920'), 20: (500, '50t-20260920'), 40: (500, '50t-20260920'), 5: (500, '50t-20260920')}；来源运行：50t-20260920
 - **OpenWAM (dual-system)**: n 按延迟取最多回合的来源：{0: (500, 'libero_10-50t-20260920'), 10: (500, 'libero_10-50t-20260920'), 20: (500, 'libero_10-50t-20260920'), 40: (500, 'libero_10-50t-20260920'), 5: (500, 'libero_10-50t-20260920')}；来源运行：libero_10-50t-20260920
 - **StarWAM-MoT**: n 按延迟取最多回合的来源：{0: (500, 'libero_10-mot-50t-20260920'), 10: (500, 'libero_10-mot-50t-20260920'), 20: (500, 'libero_10-mot-50t-20260920'), 40: (500, 'libero_10-mot-50t-20260920'), 5: (500, 'libero_10-mot-50t-20260920')}；来源运行：libero_10-mot-50t-20260920
 - **StarWAM-SharedDiT**: n 按延迟取最多回合的来源：{0: (500, 'libero_10-sharedit-50t-20260920'), 10: (500, 'libero_10-sharedit-50t-20260920'), 20: (500, 'libero_10-sharedit-50t-20260920'), 40: (500, 'libero_10-sharedit-50t-20260920'), 5: (500, 'libero_10-sharedit-50t-20260920')}；来源运行：libero_10-sharedit-50t-20260920
+- **LeapBotCE (d_train=20)**: n 按延迟取最多回合的来源：{0: (450, 'dtrain20'), 5: (500, 'dtrain20'), 10: (450, 'dtrain20'), 20: (450, 'dtrain20'), 40: (450, 'dtrain20')}；来源运行：dtrain20
+- **LeapBotCE (d_train=20, 110k)**: n 按延迟取最多回合的来源：{0: (500, 'dtrain20_seed42_110k'), 5: (500, 'dtrain20_seed42_110k'), 10: (500, 'dtrain20_seed42_110k'), 20: (500, 'dtrain20_seed42_110k'), 40: (500, 'dtrain20_seed42_110k')}；来源运行：dtrain20_seed42_110k
 
 ## 对比曲线
 
@@ -340,6 +361,90 @@
 | 10 | 4/7 | 57.1% | 5.16 | — | 0:36, 1:26, 2:22, 3:31, 4:15 …(+6档) |
 | 20 | 1/7 | 14.3% | 11.49 | — | 0:12, 1:6, 2:19, 3:13, 5:32 …(+15档) |
 | 40 | 0/7 | 0.0% | 19.15 | — | 0:7, 1:7, 2:7, 3:21, 4:7 …(+31档) |
+
+### LeapBotCE (d_train=20)
+
+**dtrain20** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20/delay_sweep_summary.json/libero_10`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 179/450 | 39.8% | 0.00 | 24671 | 0:24671 |
+| 5 | 179/500 | 35.8% | 2.98 | 28340 | 1:5947, 2:5536, 3:5637, 4:5651, 5:5569 |
+| 10 | 180/450 | 40.0% | 5.51 | 24885 | 1:2652, 2:2433, 3:2410, 4:2544, 5:2354 …(+5档) |
+| 20 | 181/450 | 40.2% | 10.57 | 24828 | 1:1299, 2:1193, 3:1132, 4:1261, 5:1144 …(+15档) |
+| 40 | 158/450 | 35.1% | 20.48 | 25710 | 1:741, 2:538, 3:608, 4:670, 5:543 …(+35档) |
+
+**dtrain20** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20/delay_sweep_summary.json/libero_goal`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 220/500 | 44.0% | 0.00 | 14349 | 0:14349 |
+| 5 | 204/500 | 40.8% | 2.98 | 14794 | 1:3042, 2:2920, 3:2958, 4:3074, 5:2800 |
+| 10 | 201/500 | 40.2% | 5.54 | 14917 | 1:1584, 2:1424, 3:1509, 4:1503, 5:1392 …(+5档) |
+| 20 | 195/500 | 39.0% | 10.64 | 15146 | 1:771, 2:695, 3:736, 4:773, 5:680 …(+15档) |
+| 40 | 178/500 | 35.6% | 20.59 | 15892 | 1:475, 2:298, 3:358, 4:407, 5:325 …(+35档) |
+
+**dtrain20** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20/delay_sweep_summary.json/libero_object`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 445/500 | 89.0% | 0.00 | 8849 | 0:8849 |
+| 5 | 441/500 | 88.2% | 2.96 | 8869 | 1:1844, 2:1792, 3:1747, 4:1869, 5:1617 |
+| 10 | 444/500 | 88.8% | 5.53 | 8818 | 1:983, 2:852, 3:842, 4:924, 5:822 …(+5档) |
+| 20 | 449/500 | 89.8% | 10.54 | 8685 | 1:478, 2:433, 3:445, 4:457, 5:431 …(+15档) |
+| 40 | 445/500 | 89.0% | 20.46 | 8999 | 1:289, 2:176, 3:221, 4:234, 5:200 …(+35档) |
+
+**dtrain20** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20/delay_sweep_summary.json/libero_spatial`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 288/500 | 57.6% | 0.00 | 11696 | 0:11696 |
+| 5 | 290/500 | 58.0% | 2.98 | 11643 | 1:2357, 2:2343, 3:2323, 4:2422, 5:2198 |
+| 10 | 281/500 | 56.2% | 5.57 | 11900 | 1:1251, 2:1135, 3:1169, 4:1217, 5:1104 …(+5档) |
+| 20 | 278/500 | 55.6% | 10.64 | 12111 | 1:613, 2:561, 3:591, 4:642, 5:546 …(+15档) |
+| 40 | 249/500 | 49.8% | 20.48 | 12950 | 1:392, 2:241, 3:300, 4:332, 5:272 …(+35档) |
+
+### LeapBotCE (d_train=20, 110k)
+
+**dtrain20_seed42_110k** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20_seed42_110k/delay_sweep_summary.json/libero_10`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 370/500 | 74.0% | 0.00 | 19979 | 0:19979 |
+| 5 | 321/500 | 64.2% | 2.97 | 21855 | 1:4579, 2:4311, 3:4374, 4:4378, 5:4213 |
+| 10 | 349/500 | 69.8% | 5.52 | 21094 | 1:2278, 2:2021, 3:2087, 4:2178, 5:1946 …(+5档) |
+| 20 | 325/500 | 65.0% | 10.56 | 22106 | 1:1196, 2:1048, 3:1025, 4:1095, 5:1002 …(+15档) |
+| 40 | 312/500 | 62.4% | 20.49 | 22916 | 1:691, 2:456, 3:547, 4:602, 5:470 …(+35档) |
+
+**dtrain20_seed42_110k** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20_seed42_110k/delay_sweep_summary.json/libero_goal`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 234/500 | 46.8% | 0.00 | 13776 | 0:13776 |
+| 5 | 241/500 | 48.2% | 2.97 | 13574 | 1:2783, 2:2698, 3:2697, 4:2855, 5:2541 |
+| 10 | 227/500 | 45.4% | 5.56 | 13896 | 1:1486, 2:1297, 3:1361, 4:1423, 5:1294 …(+5档) |
+| 20 | 218/500 | 43.6% | 10.62 | 14205 | 1:734, 2:650, 3:680, 4:743, 5:646 …(+15档) |
+| 40 | 193/500 | 38.6% | 20.48 | 14992 | 1:448, 2:283, 3:341, 4:398, 5:310 …(+35档) |
+
+**dtrain20_seed42_110k** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20_seed42_110k/delay_sweep_summary.json/libero_object`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 409/500 | 81.8% | 0.00 | 9918 | 0:9918 |
+| 5 | 394/500 | 78.8% | 2.96 | 10201 | 1:2097, 2:2042, 3:2038, 4:2132, 5:1892 |
+| 10 | 395/500 | 79.0% | 5.56 | 10175 | 1:1109, 2:946, 3:1000, 4:1068, 5:928 …(+5档) |
+| 20 | 373/500 | 74.6% | 10.55 | 10646 | 1:570, 2:513, 3:535, 4:548, 5:487 …(+15档) |
+| 40 | 346/500 | 69.2% | 20.50 | 11634 | 1:357, 2:215, 3:274, 4:307, 5:245 …(+35档) |
+
+**dtrain20_seed42_110k** — `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/dtrain20_seed42_110k/delay_sweep_summary.json/libero_spatial`
+
+| delay | 成功/回合 | 成功率 | 实际延迟均值 | replans | 直方图(前几档) |
+|---|---|---|---|---|---|
+| 0 | 286/500 | 57.2% | 0.00 | 11989 | 0:11989 |
+| 5 | 283/500 | 56.6% | 2.98 | 12260 | 1:2493, 2:2450, 3:2416, 4:2532, 5:2369 |
+| 10 | 293/500 | 58.6% | 5.56 | 11863 | 1:1265, 2:1128, 3:1163, 4:1223, 5:1093 …(+5档) |
+| 20 | 273/500 | 54.6% | 10.63 | 12479 | 1:646, 2:562, 3:604, 4:668, 5:565 …(+15档) |
+| 40 | 254/500 | 50.8% | 20.53 | 13039 | 1:384, 2:232, 3:303, 4:329, 5:281 …(+35档) |
 
 ## GPU / 进程快照（生成时刻）
 

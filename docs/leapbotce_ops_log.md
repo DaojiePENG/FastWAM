@@ -49,6 +49,61 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（傍晚）RoboTwin 我们泳道停测决策落实（用户确认）
+- 用户决策：**LeapBot-ce RoboTwin 评测泳道停止，不再投入**（"意义不大"）。
+- 核查：该 sweep 其实**已自行跑完**——50/50 格 `.done` 齐全，最后一格
+  delay_40/stack_blocks_two 今日 12:44 收尾（lane 日志 `_cluster_logs/`）；
+  当前无进程、无 tmux/screen，无需杀任何东西，也不烧卡了。若曾有经
+  AIFlow 平台的提交，平台侧任务也已自然结束。
+- 处置：**数据保留不删**（`leapbotce/robotwin_sweep/`）；生成器 FOOTNOTES
+  加「已停止」披露 bullet，报告已重生成；行保留备查，**不入结论/论文**。
+- 判定依据（D=0 逐任务实测 `_result_clean.txt`）：总 7.4% = shake_bottle
+  一项 74% 贡献全部 37 次成功，**其余 9 任务全 0.0**（同格 Fast-WAM 99.6）；
+  42.1 replans/ep 剂量正常 → 失败是模型侧（RoboTwin CE 配方/ckpt 未就位，
+  与 LEAPBOTCE.md「RoboTwin CE 未实现」一致），非协议/审计问题。
+- 连带影响：RoboTwin 最终方案（A2 解码器 / A3 grid 的取舍原依赖消融回收）
+  的落地目标需重新定夺——LIBERO 消融三线照常等回收，但结果先只用于
+  LIBERO 结论；RoboTwin 侧除非配方就位并重训，否则不重开泳道。
+
+### 2026-10-11（午后）两份 baseline 报告 + 论文 Table 1 加「replans/ep (D=40)」列（延迟剂量）
+- 用户要求：本地总结表和论文表各加一列各模型预估 replan 次数并纳入分析。已落地
+  （列口径 = audit 实测的每回合延迟抽样次数，即策略消费一次延迟观测并提交动作记一次）。
+- **LIBERO 值**（D=40）：FastWAM 39.9 / StarWAM-MoT 39.9 / SharedDiT 39.8
+  （10 步一抽、400 步上限、几乎全失败 → 跑满）；OpenWAM **581**（`policy.act`
+  **每控制步**抽一次 —— 协议披露修正：它不是 10 步一 replan）；LingBot 46.3
+  （原生 chunk ~16 步）；LeapBotCE 25.9/26.1（同节奏，成功率高 → 成功回合提前
+  收尾；**剂量差异是成功率的结果不是原因，解读别反**）。OpenWAM 剂量最高却最
+  鲁棒 → 快环架构补偿，剂量是必要披露维度但非唯一变量。
+- **RoboTwin 值**：Fast-WAM 16.5（5.4-30.9/任务）vs AHA-WAM 450.7（147-795）
+  = 27×；X-WAM 12.9（2 任务）；我们泳道 42.1。
+- 生成器改动（两份都改，直接改 md 会被下次刷新覆盖）：LIBERO 加
+  `draws_per_ep`（replans → 直方图 → OpenWAM videos delay_samples 三级回退，
+  按 max_delay_steps 过滤）+ 机制表「抽样节奏」列 + 「延迟剂量披露」段；
+  修 `parse_leapbotce_sweep` suite/全量 replans 口径 bug（虚高 4×，127→26）；
+  RoboTwin 加三类 audit 解析（flat/samples/aha）。归因小节已并入生成器
+  FOOTNOTES（重生成不再丢）。
+- 论文 `sec/4_experiments.tex`：tab:audit 加 draws/ep 列 + caption 定义；
+  Mechanism 段加剂量分析（chunk 系统同剂量 → 差异在模型侧；OpenWAM 581 次/ep
+  最鲁棒 → 快环效应）；Confounds 段加跨基准节奏披露（RoboTwin Fast-WAM 24 步
+  replan = LIBERO 泳道 2.4× 低暴露；AHA 逐步）。pdflatex 编译通过。
+- ⚠️ 顺带发现：重生成后**我们自己的 RoboTwin 泳道行浮出**（之前 10-05 生成时无
+  数据），D=0 仅 7.4%（shake_bottle 74，其余任务全 0），42 replans/ep ——
+  该泳道质量有问题，RoboTwin 正式方案前需排查（疑似 ckpt/配方未就位，与
+  LEAPBOTCE.md「RoboTwin CE 未实现」一致）。
+
+### 2026-10-11（下午）RoboTwin Fast-WAM 曲线反常性归因完成（延迟审计复核）
+- 用户问：Fast-WAM RoboTwin 只掉 18 点，LIBERO 同款官方 ckpt 掉 95 点，是否反常。
+  **结论：两组数字都真，差异来自延迟暴露剂量不可比**（详见
+  `baseline_results_robotwin.md` 新增归因小节）。
+- 核心证据链：① RoboTwin 官方默认 replan=24 步 vs LIBERO 泳道 replan=10，
+  实测 stale 规划 16.5 vs ~40 次/ep，暴露剂量差 2.4×；② 同环境 AHA 几乎逐步
+  replan（147-795 次/ep）同 mean≈19 帧延迟掉 -49 → 环境本身延迟敏感，
+  Fast-WAM 的 -18 是暴露被 chunk 压低的结果；③ per-task replans/ep 与掉点
+  排序两方法都几乎一致；④ 3/10 准静态任务（click/shake/grab）任意暴露都
+  不掉，托住均值，LIBERO 无此类任务。
+- 待用户定夺：是否补 RoboTwin Fast-WAM `replan_steps=10` 对照格（D=40 一格
+  ~500 eps）直接量化协议敏感性；论文表述按归因小节口径写。
+
 ### 2026-10-11（中午）codec 消融三线配置就绪；200k 线今天收尾
 - **在跑**：200k 续训 11:52 实测 step 198,150/200,000（eta ~23min，speed 1.33 step/s，
   lr 已退火到 1.0e-06），预计 ~12:15 落盘 step_200000。10-10 17:07 那次提交

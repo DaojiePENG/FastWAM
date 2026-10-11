@@ -269,7 +269,10 @@ def parse_leapbotce_sweep(path):
         d = w.get("delay_max")
         if d is None:
             continue
-        agg = defaultdict(lambda: [0, 0, defaultdict(int), []])
+        # a[4] 累加每个任务自己的 replans（=该任务 delay_samples 长度）。
+        # 不能用窗口级 w["replans"]（全四套件总数）除以单套件 total —— 会虚高
+        # ~4×（10-11 实测 127/ep vs 任务文件实际 ~26/ep）。
+        agg = defaultdict(lambda: [0, 0, defaultdict(int), [], 0])
         for t in w.get("tasks", []):
             suite = str(t.get("task_suite", "")).removeprefix("libero_")
             if suite not in SUITES:
@@ -282,10 +285,13 @@ def parse_leapbotce_sweep(path):
             m = t.get("actual_delay_mean")
             if isinstance(m, (int, float)):
                 a[3].append((m, max(int(t.get("total", 0)), 1)))
-        for suite, (s, tot, hist, means) in agg.items():
+            r = t.get("replans")
+            if isinstance(r, (int, float)):
+                a[4] += int(r)
+        for suite, (s, tot, hist, means, replans) in agg.items():
             md = (sum(m * wgt for m, wgt in means) / sum(wgt for _, wgt in means)
                   if means else None)
-            by_suite[suite][d] = _row(s, tot, md, w.get("replans"), dict(hist))
+            by_suite[suite][d] = _row(s, tot, md, replans or None, dict(hist))
     return by_suite
 
 
@@ -575,6 +581,52 @@ def merge_per_delay(run_list):
     return merged
 
 
+def draws_per_ep(row, path=None, delay=40):
+    """Measured delayed-observation draws per episode for one merged row.
+
+    延迟剂量 = 每回合策略消费延迟观测（并据其提交动作）的次数。优先级：
+    sweep 汇总的 ``replans`` 总数 / 回合数 → 直方图质量 / 回合数 →
+    （OpenWAM 布局）videos/**/results.json 的 delay_samples 总数 / trial 数
+    （按文件头 max_delay_steps 过滤到目标延迟窗）。返回 None 表示无 audit。
+    """
+    total = row["total"]
+    if not total:
+        return None
+    if row["replans"] is not None:
+        return row["replans"] / total
+    hist = row["hist"]
+    if hist:
+        return sum(hist.values()) / total
+    if path:
+        draws = trials = 0
+        # OpenWAM 布局: 汇总行路径可能是 run 根（videos 在 delay_X/videos 下）
+        # 或直接是 delay_X 目录（videos 紧邻其下）—— 两层都扫；不过滤延迟窗
+        # 会把 5 个窗口混算（10-11 实测 579→352），以文件头 max_delay_steps 为准。
+        patterns = [os.path.join(path, "videos", "**", "results.json"),
+                    os.path.join(path, "delay_*", "videos", "**", "results.json")]
+        seen = set()
+        for pat in patterns:
+            for rp in glob.glob(pat, recursive=True):
+                if rp in seen:
+                    continue
+                seen.add(rp)
+                try:
+                    j = json.load(open(rp))
+                except Exception:
+                    continue
+                samples = j.get("delay_samples")
+                if not isinstance(samples, list) or not samples:
+                    continue
+                if int(j.get("max_delay_steps") or -1) != int(delay):
+                    continue
+                draws += len(samples)
+                trs = j.get("trials")
+                trials += len(trs) if isinstance(trs, list) else int(trs or 0)
+        if trials:
+            return draws / trials
+    return None
+
+
 def make_figure(curves):
     """curves: {display_name: {delay: rate_percent}} -> PNG or None."""
     try:
@@ -668,8 +720,8 @@ def render(runs):
     ap("| FastWAM | 50 | num_inference_steps=10, replan=10 | 官方 release ckpt (libero_uncond_2cam224) |")
     ap("| StarWAM-MoT | 50 | inference=8, action=8, replan=10, wait=10 | 官方 recipe starwam_libero_mot_wan22_5b |")
     ap("| StarWAM-SharedDiT | 50 | inference=16, action=16, replan=10 | 官方 recipe shared_dit_wan22_5b |")
-    ap("| LingBot-VA | 50 | 官方 libero server 配置 | server+client 官方流程 |")
-    ap("| OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical |")
+    ap("| LingBot-VA | 50 | 官方 libero server 配置 | server+client 官方流程；延迟按其原生 chunk 抽样（~46 次/ep） |")
+    ap("| OpenWAM (dual-system) | 50 | eef native action, seed42 settle30 协议 | scheduler canonical；延迟每控制步抽样（579 次/ep @D=40） |")
     ap("| Kairos † | LIBERO-Plus 类目协议 | external WAM adapter (DiT 4B+Qwen2.5-VL-7B) | Camera Viewpoints 60 任务子集×1 trial（全类目 1599） |")
     ap("| LeapBot-DualLane-V2 (在研) | 50 | inference=20, replan=10, wait=30 | dual-lane 双流在研模型 |")
     ap("| LeapBotCE (d_train=20) | 50 | inference=10, replan=10, wait=30 | 本仓库训练，全 LIBERO 四套件 50k 步，seed=1234 |")
@@ -688,8 +740,8 @@ def render(runs):
     ap("")
     ap("**LIBERO-spatial，按帧延迟扫描。单元格 = 成功率 (%)；每格数据取该延迟下回合数最多的运行（n 标注见下）**")
     ap("")
-    ap("| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |")
-    ap("|---|---|---|---|---|---|")
+    ap("| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |")
+    ap("|---|---|---|---|---|---|---|")
 
     def render_suite(suite, keep_empty):
         """Emit table rows for one task suite; returns (curves, merge_notes).
@@ -702,7 +754,7 @@ def render(runs):
                         if suite_of(x[2]) == suite]
             if not run_list:
                 if keep_empty:
-                    ap(f"| {display} | — | — | — | — | — |")
+                    ap(f"| {display} | — | — | — | — | — | — |")
                     notes.append((display, "（暂无结果）"))
                 continue
             merged = merge_per_delay(run_list)
@@ -723,6 +775,10 @@ def render(runs):
                     pts[d] = rate
                 else:
                     cells.append("—")
+            # 延迟剂量列：D=40 下 audit 实测的每回合延迟抽样次数
+            r40 = merged.get(40)
+            rpe = draws_per_ep(r40[0], r40[2], delay=40) if r40 else None
+            cells.append(f"{rpe:.1f}" if rpe is not None else "—")
             ap(f"| {display} | " + " | ".join(cells) + " |")
             suite_curves[display] = pts
             # footnote: per-delay (n, source)
@@ -734,26 +790,29 @@ def render(runs):
     curves, merge_notes = render_suite("spatial", keep_empty=True)
     ap("")
     ap("加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)。`(n=k)` = 该延迟只有 k 回合（pilot/链路验证）。`—` = 该延迟尚未有结果。")
+    ap("**replans/ep (D=40)** = audit 实测的每回合延迟抽样次数（策略消费一次延迟观测并提交动作记一次；来源：各仓库 results.json / audit jsonl 的 `replans` 或 `delay_samples` 计数，D=40 窗口）。`—` = 无 audit 数据。含义与跨环境警示见下方「延迟剂量披露」。")
     ap("† Kairos 在其原生基准 LIBERO-Plus (Camera Viewpoints 类目) 上评测，与其他方法的 libero_spatial 不完全可比。")
     ap("")
     ap("### 帧延迟协议实现备注（CloudEdgeVLA 式单流全观测老化）")
     ap("")
     ap("**核心保证：所有方法的延迟均作用于完整观测流（图像 + 本体状态 + 全部模态一起老化），模拟云端部署时整包观测的网络老化；不存在只延迟图像的实现。** 每次 replan 采样一个延迟 d，取 d 步之前的完整观测 dict 交给策略。逐方法核查（代码路径相对各自仓库根目录）：")
     ap("")
-    ap("| 方法 | 延迟实现 | 机制 | 采样区间 |")
-    ap("|---|---|---|---|")
-    ap("| FastWAM | `experiments/libero/eval_libero_delayed.py` + `experiments/libero/cloudedge_delay.py` | `history.append(obs)` 存 env 完整观测 dict → `delayed_obs` 整体传 `_predict_action_chunk`；results 标注 `delay_protocol: single_stream_full_observation` | U{1..D} |")
-    ap("| StarWAM-MoT/SharedDiT | `examples/libero/rollout.py`（`history.append(obs)` → `_predict_action_chunk(obs=delayed_obs)`） | env 原始 obs 全量入 deque | U{1..D} |")
-    ap("| OpenWAM (dual-system) | `benchmarks/libero/single_eval.py`（`_snapshot_observation` deep-copy 全 dict → `policy.act(delayed_obs)`，`send_state=True`） | 图像+状态全模态在延迟载荷内 | U{0..D} |")
-    ap("| LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring：\"Delay the whole synchronized observation at every model replan\" | U{0..D} |")
-    ap("| LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} |")
-    ap("| Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} |")
-    ap("| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} |")
+    ap("| 方法 | 延迟实现 | 机制 | 采样区间 | 抽样节奏 |")
+    ap("|---|---|---|---|---|")
+    ap("| FastWAM | `experiments/libero/eval_libero_delayed.py` + `experiments/libero/cloudedge_delay.py` | `history.append(obs)` 存 env 完整观测 dict → `delayed_obs` 整体传 `_predict_action_chunk`；results 标注 `delay_protocol: single_stream_full_observation` | U{1..D} | 每 10 控制步（chunk=10） |")
+    ap("| StarWAM-MoT/SharedDiT | `examples/libero/rollout.py`（`history.append(obs)` → `_predict_action_chunk(obs=delayed_obs)`） | env 原始 obs 全量入 deque | U{1..D} | 每 10 控制步（chunk=10） |")
+    ap("| OpenWAM (dual-system) | `benchmarks/libero/single_eval.py`（`_snapshot_observation` deep-copy 全 dict → `policy.act(delayed_obs)`，`send_state=True`） | 图像+状态全模态在延迟载荷内 | U{0..D} | **每控制步**（`policy.act` 每 step 采样一次；D=40 实测 579 次/ep） |")
+    ap("| LeapBot-DualLane-V2 | `experiments/liberoplus/eval_liberoplus_dual_lane_fixed.py`（env wrapper 每次 step `copy.deepcopy(obs)` 入史，replan 时整体替换） | docstring：\"Delay the whole synchronized observation at every model replan\" | U{0..D} | 每 10 控制步（replan=10） |")
+    ap("| LingBot-VA | `evaluation/libero/client_delay.py`（`deque([obs])` → `model.infer(dict(obs=delayed_obs, prompt))`） | 完整观测上送 | U{1..D} | 每原生 chunk（一次 infer 执行整块动作，实测 ~46 次/ep） |")
+    ap("| Kairos | `benchmarks/libero_plus/kairos_wam/experiments/libero/eval_libero_single.py`（同 OpenWAM snapshot 模式 → `_predict_action_chunk(obs=model_obs)`） | 全 dict 深拷贝入史 | U{0..D} | 同 OpenWAM snapshot 模式（协议复核中） |")
+    ap("| LeapBotCE | `experiments/libero/eval_libero_cloudedge.py` + `experiments/libero/cloudedge_delay.py` | **云端/边缘分流协议（方法原生设计）**：仅云端流老化——cloud 相机拼接图 + cloud 本体状态取自同一 t-d 历史条目，经冻结 Wan 编码为规划 KV；边缘当前双视角（SigLIP）与当前本体状态始终新鲜，仅在 ActionDiT 注入 | U{1..min(D,h)} | 每 10 控制步（replan=10） |")
     ap("")
     ap("**观测契约披露（重要）**：与上表单流全观测老化的基线不同，LeapBotCE 的延迟只作用于云端规划观测（图像+本体状态同源老化），边缘侧当前视角/本体状态保持新鲜——这是该方法的云边分工设计本身，评测如实按其原生协议执行。对比两条曲线时需注明：LeapBotCE 在延迟 D 下仍持有 D 步内新鲜的边缘观测，而基线的全观测已老化 D 步；因此 LeapBotCE 的保持率优势来自\"新鲜边缘补偿\"，论文引用时必须声明该契约差异（LEAPBOTCE.md 基线协议第 5 条）。")
     ap("")
-    ap("**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}，replan 每 10 步。")
+    ap("**采样区间披露**：OpenWAM / LeapBot / Kairos 为 U{0..D}（采到 0 = 本次 replan 用即时观测）；FastWAM / StarWAM / LingBot / LeapBotCE 为 U{1..D}（每次 replan 至少老化 1 步；LeapBotCE 的上限为 min(D, 已有历史)，回合初期历史不足时回退当前帧）。D≥5 时两种区间均值差 <0.5 步，不影响方向性结论；论文按上表如实标注即可。公共参数：`delay_seed=1234`（LeapBotCE 以 cfg.seed=1234 为延迟/动作 RNG 基），D ∈ {0,5,10,20,40}。**抽样节奏按方法不同**（见上表「抽样节奏」列）：chunk=10 系统每 10 控制步采样一次，OpenWAM 每控制步采样一次，LingBot 按其原生 chunk——跨方法比较延迟剂量时必须把节奏一并披露。")
     ap("**审计链**：每个 trial 的 realized delay（`delay_samples`）、`delay_mean` 与 `delay_histogram` 均落盘于各自 results.json，可直接引用作论文协议证明。")
+    ap("")
+    ap("**延迟剂量披露（replans/ep 列）**：延迟观测的毒害剂量 ≈ 抽样次数 × 实际老化深度，`replans/ep (D=40)` 列给出前者（audit 实测）。LIBERO 各 chunk=10 系统抽样节奏与回合上限相同（每 10 控制步一抽、回台上限 400 步 → 上限 40 次/ep）；D=40 实测 FastWAM / StarWAM×2 为 39.8-39.9（几乎全失败 → 回合跑满）而 LeapBotCE 为 25.9-26.1（成功率过半 → 成功回合提前收尾）——同节奏下这一剂量差异是成功率的**结果**而非原因，解读时方向别搞反。OpenWAM 是真正的例外：其 `policy.act` 每控制步抽样一次（D=40 实测 ~581 次/ep，剂量最高）却最鲁棒——双系统快环在慢规划之间持续提供新鲜执行信号，是架构补偿而非低剂量；说明剂量是必要披露维度但非唯一变量。跨环境对比时节奏与剂量必须一并披露：RoboTwin 泳道 Fast-WAM 官方默认 24 步 replan（实测 16.5 次/ep，仅为 LIBERO 泳道节奏的四成）、AHA-WAM 逐步 replan（实测 ~450 次/ep，27×），详见 `baseline_results_robotwin.md` 的「Fast-WAM 曲线为何远好于 LIBERO 泳道」归因小节。")
     ap("")
 
     for display, note in merge_notes:
@@ -771,11 +830,12 @@ def render(runs):
         ap("")
         ap(f"## {_suite_titles[suite]}（帧延迟扫描，同协议：delay_seed=1234，replan=10，D∈{{0,5,10,20,40}}）")
         ap("")
-        ap("| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 |")
-        ap("|---|---|---|---|---|---|")
+        ap("| 方法 | 延迟 0 | 延迟 5 | 延迟 10 | 延迟 20 | 延迟 40 | replans/ep (D=40) |")
+        ap("|---|---|---|---|---|---|---|")
         _, suite_notes = render_suite(suite, keep_empty=False)
         ap("")
         ap("加粗 = 论文标准规模 (n=500/延迟，即 10 任务×50 trials)；`(n=k)` = 该延迟只有 k 回合（进行中/pilot）。")
+        ap("replans/ep (D=40) = audit 实测的每回合延迟抽样次数（延迟观测消费次数），含义见主表下方披露；`—` = 该模型 D=40 无 audit 数据。")
         for display, note in suite_notes:
             ap(f"- **{display}**: {note}")
     ap("")
