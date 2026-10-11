@@ -49,6 +49,31 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（晚）论文重构至 codec 主线 + 真机时延节（LeapBotCEPaper 9f4a75a）
+- **题目**改为 "LeapBot-CE: Planning-Token Codec for Delay-Robust Cloud-Edge
+  Manipulation with Frozen World Models"。主线 = CloudPlanningCodec（z 载荷
+  56×3072 ≈ **0.34MB bf16**，对 36MB 全 cache ~105×；`~52×` 是 LEAPBOTCE.md 里
+  fp32 z 对 bf16 cache 的混精度口径，论文里统一按同精度算）+ edge select 前缀
+  （2 views × 5 token = 10 token，EdgePrefixProjector 768→3072 带逐层 scale）。
+- **方法章重写**：新增 "Cloud Planning Codec" 小节（eq:codec 空间池化→深度
+  softmax 混合→瓶颈 MLP；eq:edgekv 边缘广播 + 逐层 scale，可选 rank-256 低秩
+  K/V 解码器）；原 "Optional Cloud KV Adapter" 小节删除并入 codec（eq:adapter
+  已删，全仓无悬空引用）；Edge Grounding 小节从 pooled 单 4096-d token 改为
+  select 前缀（eq:edgeseq 序列 = [plan 56 | edge 10 | action 32]）。
+- **实验章**：110k sweep 数字显式标注为 uncompressed-interface（A0）配置；
+  消融表重构为两块（接口块 A0→A4 + 训练块）；带宽段重写（codec 载荷数学 +
+  对比 CEVLA 1.8MB）；**新增 Sec 4.6 真机部署节**：Franka + 云 4090D-48GB +
+  边缘 RTX 5080（暂定），加 RTT {0,400,1000}ms 沿 CEVLA 协议；表 5（成功率）
+  表 6（时延分解：云 VAE+prefill / codec / 上行 0.34MB / 边缘 SigLIP+prefix /
+  10 步去噪，mean/p50/p95）全占位 + 预期论述（0.34MB ≈ 2.7ms@1Gbps /
+  28ms@100Mbps vs 36MB 的 288ms/2.9s → codec 是 WLAN 级链路可部署前提；云侧
+  预期 10^2 ms 量级被 10 步 chunk 摊销；边缘 10 ms 量级永不等云）。
+- 摘要/引言/相关工作/结论同步改口径；补充材料 codec 节替换原 adapter 节，
+  两处跨文档 \cref 悬空引用改为字面节号（独立编译本来就解析不到主文 label）。
+- 编译验证：main.pdf 11 页、X_suppl.pdf 4 页、0 未定义引用（8 页限制是终稿
+  事，todo 红字清除后再压）。PAPER_TODO.md 已同步（表 3 新计划、表 5/6 数据
+  准备指引、fig2 草图标过时）。
+
 ### 2026-10-11（下午）codec 消融评测链路调通（本地卡 4,5 冒烟 a1/a2/a3 全过）
 - 背景：三条消融训练在跑（~0.2 step/s，首个 ckpt save_every=8317 预计当晚
   落盘），趁等待把评测代码和 AIFlow 启动脚本先调通。三个 run 都还没有
