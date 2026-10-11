@@ -67,6 +67,8 @@
 #                        (default 0 on cluster nodes: the report writes into
 #                        the platform's userPath copy, not the shared tree)
 #   FASTWAM_EVAL_PYTHON  override python (env_2653853.sh's leapbot-va conda env)
+#   LIBERO_EVAL_EXTRA    extra hydra overrides appended to the manager command
+#                        (e.g. A4 ablation: model.cloudedge.edge_prefix_enabled=false)
 #
 # GPU discovery order (same as the RoboTwin driver):
 #   $1 CSV → $CUDA_VISIBLE_DEVICES (platform-assigned; card refs stay
@@ -235,6 +237,12 @@ MANAGER_ARGS=(
   EVALUATION.num_steps_wait=30
   EVALUATION.max_episode_steps=null
 )
+# Optional eval-time hydra overrides (space-separated), e.g. the A4 ablation:
+#   LIBERO_EVAL_EXTRA="model.cloudedge.edge_prefix_enabled=false"
+# (set -u safe on bash 4.2: guard idiom avoids expanding an empty array)
+EVAL_EXTRA=()
+[[ -n "${LIBERO_EVAL_EXTRA:-}" ]] && IFS=' ' read -ra EVAL_EXTRA <<< "${LIBERO_EVAL_EXTRA}"
+MANAGER_ARGS+=(${EVAL_EXTRA[@]+"${EVAL_EXTRA[@]}"})
 
 PACK="${LIBERO_LIBERO_PACK:-0}"
 if (( PACK < 1 )); then
