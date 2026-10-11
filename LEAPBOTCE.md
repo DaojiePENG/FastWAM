@@ -202,6 +202,15 @@ RoboTwin's token grid is 12x10, so its recipe must override
 are stored in checkpoints and restored by `load_checkpoint` (a mode mismatch
 raises); `experiments/libero/eval_libero_cloudedge.py` needs no changes.
 
+Cluster submissions go through the AIFlow dispatcher variants
+(`leapbot_ce_libero_a1_codec` / `_a2_decoder` / `_a3_grid` task names ->
+`AIFlow_config_libero_a{1,2,3}_*.py`). Each pins 4xH200 with bs16 x accum2 =
+effective batch 128, lr 2.8e-4, 24951 steps — identical dynamics to the A0
+h200 baseline (~3.7 s/step measured on 8xH200); expect ~2.1 days per run at
+4 cards, or ~1.1 days at 8 cards with `AI_FLOW_ACCUM=1`. A4 reuses the A1
+checkpoint at eval time with `LIBERO_EVAL_EXTRA="model.cloudedge.
+edge_prefix_enabled=false"` under a separate tag.
+
 ## LIBERO Delay Evaluation
 
 The cloud path receives a temporally consistent delayed observation: both
