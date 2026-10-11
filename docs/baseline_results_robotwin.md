@@ -1,6 +1,6 @@
 # RoboTwin 2.0 帧延迟基线 (CloudEdgeVLA 协议)
 
-*更新: 2026-10-11 12:55 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
+*更新: 2026-10-11 12:56 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
 
 ## 主表 (10 任务 × 50 trials, 成功率 %)
 
@@ -181,7 +181,9 @@
   —— 失败不是协议问题而是模型侧:
   RoboTwin 的 CloudEdge 配方/ckpt 未就位 (与 LEAPBOTCE.md「RoboTwin CE
   未实现」一致, pool_grid [6,10] override 也从未生效过)。继续烧卡无意义,
-  数据保留于 `leapbotce/robotwin_sweep/` 供配方就位后对照。
+  数据保留于 `leapbotce/robotwin_sweep/` 供配方就位后对照。后续计划
+  (用户 2026-10-11 确认): 等 LIBERO 消融定夺最终配方后, 用最终最优方案
+  重开 RoboTwin 泳道正式测评一次, 中间不再单独排查/重训。
 
 ### Fast-WAM 曲线为何远好于 LIBERO 泳道 (2026-10-11 延迟审计归因)
 

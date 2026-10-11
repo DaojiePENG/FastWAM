@@ -64,6 +64,13 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 - 连带影响：RoboTwin 最终方案（A2 解码器 / A3 grid 的取舍原依赖消融回收）
   的落地目标需重新定夺——LIBERO 消融三线照常等回收，但结果先只用于
   LIBERO 结论；RoboTwin 侧除非配方就位并重训，否则不重开泳道。
+- **后续计划（用户 2026-10-11 确认）**：中间过程不再折腾（不为 RoboTwin
+  单独排查/重训），等 LIBERO 消融（A1/A2/A3）回收、最终配方定夺后，
+  **直接用最终最优方案重开 RoboTwin 泳道做正式测评一次**。前提注意：
+  若最终方案是 CE codec 系（A1/A2/A3），RoboTwin CE 推理路径必须先真正
+  跑通（pool_grid [6,10] / token 网格 12×10；本次 D=0=7.4% 已证实当前
+  路径不可用）；若最终方案是 A0 frozen-cloud，评测路径与 Fast-WAM 泳道
+  同构，成本最低。
 
 ### 2026-10-11（午后）两份 baseline 报告 + 论文 Table 1 加「replans/ep (D=40)」列（延迟剂量）
 - 用户要求：本地总结表和论文表各加一列各模型预估 replan 次数并纳入分析。已落地
