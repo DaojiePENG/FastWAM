@@ -189,6 +189,22 @@ def test_edge_encoder_grid_selection_is_uniform():
     torch.testing.assert_close(output, expected)
 
 
+def test_edge_encoder_select_mode_requires_explicit_edge_dim():
+    # Regression: select-mode prefix K/V are concatenated with the video
+    # cache K/V (heads*head_dim = 3072 on Wan2.2-TI2V-5B), so silently
+    # defaulting edge_dim to text_dim (= 4096 there) crashed every
+    # select-mode training at the first torch.cat.  Construction must fail
+    # loudly instead.
+    class TinyTokenVision(nn.Module):
+        embed_dim = 4
+        num_prefix_tokens = 1
+
+    with pytest.raises(ValueError, match="edge_dim"):
+        EdgeVisionEncoder(
+            text_dim=8, num_views=2, encoder=TinyTokenVision(), embed_dim=4,
+            freeze=True, mode="select", tokens_per_view=3, num_layers=2)
+
+
 def test_edge_prefix_switch_gates_prefix_encoding():
     model = LeapBotCE.__new__(LeapBotCE)
     nn.Module.__init__(model)

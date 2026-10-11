@@ -71,7 +71,17 @@ class EdgeVisionEncoder(nn.Module):
                 nn.GELU(), nn.LayerNorm(int(text_dim)),
             )
         else:
-            self.edge_dim = int(edge_dim or text_dim)
+            if edge_dim is None:
+                # Prefix K/V join the attention key stream (heads*head_dim),
+                # which differs from text_dim on Wan2.2-TI2V-5B (3072 vs
+                # 4096).  Silently falling back to text_dim crashed the
+                # select-mode training at the first torch.cat.
+                raise ValueError(
+                    "EdgeVisionEncoder select mode requires an explicit "
+                    "`edge_dim` (the MoT attention cache dim); falling back "
+                    "to text_dim produces K/V that cannot be concatenated "
+                    "with the video cache.")
+            self.edge_dim = int(edge_dim)
             self.tokens_per_view = int(tokens_per_view)
             if self.tokens_per_view < 1:
                 raise ValueError("`tokens_per_view` must be >= 1")
@@ -213,12 +223,21 @@ class LeapBotCE(FastWAM):
                  edge_prefix_enabled=True,
                  **kwargs):
         super().__init__(*args, **kwargs)
+        # Select-mode prefix K/V are concatenated with the per-layer video
+        # cache K/V inside forward_action_with_video_cache_tensor, so they
+        # must live in the attention key dim (num_heads * head_dim), NOT
+        # text_dim.  Wan2.2-TI2V-5B: cache dim 3072 vs text (umt5-xxl) 4096;
+        # defaulting edge_dim to text_dim crashed every select-mode run
+        # (A1/A2/A3) at the first training step with a 3072-vs-4096
+        # torch.cat error.
+        edge_cache_dim = int(self.mot.num_heads) * int(self.mot.attn_head_dim)
         self.edge_vision = EdgeVisionEncoder(
             self.text_dim, edge_num_views, edge_vision_model_name,
             edge_vision_pretrained, edge_vision_freeze,
             edge_vision_encoder, edge_vision_embed_dim,
             mode=edge_vision_mode, tokens_per_view=edge_vision_tokens_per_view,
             num_layers=int(self.mot.num_layers), selection=edge_vision_selection,
+            edge_dim=edge_cache_dim,
         ).to(device=self.device, dtype=self.torch_dtype)
         self.edge_num_views = int(edge_num_views)
         # Eval-time ablation switch (A4): set False to drop the edge prefix
