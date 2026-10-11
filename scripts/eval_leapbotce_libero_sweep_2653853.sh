@@ -69,6 +69,12 @@
 #   FASTWAM_EVAL_PYTHON  override python (env_2653853.sh's leapbot-va conda env)
 #   LIBERO_EVAL_EXTRA    extra hydra overrides appended to the manager command
 #                        (e.g. A4 ablation: model.cloudedge.edge_prefix_enabled=false)
+#   LIBERO_EVAL_TASK     hydra task group; default "auto" = derived from
+#                        RUN_DIR/config.yaml (kv_codec.enabled → the codec
+#                        task, else frozen-cloud) so codec ablation lines
+#                        (a1/a2/a3) need only RUN_DIR + a fresh TAG.  The
+#                        run config's codec/edge_vision fields are pinned as
+#                        model overrides either way.
 #
 # GPU discovery order (same as the RoboTwin driver):
 #   $1 CSV → $CUDA_VISIBLE_DEVICES (platform-assigned; card refs stay
@@ -120,6 +126,49 @@ fail() { echo "[libero-sweep] PREFLIGHT FAIL: $*" >&2; exit 1; }
 PY="${FASTWAM_EVAL_PYTHON:-$(command -v python)}"
 [[ -x "$PY" ]] || fail "eval python not found after env_2653853.sh (set FASTWAM_EVAL_PYTHON)"
 "$PY" -c 'import torch' 2>/dev/null || fail "eval env lacks torch: $PY"
+
+# ---------- eval task resolution (codec / frozen-cloud ablations) ----------
+# The eval-time model subtree must reproduce the TRAINING construction:
+# LeapBotCE.load_checkpoint refuses codec presence mismatches and
+# edge_vision_mode mismatches, so a wrong `task=` dies at ckpt load (loud,
+# but only after model init).  Derive the task and pin the model overrides
+# from the run's own config.yaml so pointing RUN_DIR at an ablation line is
+# enough; LIBERO_EVAL_TASK forces a task and skips derivation.
+EVAL_TASK="${LIBERO_EVAL_TASK:-auto}"
+RUNCFG_OVERRIDES=()
+if [[ -f "${RUN_DIR}/config.yaml" ]]; then
+  mapfile -t DERIVED < <("$PY" - "${RUN_DIR}/config.yaml" <<'PYEOF'
+import sys, yaml
+
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+model = cfg.get("model") or {}
+cloudedge = model.get("cloudedge") or {}
+edge = model.get("edge_vision") or {}
+codec = cloudedge.get("kv_codec") or {}
+print("libero_all_leapbotce_codec" if codec.get("enabled") else "libero_all_leapbotce")
+if codec.get("enabled"):
+    grid = codec.get("pool_grid")
+    if grid:
+        print(f"model.cloudedge.kv_codec.pool_grid=[{grid[0]},{grid[1]}]")
+    print(f"model.cloudedge.kv_codec.use_kv_decoder={str(bool(codec.get('use_kv_decoder'))).lower()}")
+for key in ("mode", "selection", "tokens_per_view", "num_views"):
+    if edge.get(key) is not None:
+        print(f"model.edge_vision.{key}={edge[key]}")
+if cloudedge.get("edge_prefix_enabled") is False:
+    print("model.cloudedge.edge_prefix_enabled=false")
+PYEOF
+)
+  DERIVED_TASK="${DERIVED[0]:-}"
+  if [[ "$EVAL_TASK" == "auto" ]]; then
+    [[ -n "$DERIVED_TASK" ]] || fail "cannot derive eval task from ${RUN_DIR}/config.yaml (set LIBERO_EVAL_TASK explicitly)"
+    EVAL_TASK="$DERIVED_TASK"
+  fi
+  if (( ${#DERIVED[@]} > 1 )); then
+    RUNCFG_OVERRIDES=("${DERIVED[@]:1}")
+  fi
+elif [[ "$EVAL_TASK" == "auto" ]]; then
+  fail "RUN_DIR config.yaml missing in ${RUN_DIR} (needed for eval-task auto-derivation; set LIBERO_EVAL_TASK to skip)"
+fi
 
 # NVIDIA userland wiring (same proven pattern as the RoboTwin cluster sweep):
 # container-native Vulkan ICD wins if present; else wire the shared-storage
@@ -224,7 +273,7 @@ count_stable() {
 }
 
 MANAGER_ARGS=(
-  task=libero_all_leapbotce
+  task="${EVAL_TASK}"
   ckpt="${CKPT}"
   seed="${SEED}"
   model.load_text_encoder=true
@@ -242,6 +291,7 @@ MANAGER_ARGS=(
 # (set -u safe on bash 4.2: guard idiom avoids expanding an empty array)
 EVAL_EXTRA=()
 [[ -n "${LIBERO_EVAL_EXTRA:-}" ]] && IFS=' ' read -ra EVAL_EXTRA <<< "${LIBERO_EVAL_EXTRA}"
+MANAGER_ARGS+=(${RUNCFG_OVERRIDES[@]+"${RUNCFG_OVERRIDES[@]}"})
 MANAGER_ARGS+=(${EVAL_EXTRA[@]+"${EVAL_EXTRA[@]}"})
 
 PACK="${LIBERO_LIBERO_PACK:-0}"
