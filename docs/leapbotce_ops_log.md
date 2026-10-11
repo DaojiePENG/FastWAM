@@ -49,6 +49,30 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-11（下午）消融三线首提全挂 → edge 前缀 K/V 维度 bug 当日修复
+- **现象**：a1_codec / a2_decoder / a3_grid 三个任务全部"训练程序错误"，
+  各自启动后 1-2 分钟死于第一个训练 step。
+- **排查路径**：平台日志在 `FastWAM/jinnTrainResult/<任务名>-<hash>/train.log`
+  （**用户指定：以后排错优先看这里**）；三份 log 同一错误
+  `RuntimeError: Expected size 3072 but got size 4096` @
+  `mot.py:563 forward_action_with_video_cache_tensor` 的
+  `torch.cat([video_cache_k, edge_prefix_k, k_action], dim=1)`。
+  （run 目录内 wandb 佐证：a1/a2 .wandb 仅 7 字节=硬杀未刷盘；a3 优雅退出
+  留下完整 traceback，与本诊断一致。）
+- **根因**：`EdgeVisionEncoder` select 模式的 `edge_dim` 静默回退
+  `text_dim`（umt5-xxl = 4096），而边缘前缀 K/V 要与 video cache K/V
+  （`num_heads*head_dim` = 3072，kv_adapter/kv_codec 都正确用了这个）在
+  注意力里拼接；TI2V-5B 两者不等。**pooled 模式（A0/frozen-cloud）输出
+  的是 context token，本来就活在 text_dim，所以老配方从未触发**。
+  三个消融全走 select 模式 → 全挂，A3 的 grid/topk 差异无关。
+- **修复**（`0abdfde`）：`LeapBotCE.__init__` 构造 EdgeVisionEncoder 时
+  显式传 `edge_dim = num_heads * head_dim`；select 模式缺 `edge_dim` 改为
+  构造期 ValueError（不再静默回退）；补回归测试。26/26 过；另用真 SigLIP
+  在 CPU 验证形状链：修后前缀 [B,10,3072] 与 cache 对齐，旧默认正是
+  [B,10,4096]。
+- **下一步**：三线**原配置重提即可**（代码修复对 pod 生效取决于仓库挂载
+  /dahuafs 路径，无需改配置）；a2/a3 的 EXTRA_OVERRIDES 核对无误。
+
 ### 2026-10-11（傍晚）RoboTwin 我们泳道停测决策落实（用户确认）
 - 用户决策：**LeapBot-ce RoboTwin 评测泳道停止，不再投入**（"意义不大"）。
 - 核查：该 sweep 其实**已自行跑完**——50/50 格 `.done` 齐全，最后一格
