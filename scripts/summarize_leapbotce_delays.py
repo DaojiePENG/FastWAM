@@ -64,7 +64,10 @@ def load_delay_dir(delay_dir: Path) -> tuple[list[dict], Counter]:
 
 
 def summarize(root: Path) -> dict:
-    delay_dirs = sorted((path for path in root.glob("delay_*") if path.is_dir()), key=delay_value)
+    delay_dirs = sorted(
+        (path for path in root.glob("delay_*") if path.is_dir() and path.name.removeprefix("delay_").isdigit()),
+        key=delay_value,
+    )
     if not delay_dirs:
         raise FileNotFoundError(f"No delay_* directories found under {root}")
 
