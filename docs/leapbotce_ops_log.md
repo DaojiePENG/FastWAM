@@ -49,6 +49,30 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-12 三线 step_008317（33%）调试机诊断评测 + summarize 脚本修复
+- 用户要求对 a1/a2/a3 的 step_008317.pt（33% 进度）做初步测评。调试机 GPU 7
+  （4/5/6 被 RoboTwin fork 占用；7 有 7.8GB 常驻可共存）。配置：libero_spatial、
+  D∈{0,10,20}、10 trials（=100 eps/格）、PACK=1、单格实测 ~35-38 min。
+- 结果（success rate / retention vs D=0，Wilson95 ±10 点）：
+
+  | 线 | D=0 | D=10 | D=20 | ret@20 |
+  |---|---|---|---|---|
+  | a1 tied | 44.0 | 45.0 | 37.0 | 0.841 |
+  | a2 解码器主线 | 46.0 | 48.0 | 42.0 | 0.913 |
+  | a3 grid | 50.0 | 46.0 | 54.0 | 1.080 |
+
+- 读法：三线 retention 都平（84–108%），codec 接口的延迟鲁棒性在诊断规模立住；
+  a2 全窗口 ≥ a1 且差距随 D 单调拉大（+2/+3/+5），方向符合解码器机制预期；
+  a3 nominal 最高但三线 CI 大量重叠，33% 训练 + 100 eps/格下消融不可分，
+  消融表数字等 24951 终点 ckpt + 标准规模。
+- **教训**：`LIBERO_EVAL_DELAYS` 必须空格分隔（脚本 `read -ra` 按 IFS 切分）；
+  逗号版会先创建 `delay_0,10,20` 残留目录再炸 hydra，且该残留会让
+  `summarize_leapbotce_delays.py` 在评测全部完成后 ValueError 挡汇总。
+  已修脚本（过滤非整数 delay 目录，commit `95680ee`）+ 删 a2 根目录残留。
+- 结果：`/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/
+  {a1_codec,a2_decoder,a3_grid}_step8317_diag/delay_sweep_summary.json`。
+  TAG 绑 ckpt：后续 step_16634 / 24951 复评须换新 TAG。
+
 ### 2026-10-11（晚 2）主线翻转为"开 K/V 解码器版"（LeapBotCEPaper f1987c4）
 - 用户拍板：**最终版本讲开解码器的（A2 recipe = a2_decoder run）**，tied K=V
   （A1 = a1_codec run）降为消融行，专门量化解码器在零传输成本下的贡献。
