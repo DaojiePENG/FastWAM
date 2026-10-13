@@ -59,6 +59,8 @@ METHOD_ROOTS = [
     ("DreamZero (AgiBot)", f"{EVAL_ROOT}/dreamzero/robotwin_sweep", "flat"),
     ("AHA-WAM (robotwin)", f"{EVAL_ROOT}/ahawam/robotwin_sweep", "aha"),
     ("StarWAM (mot, official)", f"{EVAL_ROOT}/starwam/robotwin_sweep", "samples"),
+    ("Kairos (4B, official ckpt)", f"{EVAL_ROOT}/kairos/robotwin_sweep", "samples"),
+    ("LingBot-VA (robotwin posttrain)", f"{EVAL_ROOT}/lingbot-va/robotwin_sweep", "samples"),
 ]
 
 FOOTNOTES = """
@@ -150,6 +152,28 @@ FOOTNOTES = """
   延迟暴露剂量直接可比。任务敏感度排序与 AHA/Fast-WAM 一致 (handover
   80→44 / scan_object 94→60 / bbh 96→66 最敏感, click/shake/grab_roller
   准静态几乎不掉)。冒烟: bbh 5/5 (官方 97%), 10 任务 × 2 ep 19/20。
+- **Kairos (4B) 评估披露 (2026-10-13)**: 官方已发布 RoboTwin 2.0 权重
+  `kairos-4B-robot-RoboTwin2.0.safetensors` (本机在盘, 免下载), 官方 WAM
+  推理服务 (`uvicorn wam_service.server_multi_gpu:app`) + chunked 评测
+  client 接入。超参全取官方 RoboTwin 默认: action-horizon 32 /
+  replan-steps 24 / num-inference-steps 30 / cfg-scale 8.0, clean/seen
+  50 trials (`--phases clean` 为本仓新增, 默认 clean,random 保持官方行为)。
+  帧延迟协议移植同 X-WAM (d ~ U{0..D} 逐 replan, per-episode RNG,
+  单流全观测老化), 审计同款 schema 落 `<run_root>/delay_<D>/<task>_delay_metrics.jsonl`。
+  chunked client 的 `_result_*.txt` 落相对 cwd, lane 脚本以 shim 从
+  chunk_result.json 汇总写 `_result.txt` 到格目录。
+- **LingBot-VA 评估披露 (2026-10-13)**: 官方 posttrain-for-RoboTwin 权重
+  (video-diffusion 世界模型 + 动作专家, 本机在盘), 官方 VA server
+  (`wan_va_server.py`, robotwin 配置) + 评测 client fork 接入。
+  **协议语义披露 (重要)**: 官方 client 每次 replan 恒用**初始帧**
+  (first_obs) 查询, KV-cache 更新携带新鲜关键帧 —— 即官方设计本身
+  "replan 查询永不用新鲜观测"。本 campaign 归一化协议改为 replan 查询
+  消费 fresh-obs history 的 aged obs (d ~ U{1..min(D,len-1)}, 与
+  LIBERO 侧 client_delay.py 及 Fast-WAM 官方同款 1-based 抽样), KV-cache
+  更新保持 fresh —— 与其它泳道可比; fork 为
+  `evaluation/robotwin/eval_polict_client_delay.py` (官方原文件保持
+  pristine, 抽样函数与 LIBERO 参考实现代码级一致)。history 按关键帧节奏
+  append (每 action_per_frame 控制步), audit 同款 X-WAM schema。
 
 ### Fast-WAM 曲线为何远好于 LIBERO 泳道 (2026-10-11 延迟审计归因)
 
