@@ -47,6 +47,17 @@ trainer 的 dit-only 模式因此只解冻 action_expert/projector/adapter/codec
 等两个信号再定：① 标准规模 a1/a2 评测（判决 tied vs decoder），② a1_release
 落点 —— 在原始 Wan 的 garbage-in 区调 codec 设计没有意义。
 
+**a2 首提 4 卡分配事故与守卫（10-13 13:18）**：a2_release 首提按 8 卡提交但平台只分了
+4 卡（任务元数据 gpu:4），配置按 nproc=8 拉起 → rank 4-7 摸 cuda:4-7 → data.train
+初始化 `CUDA error: invalid device ordinal`，4 分钟即炸（train.log 定位：
+`jinnTrainResult/leapbot_ce_libero_a2_release-e20fd618/`）。同批 a0/a1/a3 均为真 8 卡
+节点、13:15 起 stepping 正常（0.23-0.28 step/s，eta 25-30h）。处置：用户 13:23 重提
+8 卡版成功。**守卫**（防复发，已提交）：`train_leapbotce_libero_2653853.sh` 参数解析后
+新增"实际可见卡数守卫"——`nvidia-smi -L` 数出的可见卡压过申请值，ACCUM 自动补齐保
+有效 batch（8×bs16×accum1 → 4×bs16×accum2）；nvidia-smi 缺失时跳过。曾试过配置侧
+"GPU_NUM 环境变量优先"方案后撤销——调试机 shell 自带垃圾 `GPU_NUM=1`，证明 env 不可
+作为实分配信号，唯一可信信号是 launcher 在真环境里数卡。
+
 ## 一、现在该提交什么（更新于 2026-10-13 下午）
 
 | 任务名（整段照抄） | 配置文件 | 卡数 | 预计耗时 | 状态 |

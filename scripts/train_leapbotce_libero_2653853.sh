@@ -180,6 +180,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 # -----------------------------------------------------------------------------
+# 平台实分配守卫（2026-10-13 a2_release 实锤：按 8 卡提交平台只给 4 卡，
+# nproc_per_node=8 去摸 cuda:4-7 → data.train 初始化 CUDA invalid device ordinal）。
+# 节点实际可见 GPU 数压过申请值，ACCUM 自动补齐保持有效 batch 不变
+# （如 8×bs16×accum1 → 4×bs16×accum2）。只在三个值都显式给出时启用
+# （AIFlow 路径必然给出）；nvidia-smi 不可用时跳过（本地调试兜底）。
+# -----------------------------------------------------------------------------
+if [[ -n "${BATCH_SIZE}" && -n "${ACCUM}" && "${NGPUS}" -gt 1 ]]; then
+  VISIBLE_GPUS="$(nvidia-smi -L 2>/dev/null | wc -l || true)"
+  if [[ "${VISIBLE_GPUS}" =~ ^[0-9]+$ && "${VISIBLE_GPUS}" -gt 0 \
+        && "${NGPUS}" -gt "${VISIBLE_GPUS}" ]]; then
+    EFF_BATCH=$(( NGPUS * BATCH_SIZE * ACCUM ))
+    echo "[leapbotce] 警告: 申请 ${NGPUS} 卡但节点可见 ${VISIBLE_GPUS} 卡 —— 按实际卡数启动"
+    NGPUS="${VISIBLE_GPUS}"
+    ACCUM=$(( (EFF_BATCH + NGPUS * BATCH_SIZE - 1) / (NGPUS * BATCH_SIZE) ))
+    echo "[leapbotce] 自动补偿: ${NGPUS} 卡 × bs${BATCH_SIZE} × accum${ACCUM} = 有效 batch ${EFF_BATCH}（不变）"
+  fi
+fi
+
+# -----------------------------------------------------------------------------
 # 训练类型 -> Hydra task 配置名 映射
 # -----------------------------------------------------------------------------
 case "${TASK}" in

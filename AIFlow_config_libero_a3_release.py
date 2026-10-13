@@ -69,14 +69,14 @@ except ImportError:
 AI_FLOW_TASK = "libero_all_leapbotce_codec"  # codec + 边缘 select 前缀配方
 AI_FLOW_DELAY = 20    # d_train=20，与 A1 消融线一致
 AI_FLOW_SEED = 42     # 与 A1 消融线一致，先做单 seed 对比；补 seed 后续再排
-AI_FLOW_GPU_NUM = 8   # 32 卡空闲期铺满矩阵：4 任务 × 8 卡并行 ~1.1 天
+AI_FLOW_GPU_NUM = 8   # 申请卡数（32 卡空闲期铺满矩阵）；实分配不足时 launcher 守卫兜底
 
 # ─────────────────────────────────────────────────────────────────────
 # ② 批大小 / 学习率 / 总步数 —— 显式钉死（平台 pod 镜像 torch 是残包，
 #    显存自动探测不可用，见 10-10 实锤；这里不用自动表）
 # ─────────────────────────────────────────────────────────────────────
 AI_FLOW_BATCH_SIZE = 16    # 8 卡 × bs16 × accum1 = 有效 batch 128（=A1 动力学）
-AI_FLOW_ACCUM = 1          # 8 卡版；只有 4 卡时改回 GPU_NUM=4/ACCUM=2（eff 不变）
+AI_FLOW_ACCUM = 1          # 8 卡版；卡数不足时 launcher 的可见卡守卫自动补 accum（eff 128 不变）
 AI_FLOW_LR = 0.00028       # = A1（eff 128 的 √batch 折算值，勿改）
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 仅平台侧有真 torch 时才会用到；当前 pod 走显式值
@@ -176,7 +176,11 @@ def _repo_workdir() -> Path:
 
 
 def _gpu_count() -> int:
-    """本机卡数：模块常量 > 平台环境变量 GPU_NUM > torch 探测 > 1。"""
+    """本机卡数：模块常量 > 平台环境变量 GPU_NUM > torch 探测 > 1。
+
+    注意：调试机 shell 可能带垃圾 GPU_NUM（实测=1），环境变量不可作为
+    实分配信号；卡数不足的场景由启动脚本的 nvidia-smi 可见卡数守卫兜底。
+    """
     if _aiflow_value("AI_FLOW_GPU_NUM") is not None:
         return max(int(_aiflow_value("AI_FLOW_GPU_NUM")), 1)
     if os.environ.get("GPU_NUM"):
