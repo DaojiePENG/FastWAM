@@ -26,9 +26,13 @@
 robotwin 老任务名不变，无 env 落缺省不变。`eval_libero_a2` 一例 AttributeError 是该旧变体
 自身缺 `__C` 的预存在问题（dispatch 选择正确，新旧逻辑同选），与本次改动无关。
 
-**处置**：已请用户停掉 21932579（跑的是重复 a0，且在污染真 a0 的 run 目录）；停止后清理
-冒名 wandb run + `latest-run` 指针；用同名任务重提 a2（新 jobid，修复后的分发器对任意
-哈希免疫）。真 a0 本体（cea5a012）训练全程健康，无需动。
+**处置（14:55 收官）**：用户 14:38 停掉 21932579；14:39 同名重提（21935761，目录
+`...a2_release-c76ca2d0`），新分发器路由正确（`task=libero_all_leapbotce_codec`、
+`run_id=codec_a2_release_seed42_h200`、`use_kv_decoder=true`、release init、独立输出目录），
+14:55 已 stepping（0.30 step/s）。a0 run 目录污染清理完毕：冒名 wandb run 删除、
+`latest-run`/`debug*.log` 符号链接指回真 a0 的 `offline-run-...131812-qy1ua4hp`；
+checkpoints 目录全程未被写过（首次落盘在 step 8317），config.yaml/dataset_stats.json
+被冒名者重写过但内容与真 a0 配置一致，无需恢复。真 a0 本体（cea5a012）训练全程健康。
 
 ## 2026-10-13 头号根因定位：冻结专家一直是【原始 Wan】而非 FastWAM LIBERO release + `mot_pretrained_path` 开关
 
