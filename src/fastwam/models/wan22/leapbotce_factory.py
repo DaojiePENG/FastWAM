@@ -11,7 +11,7 @@ def _as_dict(value):
     return {} if value is None else dict(value)
 
 
-def create_leapbotce(edge_vision=None, cloudedge=None, **kwargs):
+def create_leapbotce(edge_vision=None, cloudedge=None, mot_pretrained_path=None, **kwargs):
     """Hydra factory that reuses the FastWAM pretrained loader."""
     edge_vision = _as_dict(edge_vision)
     cloudedge = _as_dict(cloudedge)
@@ -59,6 +59,14 @@ def create_leapbotce(edge_vision=None, cloudedge=None, **kwargs):
         cloud_kv_codec_dropout=float(kv_codec.get("dropout", 0.0)),
         edge_prefix_enabled=bool(cloudedge.get("edge_prefix_enabled", True)),
     )
+    if mot_pretrained_path:
+        # Optional init from a released FastWAM checkpoint (v1 full-MoT format:
+        # payload["mot"] with both co-trained experts + optional proprio_encoder)
+        # instead of raw Wan + ActionDiT-linear-interp inits.  The frozen video
+        # expert then starts from the target-domain co-trained weights; the
+        # edge modules (projector/adapter/codec) keep their own inits because
+        # load_checkpoint's v1 branch only touches mot/proprio_encoder.
+        model.load_checkpoint(str(mot_pretrained_path))
     # Wan22Trainer optimizes model.dit; make the edge projector part of it.
     model.mot.add_module("edge_vision_projector", model.edge_vision.projector)
     model.model_paths = dict(getattr(base, "model_paths", {}))

@@ -8,6 +8,12 @@ redirect_common_files: false
 mot_checkpoint_mixed_attn: false
 compile_training_denoise: false
 action_dit_pretrained_path: /mnt/c2-worldmodel/2653853/leapbot-ce/checkpoints/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
+# Init the frozen experts from a released FastWAM checkpoint (full-MoT format,
+# e.g. fastwam_release/libero_uncond_2cam224.pt) instead of raw Wan + linear-
+# interp ActionDiT.  null = legacy behavior (raw Wan).  Must also be set at
+# eval time: LeapBotCE saves only the fine-tuned delta, the frozen base is
+# re-materialized from this path (see save_checkpoint).
+mot_pretrained_path: null
 skip_dit_load_from_pretrain: false
 
 edge_vision:

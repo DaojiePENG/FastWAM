@@ -156,6 +156,11 @@ for key in ("mode", "selection", "tokens_per_view", "num_views"):
         print(f"model.edge_vision.{key}={edge[key]}")
 if cloudedge.get("edge_prefix_enabled") is False:
     print("model.cloudedge.edge_prefix_enabled=false")
+# release-initialized runs: the frozen base must be rebuilt from the same
+# release ckpt the run trained against (delta ckpts store only fine-tuned
+# parts, see LeapBotCE.save_checkpoint)
+if model.get("mot_pretrained_path"):
+    print(f"model.mot_pretrained_path={model['mot_pretrained_path']}")
 PYEOF
 )
   DERIVED_TASK="${DERIVED[0]:-}"

@@ -3,21 +3,51 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
-## 一、现在该提交什么（更新于 2026-10-11 中午）
+## 2026-10-13 头号根因定位：冻结专家一直是【原始 Wan】而非 FastWAM LIBERO release + `mot_pretrained_path` 开关
+
+**用户疑点成立（代码实锤）**：官方 FastWAM 的 97.4% 来自视频专家在 LIBERO 上联训的
+release ckpt（`/mnt/c2-worldmodel/2638088/fastwam/fastwam_release/libero_uncond_2cam224.pt`，
+`payload = {mot: 两专家, proprio_encoder, step, torch_dtype}`）；而我们 A0/a1-a3 的模型配置
+`model_id: Wan-AI/Wan2.2-TI2V-5B` 直出原始 Wan + `ActionDiT_linear_interp` 初始化，
+**冻结的视频专家从未见过 LIBERO 分布**。24 点 gap（97.4→73.2）的头号嫌疑从"冻结/解冻"
+升级为"冻结在错误的起点"。冻结点本身在
+`src/fastwam/models/wan22/leapbotce_edge_train_factory.py:20`（`model.dit = nn.ModuleDict(可训模块)`，
+trainer 的 dit-only 模式因此只解冻 action_expert/projector/adapter/codec，5B 视频专家留在
+`requires_grad_(False)`）；上游对照：官方 trainer `_apply_dit_only_train_mode` 训的是
+`model.dit = self.mot` = 两专家一起 —— 官方 97.4 本来就是联训产物。
+
+**修复（已落地，`mot_pretrained_path` 开关）**：
+
+- `leapbotce_factory.py`：新增 `mot_pretrained_path` 参数，构建后调 `load_checkpoint` 走
+  v1 full-MoT 分支（`payload["mot"]` 严格载入两专家 + proprio_encoder；edge 侧
+  projector/codec 不碰，保持自身初始化）。
+- `configs/model/leapbotce.yaml`：`mot_pretrained_path: null` 默认（null = 原行为）。
+- `scripts/eval_leapbotce_libero_sweep_2653853.sh`：任务推导白名单**补上**
+  `model.mot_pretrained_path` 转发 —— 不补的话 a0_release 评测会拿原始 Wan 重建冻结基座
+  + release 训出的 delta，静默错配（delta ckpt 只存微调部分，见 `save_checkpoint`）。
+- 验证：release payload 键结构与我们的 MoT 完全匹配（1649 键全在 `mixtures.{video,action}`，
+  proprio 8→4096）；GPU 6 全模型构建冒烟 6 张量（video block 0/29、action、proprio w/b）
+  与 release 精确相等，edge projector 原样。
+
+**新训练变体（待提交）**：`leapbot_ce_libero_a0_release`（AIFlow_config_libero_a0_release.py）
+= A0 底座逐项对齐（task=libero_all_leapbotce、d=20/seed42、eff128、24951 步、stale -1）
+**唯一差异** `model.mot_pretrained_path=<release>`；4×H200 ~2.1 天。读数：
+`a0_release − A0(73.2)` = 冻结专家域内预训练的净贡献；接近 97.4 则确认 init 是主因，
+解冻（第二梯）降级为可选。RoboTwin 同理换 `robotwin_uncond_3cam_384.pt`（指南 §11）。
+
+## 一、现在该提交什么（更新于 2026-10-13 下午）
 
 | 任务名（整段照抄） | 配置文件 | 卡数 | 预计耗时 | 状态 |
 |---|---|---|---|---|
-| `leapbot_ce_libero_a1_codec` | AIFlow_config_libero_a1_codec.py | 4×H200 | ~2.1 天 | ⬜ 待提交 |
-| `leapbot_ce_libero_a2_decoder` | AIFlow_config_libero_a2_decoder.py | 4×H200 | ~2.1 天 | ⬜ 待提交 |
-| `leapbot_ce_libero_a3_grid` | AIFlow_config_libero_a3_grid.py | 4×H200 | ~2.1 天 | ⬜ 待提交 |
-| 200k 评测（提交名带 eval+libero） | AIFlow_config_eval_libero.py | 4×H200 | ~2h | ⬜ 待提交（见下） |
-| `leapbot_ce_train_libero`（200k 续训） | AIFlow_config_libero.py | 4 | — | 🔄 今天 ~12:15 收尾 |
+| `leapbot_ce_libero_a0_release` | AIFlow_config_libero_a0_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（**主线，根因验证**） |
+| `leapbot_ce_eval_libero_a1` | AIFlow_config_eval_libero_a1.py | 4×H200 | ~2h | ⬜ 待提交 |
+| `leapbot_ce_eval_libero_a2` | AIFlow_config_eval_libero_a2.py | 4×H200 | ~2h | ⬜ 待提交 |
+| `leapbot_ce_eval_libero_a3` | AIFlow_config_eval_libero_a3.py | 4×H200 | ~2h | ⬜ 等 a3 ckpt 落盘（~16:00，preflight 会挡） |
 
-- 三条消融线并行 = 12 卡；空闲卡常态 ~32，够。
-- **200k 评测**：训练收尾后提交。改 `AIFlow_config_eval_libero.py` 常改区两行：
-  `AI_FLOW_RUN_DIR` → `.../runs/libero_all_leapbotce/dtrain20_seed42_200k_resume`
-  `AI_FLOW_TAG` → `dtrain20_seed42_200k`（**勿复用 110k tag**，新旧 ckpt 结果会混）。
-- 评测 GPU 数：现有配置默认平台分配；评测 4 条线都走同一配置文件，**改常改区再提交**。
+- **优先级**：a0_release 训练最先提（24 点 gap 根因验证，见 10-13 条目）；
+  a1/a2 评测现在可提（codec 主线判决，tied vs decoder，500 eps/格 CI ±4.4）。
+- a0_release 与两条评测并行 = 12 卡；空闲卡常态 ~32，够。若紧张：评测可排队晚提。
+- 训练线节点选 H200：H100-80G 跑不了 bs16（bs8 实测峰值 64.2GB）。
 
 ## 二、提交前核对（30 秒）
 
