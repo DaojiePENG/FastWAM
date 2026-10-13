@@ -3,6 +3,33 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-13 a2 重提任务被分发器劫持到 a0 配置（jobid 哈希子串撞关键字）
+
+**现象（13:30 发现）**：a2 重提任务（21932579，目录 `leapbot_ce_libero_a2_release-26fa02d4`）
+跑的根本不是 a2 —— train.log 的 overrides 是**a0 的完整配方**（`task=libero_all_leapbotce`、
+`wandb.name=a0_release_seed42_h200`、无 `use_kv_decoder`），输出目录也指到
+`runs/libero_all_leapbotce/a0_release_seed42_h200` = **真 a0 任务（cea5a012）的同一 run 目录**。
+两任务都在 0.28 step/s 正常 stepping，run 目录里已经有两个 wandb offline run
+（13:18 真 a0 + 13:27 冒名顶替者），step 8317 起还会互写同名 checkpoint。首提 a2（e20fd618，
+4 卡事故死）的 run_id 是正确的 `codec_a2_release_seed42_h200` —— 劫持只发生在重提上。
+
+**根因（分发器实锤）**：`AIFlow_config.py` 按任务目录名匹配变体，而 basename 尾部拼着
+平台 jobid（`<任务名>-<jobid 8 位十六进制>`）；旧逻辑是**子串匹配**
+（`tok in _TASK`）。`26fa02d4` 恰好含子串 `"a0"`（f-**a-0**-2d4），于是
+`libero_a0_release` 混进候选、与 `libero_a2_release` 同为 17 字符并列，同长取字母序
+→ a0 胜出，静默跑错配置。a0/a1/a3 三个任务的哈希不含别人家的 `aN` 子串，未受影响。
+
+**修复（`AIFlow_config.py`，FastWAM 与 `daojie_leap_configs/` 两份同步）**：
+① 剥掉尾部 `-[0-9a-f]{8}$` 哈希再匹配；② 后缀分词改为**任务名整词集合等值匹配**
+（`_/-` 切词，子串一律不算）—— 哈希再怎么撞也只是一个整词。12 用例回归：4 条 release
+线任务名（含劫持原案 `…-26fa02d4` 和对抗哈希 `…-0a0a0a0a`）全部正确路由，bench/eval/
+robotwin 老任务名不变，无 env 落缺省不变。`eval_libero_a2` 一例 AttributeError 是该旧变体
+自身缺 `__C` 的预存在问题（dispatch 选择正确，新旧逻辑同选），与本次改动无关。
+
+**处置**：已请用户停掉 21932579（跑的是重复 a0，且在污染真 a0 的 run 目录）；停止后清理
+冒名 wandb run + `latest-run` 指针；用同名任务重提 a2（新 jobid，修复后的分发器对任意
+哈希免疫）。真 a0 本体（cea5a012）训练全程健康，无需动。
+
 ## 2026-10-13 头号根因定位：冻结专家一直是【原始 Wan】而非 FastWAM LIBERO release + `mot_pretrained_path` 开关
 
 **用户疑点成立（代码实锤）**：官方 FastWAM 的 97.4% 来自视频专家在 LIBERO 上联训的

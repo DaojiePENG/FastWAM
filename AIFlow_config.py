@@ -10,8 +10,8 @@
 修复：本文件常驻不动，按任务名关键字**约定式自动分发**（新任务零改本文件）。
 平台会设环境变量 JinnTrainResult = <userPath>/jinnTrainResult/<任务名>-<jobid>
 （import 时已就位），取 basename 归一化（大写→小写、bench→eval 同义词）后，
-扫描 AIFlow_config_<后缀>.py：后缀按下划线分词、**分词全部命中任务名即为
-候选，最长后缀胜出**（长 = 更具体）：
+扫描 AIFlow_config_<后缀>.py：后缀按下划线分词、**分词全部是任务名（剥除
+尾部 -<jobid> 后按 _/- 切词）的完整词即为候选，最长后缀胜出**（长 = 更具体）：
 
     任务名含 eval + robotwin → AIFlow_config_eval_robotwin（RoboTwin ours 评测，任务名如：leapbot_ce_eval_robotwin）
     任务名含 robotwin        → AIFlow_config_robotwin    （RoboTwin 训练）
@@ -19,7 +19,7 @@
     任务名含 libero          → AIFlow_config_libero      （LIBERO 训练）
     其余（含无 JinnTrainResult 的本机裸 import）→ 缺省 eval_libero
 
-⚠️ 两条平台实锤（10-10 任务 21821436 平台日志），分发器必须同时满足：
+⚠️ 三条平台实锤（10-10 任务 21821436 / 10-13 任务 21932579 平台日志），分发器必须同时满足：
 ① **pod 端只把 AIFlow_config.py 单文件拷进任务目录**（/jinnMirror/.../
    2653853-<id>/，兄弟变体不在，os.listdir 扫出空）—— 变体查找必须依次兜底
    userPath env → cwd → 本树绝对根（/dahuafs 共享盘路径稳定，非机器依赖）；
@@ -27,6 +27,12 @@
    try/except 里，任何异常 → conf 落回平台默认管线 → 找 dh_aiflow → 报
    「aiflowconfig.py有错误」秒挂。未匹配任务名只打横幅落缺省，横幅首行
    可见、可事后审计，绝不 raise。
+③ **任务目录名尾部拼 -<jobid 8位十六进制>，哈希会撞关键字子串**（10-13
+   实锤：a2 重提任务 ...a2_release-26fa02d4，"26fa02d4" 恰含子串 "a0"，
+   子串匹配让 libero_a0_release 混进候选、与 libero_a2_release 同长并列、
+   字母序取胜 → a2 任务静默跑成 a0 配置，还与真 a0 任务同写一个 run 目录）。
+   修复 = 剥尾哈希 + 后缀分词必须是任务名的**完整词**（词集合等值匹配），
+   子串命中一律不算数。
 
 从此提交流程 = 起一个含对应关键字的任务名即可，零改名，可任意并行排队：
     leapbot_ce_bench_libero / leapbot_ce_train_robotwin / leapbot_ce_eval_robotwin …
@@ -42,6 +48,7 @@ def AutoTrain(**params) -> bool，smoke 开关 AI_FLOW_* 写在该文件常改�
 
 import importlib
 import os
+import re
 import sys
 
 # 变体查找目录：__file__ 所在目录（pod 任务目录副本）→ userPath（平台注入，
@@ -60,6 +67,13 @@ for _d in _SEARCH_DIRS:
 _TASK_RAW = os.path.basename(os.environ.get("JinnTrainResult", ""))
 # bench≡eval 同义归一：既有任务名 leapbot_ce_bench_libero 走评测分支
 _TASK = _TASK_RAW.lower().replace("bench", "eval")
+# 剥掉平台拼在末尾的 -<jobid 8位十六进制>（见文件头 ⚠️③：哈希子串会撞
+# a0/a1/… 关键字，把任务劫持到错误变体）。剥不掉也无妨——下面的整词匹配
+# 让哈希只算一个词，参与不了关键字命中。
+_TASK_NAME = re.sub(r"-[0-9a-f]{8}$", "", _TASK)
+# 整词集合：后缀的每个分词必须是任务名的完整词（等值），杜绝 "a0" 藏在
+# "26fa02d4" 或其他词内部的子串误命中。
+_TASK_WORDS = frozenset(w for w in re.split(r"[_\-]+", _TASK_NAME) if w)
 
 _DEFAULT_VARIANT = "eval_libero"
 
@@ -98,7 +112,7 @@ def _pick_variant():
     cands = sorted(
         (-len(suffix), suffix)
         for suffix in _variants()
-        if all(tok in _TASK for tok in suffix.split("_") if tok)
+        if all(tok in _TASK_WORDS for tok in suffix.split("_") if tok)
     )
     if not cands:
         d = _variant_file(_DEFAULT_VARIANT)
