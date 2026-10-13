@@ -49,6 +49,34 @@ A4 额外 `AI_FLOW_EVAL_EXTRA = "model.cloudedge.edge_prefix_enabled=false"`。
 
 ## 四、记录（新在上）
 
+### 2026-10-13 终点 ckpt 诊断（a1/a2）+ 预算勘误 + 标准评测变体
+- 训练收尾确认：a1/a2 正常目录 0 traceback，最后动作 = 写 step_024951
+  weights+state（a2 10-13 02:00、a1 06:59）；a3 ETA ~16:00。
+- 终点诊断（GPU 7 双 worker，libero_spatial × D{0,10,20} × 10 trials）：
+
+  | 线 | D=0 | D=10 | D=20 | ret@20 |
+  |---|---|---|---|---|
+  | a1 tied | 59.0 | 61.0 | 63.0 | 1.068 |
+  | a2 解码器 | 51.0 | 54.0 | 58.0 | 1.137 |
+
+- **反转**：33% ckpt 时 a2 领先 2-3 点，终点上 a1 点估计反超 5-8 点
+  （CI 重叠，n=100 ±10）。解码器在此预算下未兑现（嫌疑：随机初始化
+  瓶颈欠收敛 vs 纯噪声）；判决 = 标准规模评测（500 eps/格，CI ±4.4），
+  主线选择（tied vs decoder）等该数字。两条 retention 都 >1（平/升）。
+- **预算勘误（重要，防止再犯）**：eff batch 128 不是科学常数 = √LR 折算
+  自官方 eff16 配方（`LEAPBOTCE.md:88,101,181,208`）。P0 的"200k 步"
+  是 @eff16 = **3.2M 样本**；消融线 24951 步 @eff128 = 3.19M 样本 =
+  **同一预算**。即 codec 三线已是 P0 全预算，"正式线"无需再加跑
+  200k@eff128（那是 8× 预算）。若学习曲线未饱和要加预算：2× = 6.4M 样本
+  ≈ 8 卡 eff128 49902 步 ~2.2 天，或 16 卡 eff256（lr 4e-4）~1.1 天
+  （dynamics 未验证）。
+- 标准规模消融评测改走分发器变体：新增 `AIFlow_config_eval_libero_a{1,2,3}.py`
+  （薄委托钉死 RUN_DIR/CKPT/TAG/SUITES/DELAYS/TRIALS；任务名
+  `leapbot_ce_eval_libero_a{1,2,3}`，4×H200，可并行提交零串味；
+  本地 import 冒烟全过）。a1/a2 即提；a3 等 ~16:00 ckpt 落盘后提。
+  今晚标准数字出 → 定主线 → 胜者跑四套件 × 5 窗全量 sweep（填 Table 2）。
+- RoboTwin codec 前置不变：pool_grid=[6,10] 适配 + 单格冒烟，今天备明天提。
+
 ### 2026-10-12 三线 step_008317（33%）调试机诊断评测 + summarize 脚本修复
 - 用户要求对 a1/a2/a3 的 step_008317.pt（33% 进度）做初步测评。调试机 GPU 7
   （4/5/6 被 RoboTwin fork 占用；7 有 7.8GB 常驻可共存）。配置：libero_spatial、
