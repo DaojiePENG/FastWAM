@@ -13,14 +13,14 @@ release 初始化（2026-10-13 根因：原线全部冻结在【原始 Wan】上
   task       libero_all_leapbotce_codec（codec + 边缘 select 前缀）
   init       model.mot_pretrained_path=fastwam_release/libero_uncond_2cam224.pt
   delay/seed d=20 / seed 42
-  有效 batch 128 = 4 卡 × bs16 × accum2；lr 2.8e-4
+  有效 batch 128 = 8 卡 × bs16 × accum1；lr 2.8e-4
   总步数     24,951（11.5 epoch，cosine 全退火）
   stale 换手 -1 = 自动 max_steps/2 = 12,475
 
 读数：本线 vs A1 原线（spatial 59/61/63，n=100）= 域内预训练对 codec 主配方的
 净贡献；配合 a0_release（无 codec 对照）分解 压缩成本 vs 训练配方成本。
 
-预计耗时（4×H200）：≈2.0-2.3 天（与 a1-a3 消融线同负载）。
+预计耗时（8×H200）：≈1.1 天（A0 实测 8×H200 全程 25.7h）。
 
 评测（训练完）：AIFlow_config_eval_libero 路线，env 换
   RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200
@@ -68,14 +68,14 @@ except ImportError:
 AI_FLOW_TASK = "libero_all_leapbotce_codec"  # codec + 边缘 select 前缀配方
 AI_FLOW_DELAY = 20    # d_train=20，与 A1 消融线一致
 AI_FLOW_SEED = 42     # 与 A1 消融线一致，先做单 seed 对比；补 seed 后续再排
-AI_FLOW_GPU_NUM = 4   # 与消融线同规模；赶时间可申请 8 卡并把 ACCUM 改 1
+AI_FLOW_GPU_NUM = 8   # 32 卡空闲期铺满矩阵：4 任务 × 8 卡并行 ~1.1 天
 
 # ─────────────────────────────────────────────────────────────────────
 # ② 批大小 / 学习率 / 总步数 —— 显式钉死（平台 pod 镜像 torch 是残包，
 #    显存自动探测不可用，见 10-10 实锤；这里不用自动表）
 # ─────────────────────────────────────────────────────────────────────
-AI_FLOW_BATCH_SIZE = 16    # 4 卡 × bs16 × accum2 = 有效 batch 128（=A1）
-AI_FLOW_ACCUM = 2          # 与 A1 动力学完全一致的关键：eff 128
+AI_FLOW_BATCH_SIZE = 16    # 8 卡 × bs16 × accum1 = 有效 batch 128（=A1 动力学）
+AI_FLOW_ACCUM = 1          # 8 卡版；只有 4 卡时改回 GPU_NUM=4/ACCUM=2（eff 不变）
 AI_FLOW_LR = 0.00028       # = A1（eff 128 的 √batch 折算值，勿改）
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 仅平台侧有真 torch 时才会用到；当前 pod 走显式值

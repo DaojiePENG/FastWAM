@@ -51,16 +51,19 @@ trainer 的 dit-only 模式因此只解冻 action_expert/projector/adapter/codec
 
 | 任务名（整段照抄） | 配置文件 | 卡数 | 预计耗时 | 状态 |
 |---|---|---|---|---|
-| `leapbot_ce_libero_a1_release` | AIFlow_config_libero_a1_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（**主 claim 线：codec + release init**） |
-| `leapbot_ce_libero_a0_release` | AIFlow_config_libero_a0_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（对照：无 codec + release init） |
-| `leapbot_ce_eval_libero_a1` | AIFlow_config_eval_libero_a1.py | 4×H200 | ~2h | ⬜ 待提交 |
-| `leapbot_ce_eval_libero_a2` | AIFlow_config_eval_libero_a2.py | 4×H200 | ~2h | ⬜ 待提交 |
-| `leapbot_ce_eval_libero_a3` | AIFlow_config_eval_libero_a3.py | 4×H200 | ~2h | ⬜ 等 a3 ckpt 落盘（~16:00，preflight 会挡） |
+| `leapbot_ce_libero_a1_release` | AIFlow_config_libero_a1_release.py | 8×H200 | ~1.1 天 | ⬜ 待提交（**主 claim 线：codec(tied) + release**） |
+| `leapbot_ce_libero_a0_release` | AIFlow_config_libero_a0_release.py | 8×H200 | ~1.1 天 | ⬜ 待提交（对照：无 codec + release） |
+| `leapbot_ce_libero_a2_release` | AIFlow_config_libero_a2_release.py | 8×H200 | ~1.1 天 | ⬜ 待提交（decoder 因子 + release） |
+| `leapbot_ce_libero_a3_release` | AIFlow_config_libero_a3_release.py | 8×H200 | ~1.1 天 | ⬜ 待提交（grid 挑选因子 + release） |
 
-- **优先级**：a1_release 是论文 claim 数字（codec 105× + 域内预训练冻结专家），
-  a0_release 是它的无 codec 对照（分解压缩成本），两条训练 + a1/a2 评测并行 =
-  16 卡；空闲卡常态 ~32，够。若紧张：a0_release 可晚提（codec 同起点已证 ≈A0）。
-- 训练线节点选 H200：H100-80G 跑不了 bs16（bs8 实测峰值 64.2GB）。
+- **决策（10-13 下午，用户拍板）**：原始 Wan 线的标准评测全部取消——同起点下
+  codec≈A0 已由 diag 数字确认，tied-vs-decoder 改在 release 域内判决。
+  32 卡空闲 → 四条 release 线 4×8 卡并行，~1.1 天（A0 实测 25.7h）全部落地，
+  一次拿全 {无压缩, codec, +decoder, +grid} × release init 的完整消融矩阵。
+- 四线 eff batch 128 不变（8×bs16×accum1）；只有 4 卡时改回 GPU_NUM=4/ACCUM=2。
+- 训练完评测：各线 terminal ckpt 用 AIFlow_config_eval_libero 路线换 RUN_DIR/TAG
+  （a{0,1,2,3}_release_step24951），sweep 脚本会从 config.yaml 自动转发
+  mot_pretrained_path 重建冻结基座。
 
 ## 二、提交前核对（30 秒）
 
