@@ -35,18 +35,31 @@ trainer 的 dit-only 模式因此只解冻 action_expert/projector/adapter/codec
 `a0_release − A0(73.2)` = 冻结专家域内预训练的净贡献；接近 97.4 则确认 init 是主因，
 解冻（第二梯）降级为可选。RoboTwin 同理换 `robotwin_uncond_3cam_384.pt`（指南 §11）。
 
+**同起点（原始 Wan）codec vs A0 修正读数（10-13 下午补）**：之前"codec 占 ~10-15 点"
+是错位对比（a1 spatial 59 对 A0 四套件均值 73.2 —— object 套件 95-97% 拉高了均值）。
+同套件 spatial 对比：**A0 56.0/57.0/52.5（n=400/格，D=0/10/20）vs a1 codec
+59.0/61.0/63.0（n=100/格）vs a2 decoder 51/54/58 —— codec(tied) 与 A0 无统计差甚至
+略优，a2 略差但 CI(±10) 重叠**。含义：105× 压缩在同起点下近乎零成本，24 点 gap
+与压缩无关、全部来自 init/训练配方 → codec 作为 claim 安全；主 claim 线补
+`leapbot_ce_libero_a1_release`（AIFlow_config_libero_a1_release.py = a1 消融线
++ release init，其余逐项同 a1），a0_release 角色改为对照（分解 压缩成本 vs
+训练配方成本）。decoder 路线（a2）是否加码（如 rank 256→512、pool_grid 加 token）
+等两个信号再定：① 标准规模 a1/a2 评测（判决 tied vs decoder），② a1_release
+落点 —— 在原始 Wan 的 garbage-in 区调 codec 设计没有意义。
+
 ## 一、现在该提交什么（更新于 2026-10-13 下午）
 
 | 任务名（整段照抄） | 配置文件 | 卡数 | 预计耗时 | 状态 |
 |---|---|---|---|---|
-| `leapbot_ce_libero_a0_release` | AIFlow_config_libero_a0_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（**主线，根因验证**） |
+| `leapbot_ce_libero_a1_release` | AIFlow_config_libero_a1_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（**主 claim 线：codec + release init**） |
+| `leapbot_ce_libero_a0_release` | AIFlow_config_libero_a0_release.py | 4×H200 | ~2.1 天 | ⬜ 待提交（对照：无 codec + release init） |
 | `leapbot_ce_eval_libero_a1` | AIFlow_config_eval_libero_a1.py | 4×H200 | ~2h | ⬜ 待提交 |
 | `leapbot_ce_eval_libero_a2` | AIFlow_config_eval_libero_a2.py | 4×H200 | ~2h | ⬜ 待提交 |
 | `leapbot_ce_eval_libero_a3` | AIFlow_config_eval_libero_a3.py | 4×H200 | ~2h | ⬜ 等 a3 ckpt 落盘（~16:00，preflight 会挡） |
 
-- **优先级**：a0_release 训练最先提（24 点 gap 根因验证，见 10-13 条目）；
-  a1/a2 评测现在可提（codec 主线判决，tied vs decoder，500 eps/格 CI ±4.4）。
-- a0_release 与两条评测并行 = 12 卡；空闲卡常态 ~32，够。若紧张：评测可排队晚提。
+- **优先级**：a1_release 是论文 claim 数字（codec 105× + 域内预训练冻结专家），
+  a0_release 是它的无 codec 对照（分解压缩成本），两条训练 + a1/a2 评测并行 =
+  16 卡；空闲卡常态 ~32，够。若紧张：a0_release 可晚提（codec 同起点已证 ≈A0）。
 - 训练线节点选 H200：H100-80G 跑不了 bs16（bs8 实测峰值 64.2GB）。
 
 ## 二、提交前核对（30 秒）
