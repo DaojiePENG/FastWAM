@@ -1,6 +1,6 @@
 # RoboTwin 2.0 帧延迟基线 (CloudEdgeVLA 协议)
 
-*更新: 2026-10-11 12:56 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
+*更新: 2026-10-13 11:45 · 与 LIBERO 报告独立: 见 `baseline_results_libero.md`*
 
 ## 主表 (10 任务 × 50 trials, 成功率 %)
 
@@ -12,6 +12,7 @@
 | Fast-WAM (official release) | **99.6** | **96.8** | **96.6** | **94.6** | **81.6** | 16.5 |
 | DreamZero (AgiBot) | — | — | 0.0 (n=50) | — | — | — |
 | AHA-WAM (robotwin) | **97.6** | **92.8** | **84.2** | **67.8** | **48.6** | 450.7 |
+| StarWAM (mot, official) | **95.4** | **93.8** | **93.2** | **91.2** | 78.7 (n=450) | 16.7 |
 
 `replans/ep (D=40)` = 各泳道 audit jsonl 实测的每回合延迟抽样次数（均值；不同方法抽样节奏不同——Fast-WAM 24 步一 replan、Motus chunk=8、X-WAM 全块执行、AHA-WAM 逐步 replan——该列把节奏差异变成显式数字，见下方披露）。
 
@@ -107,6 +108,21 @@
 | shake_bottle | **100.0** | **100.0** | **100.0** | **100.0** | **100.0** |
 | stack_blocks_two | **100.0** | **100.0** | **94.0** | **62.0** | **8.0** |
 
+**StarWAM (mot, official)**
+
+| 任务 | D=0 | D=5 | D=10 | D=20 | D=40 |
+|---|---|---|---|---|---|
+| adjust_bottle | **100.0** | **100.0** | **100.0** | **96.0** | **90.0** |
+| beat_block_hammer | **96.0** | **96.0** | **96.0** | **88.0** | **66.0** |
+| click_alarmclock | **100.0** | **98.0** | **100.0** | **100.0** | **100.0** |
+| dump_bin_bigbin | **94.0** | **98.0** | **90.0** | **88.0** | — |
+| grab_roller | **100.0** | **100.0** | **100.0** | **100.0** | **98.0** |
+| handover_block | **80.0** | **68.0** | **70.0** | **64.0** | **44.0** |
+| put_object_cabinet | **90.0** | **92.0** | **90.0** | **92.0** | **78.0** |
+| scan_object | **94.0** | **86.0** | **86.0** | **86.0** | **60.0** |
+| shake_bottle | **100.0** | **100.0** | **100.0** | **98.0** | **94.0** |
+| stack_blocks_two | **100.0** | **100.0** | **100.0** | **100.0** | **78.0** |
+
 
 ---
 
@@ -184,6 +200,18 @@
   数据保留于 `leapbotce/robotwin_sweep/` 供配方就位后对照。后续计划
   (用户 2026-10-11 确认): 等 LIBERO 消融定夺最终配方后, 用最终最优方案
   重开 RoboTwin 泳道正式测评一次, 中间不再单独排查/重训。
+- **StarWAM (mot) 评估披露 (2026-10-13)**: 官方已发布 RoboTwin mot 配方权重
+  (本机在盘, 免下载)。官方推理 server (`examples/robotwin/policy_server.py`,
+  MoT 4/4 去噪步, `action_expert_init_from=null` 按官方 recipe override,
+  qpos 14-d 动作) 经 XPolicyLab 代理 adapter 接入, 双臂 aloha-agilex 仿真
+  本体与各泳道一致。帧延迟协议移植自 X-WAM adapter, 逐项语义一致
+  (d ~ U{0..D} 逐 replan 抽样, per-episode RNG, 单流全观测老化, 同款
+  X-WAM schema 审计 jsonl 落盘于 `<run_root>/delay_<D>/<task>_delay_metrics.jsonl`)。
+  **replan 节奏与 Fast-WAM 官方 24 步泳道几乎重合** (audit 实测 D=40
+  16.7 vs 16.5 replans/ep; D=0 仅 8.4 —— 成功回合更短、replan 更少), 两行
+  延迟暴露剂量直接可比。任务敏感度排序与 AHA/Fast-WAM 一致 (handover
+  80→44 / scan_object 94→60 / bbh 96→66 最敏感, click/shake/grab_roller
+  准静态几乎不掉)。冒烟: bbh 5/5 (官方 97%), 10 任务 × 2 ep 19/20。
 
 ### Fast-WAM 曲线为何远好于 LIBERO 泳道 (2026-10-11 延迟审计归因)
 
@@ -206,6 +234,9 @@ Fast-WAM RoboTwin 只掉 18 点而 LIBERO 同款官方 ckpt 掉 95 点, 复核�
      put_object_cabinet 26.6 → -26。
    - AHA: click_alarmclock 147 → 0, shake_bottle 186 → 0, grab_roller 258 → -6;
      handover 795 → -88, stack_blocks 791 → -92, put_object_cabinet 674 → -68。
+   - StarWAM (2026-10-13): 16.7 replans/ep → 95.4→78.7 (-16.7), 与 Fast-WAM
+     同节奏 (16.5 → -18.0) 掉幅几乎相同 —— 同剂量同掉幅, 进一步支持
+     剂量决定论 (排除"模型差异主导"的解释)。
 4. **任务构成**: click_alarmclock / shake_bottle / grab_roller 目标准静态,
    任意暴露量级都几乎不掉 (AHA 147-258 次暴露仍 100/100/94), 3/10 任务托住
    均值; LIBERO 四套件全是精密短回合操作, 没有这类"免死"任务。
