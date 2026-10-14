@@ -137,5 +137,11 @@ if _VARIANT_DIR is None:
 _mod = importlib.import_module(f"AIFlow_config_{_VARIANT}")
 AutoTrain = _mod.AutoTrain  # noqa: F401 平台入口
 cfg = _mod.cfg  # noqa: F401 平台读 __C.TRAIN.CMD 走这里
-__C = _mod.__C  # noqa: F401
+# 薄委托变体（如 eval_libero_a1_release）经 `from 基座 import *` 转发接口，
+# star-import 不带下划线名（__C 不进 *）——直接 _mod.__C 会在 import 期抛
+# AttributeError，平台把 import 异常折成「aiflowconfig.py有错误」秒挂。基座的
+# cfg 与 __C 是同一对象，落 cfg 兜底。
+__C = getattr(_mod, "__C", None)
+if __C is None:
+    __C = getattr(_mod, "cfg", None)
 GPU_NUM = getattr(_mod, "GPU_NUM", os.environ.get("GPU_NUM", "1"))  # noqa: F401

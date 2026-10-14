@@ -3,6 +3,33 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-14 release 矩阵收官进度：a1/a3 完成，4 条评测变体就绪（含分发器 `__C` 兜底修复）
+
+**训练线状态（14:12 定时检查 + 14:30 复核）**：a1（bb2ed8e6）、a3（edb75c02）已完成 24951 步，
+terminal ckpt `step_024951.pt` 分别于 13:23 / 13:17 落盘（`checkpoints/weights/`，另存 8317/16634，
+keep_last=3）；a2（c76ca2d0）step≈24000，预计 ~15:15 落盘；a0（cea5a012）step≈19500，预计 ~21:00 ——
+a0 落在慢节点（全程持续 ~0.21 step/s，兄弟线 0.29，逐分钟轨迹无中断无重启，非故障），只是晚到。
+
+**评测变体（新增 4 个，`AIFlow_config_eval_libero_a{0,1,2,3}_release.py`）**：任务名
+`leapbot_ce_eval_libero_a{0..3}_release`；协议 = 4 套件 × D{0,5,10,20,40} × 50 trials（与原
+A0 dtrain20 扫描同款默认）；ckpt 钉死各线 `step_024951.pt`；model.* 全由 RUN_DIR 的 config.yaml
+推导（sweep 白名单自动转发 `mot_pretrained_path`，评测基座不会拿原始 Wan 重建基座）。
+
+**提交前修复两个坑（本地冒烟暴露）**：
+
+1. **分发器 `__C` 兜底**：薄委托变体经 `from 基座 import *` 转发接口，star-import 不带
+   下划线名 → 变体无 `__C` → 分发器尾部 `_mod.__C` 在平台 import 期抛 AttributeError，
+   被折成「aiflowconfig.py有错误」秒挂。老的 a1/a2/a3 诊断评测都走本地调试卡、从没经过
+   分发器，所以此坑从未暴露。修复 = 分发器 `getattr(_mod, "__C", None)` 落 `cfg` 兜底
+   （基座 cfg 与 __C 同一对象）+ 4 个新变体各自显式 `from 基座 import __C`。老变体
+   `eval_libero_a2` 冒烟从 AttributeError 变为正常导入，证明兜底生效。
+2. **评测基座 ckpt 存在守卫**（`AIFlow_config_eval_libero.py` AutoTrain）：显式指定的
+   `AI_FLOW_CKPT` 不存在时立刻报错返回，不拉起 pod 跑到评测期才炸 —— a0/a2 的评测须等
+   terminal ckpt 落盘后再提交。
+
+回归：4 新变体（对抗哈希 `a0a1a2a3` 下正确路由 + 参数正确）+ 昨日 12 用例路由全过；
+分发器同步 `daojie_leap_configs/`。a1/a3 评测可立即提交，a2 ~15:30 后、a0 ~21:30 后。
+
 ## 2026-10-13 a2 重提任务被分发器劫持到 a0 配置（jobid 哈希子串撞关键字）
 
 **现象（13:30 发现）**：a2 重提任务（21932579，目录 `leapbot_ce_libero_a2_release-26fa02d4`）

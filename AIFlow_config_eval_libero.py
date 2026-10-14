@@ -176,6 +176,12 @@ def AutoTrain(**params) -> bool:
         print(f"[LeapBotCE LIBERO eval AIFlow] 错误: 工作目录 {workdir} 下找不到 {SWEEP_REL}，"
               "请确认申请资源时工作目录选到 FastWAM 仓库根目录")
         return False
+    # 显式指定 ckpt 时先验存在（10-14：release 矩阵评测要等训练线 terminal ckpt
+    # 落盘，提前提交应立刻报错而不是拉起 pod 后在评测里才炸）。
+    if AI_FLOW_CKPT not in ("", "latest") and not os.path.isfile(AI_FLOW_CKPT):
+        print(f"[LeapBotCE LIBERO eval AIFlow] 错误: 指定 ckpt 不存在: {AI_FLOW_CKPT}"
+              "（对应训练线是否已跑完落盘？）")
+        return False
 
     cmd = _build_cmd()
     __C.TRAIN.CMD = cmd
