@@ -321,7 +321,16 @@ if (( PACK <= 1 )); then
   for delay in "${DELAY_ARR[@]}"; do
     out="${EVAL_ROOT}/${TAG}/delay_${delay}"
     logf="${LOG_DIR}/${TAG}_delay${delay}.log"
-    if [[ -f "${out}/.done" ]]; then log "跳过已完成: delay=${delay}"; continue; fi
+    # ⚠️ .done 且结果数 ≥ EXPECTED 才跳过：探针任务（suite 范围窄）的 packed
+    # 尾部也会按它自己的范围写 delay 级 .done（10-14 实锤：spatial 探针把
+    # delay_0/.done 写满语义，legacy 全量任务整段跳过 D0，漏 3 个套件）。
+    # count_results 数的是共享 TAG 目录全delay，全量任务 EXPECTED=40，
+    # 探针残留的 10 份不够跳过 → manager 只补缺失后重写 .done。
+    if [[ -f "${out}/.done" ]]; then
+      n_done="$(count_results "${out}")"
+      if (( n_done >= EXPECTED )); then log "跳过已完成: delay=${delay}"; continue; fi
+      log "delay=${delay} 有 .done 但结果 ${n_done}/${EXPECTED} 不足, 重跑补缺"
+    fi
     mkdir -p "${out}"
     log "开始: delay=${delay}（日志 ${logf}）"
     rc=0
