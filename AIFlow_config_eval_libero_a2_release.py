@@ -6,7 +6,8 @@
 评测对象 = release-init 矩阵 a2 线 24951 终点
 （runs/libero_all_leapbotce_codec/codec_a2_release_seed42_h200，
 use_kv_decoder=true 由 RUN_DIR 的 config.yaml 带出）。
-协议 = 4 套件 × D{0,5,10,20,40} × 50 trials（与原 A0 dtrain20 扫描同款）。
+协议 = libero_spatial 整套 × D=0 × 50 trials（10-14 快速门控探针，同 a1/a3：通过后翻回
+4 套件 × D{0,5,10,20,40}，skip-existing 自动续跑不浪费）。
 模型侧 model.* 全部由 RUN_DIR 的 config.yaml 推导（sweep 白名单自动转发
 mot_pretrained_path —— delta ckpt 只存微调部分，冻结基座必须从同一 release
 ckpt 重建，见 LeapBotCE.save_checkpoint）。
@@ -34,7 +35,8 @@ os.environ.setdefault(
     "codec_a2_release_seed42_h200/checkpoints/weights/step_024951.pt",
 )
 os.environ.setdefault("AI_FLOW_TAG", "a2_release_step24951")
-os.environ.setdefault("AI_FLOW_DELAYS", "0 5 10 20 40")
+os.environ.setdefault("AI_FLOW_DELAYS", "0")
+os.environ.setdefault("AI_FLOW_SUITES", "libero_spatial")
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
 
 from AIFlow_config_eval_libero import *  # noqa: F401,F403,E402
