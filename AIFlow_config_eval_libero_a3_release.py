@@ -8,6 +8,8 @@
 edge_vision.selection=grid 由 RUN_DIR 的 config.yaml 带出）。
 协议 = 4 套件 × D{0,5,10,20,40} × 50 trials（与原 A0 dtrain20 扫描同款；10-14 15:52
 探针门控已过：spatial D0 前 250 episodes a1 95.2% / a3 94.0%，raw-Wan 同位 59%）。
+AI_FLOW_PACK=1（10-14 20:xx 内存墙事故，同 a1 变体 docstring：32 workers 在部分
+节点遍地 -6/-9，全量协议钉 legacy 单 manager 串行模式）。
 模型侧 model.* 全部由 RUN_DIR 的 config.yaml 推导（sweep 白名单自动转发
 mot_pretrained_path —— delta ckpt 只存微调部分，冻结基座必须从同一 release
 ckpt 重建，见 LeapBotCE.save_checkpoint）。
@@ -37,6 +39,7 @@ os.environ.setdefault(
 os.environ.setdefault("AI_FLOW_TAG", "a3_release_step24951")
 os.environ.setdefault("AI_FLOW_DELAYS", "0 5 10 20 40")
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
+os.environ.setdefault("AI_FLOW_PACK", "1")  # legacy 串行模式, 见 docstring 内存墙事故
 
 from AIFlow_config_eval_libero import *  # noqa: F401,F403,E402
 from AIFlow_config_eval_libero import __C  # noqa: F401,E402 显式导入（star 不带下划线名），平台经分发器读 __C.TRAIN.CMD

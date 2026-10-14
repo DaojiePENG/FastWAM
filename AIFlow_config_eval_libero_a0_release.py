@@ -35,6 +35,9 @@ os.environ.setdefault(
 os.environ.setdefault("AI_FLOW_TAG", "a0_release_step24951")
 os.environ.setdefault("AI_FLOW_DELAYS", "0 5 10 20 40")
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
+# 10-14 20:xx 内存墙事故，见 a1 变体 docstring：32 workers 部分节点遍地 -6/-9，
+# 钉 legacy 单 manager 串行模式（本变体当前即全量协议，直接生效）。
+os.environ.setdefault("AI_FLOW_PACK", "1")
 
 from AIFlow_config_eval_libero import *  # noqa: F401,F403,E402
 from AIFlow_config_eval_libero import __C  # noqa: F401,E402 显式导入（star 不带下划线名），平台经分发器读 __C.TRAIN.CMD

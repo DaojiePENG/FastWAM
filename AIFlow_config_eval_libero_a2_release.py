@@ -38,6 +38,9 @@ os.environ.setdefault("AI_FLOW_TAG", "a2_release_step24951")
 os.environ.setdefault("AI_FLOW_DELAYS", "0")
 os.environ.setdefault("AI_FLOW_SUITES", "libero_spatial")
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
+# 探针协议 1 格子不受影响；翻回全量协议后 AI_FLOW_PACK=1 自动兜底
+# （10-14 20:xx 内存墙事故，见 a1 变体 docstring：32 workers 部分节点遍地 -6/-9）。
+os.environ.setdefault("AI_FLOW_PACK", "1")
 
 from AIFlow_config_eval_libero import *  # noqa: F401,F403,E402
 from AIFlow_config_eval_libero import __C  # noqa: F401,E402 显式导入（star 不带下划线名），平台经分发器读 __C.TRAIN.CMD

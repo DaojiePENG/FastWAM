@@ -3,6 +3,32 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-14 20:30 a1 重提任务撞节点内存墙：32 workers 遍地 -6/-9 → 全量协议钉 PACK=1
+
+e6318fee（a1 重提，8×H200，PACK=4 → 全场 32 workers）18:10 起跑，**10 分钟后开始
+worker 静默死亡**（rc=-6 SIGABRT 无 traceback，个别 -9 SIGKILL=OOM-kill 特征），
+至 19:58 共 27 次、遍布全部 20 格；goal@D0 / 10@D0 双 worker 双死 → cell 报废
+（重试 2 次盘面 0/10），19:58 时仅 object@D0 完成 10/10。worker 日志里 episode
+全部 success、MP4 正常保存，进程中途无声死掉 = 典型 C++ bad_alloc abort。
+
+**根因**：32 workers × ~22-30GB 主机 RSS（Wan5B + 文本编码器 + 缓冲）≈ 700-960GB，
+当天节点主机内存撑不住。旁证三点：10-10 同布局（8 卡 PACK=4）零死亡跑完 4000 eps
+= 那个节点内存更大；当天下午 16 workers 探针任务（151350/151401）无恙 → 当天节点
+可用内存夹在 350-700GB 之间；首个死亡在满载后 10 分钟（非慢爬坡，是硬顶）。
+
+**处置**（AI_FLOW_PACK 旋钮 + 全量协议钉 PACK=1）：
+- 基座加 `AI_FLOW_PACK` env → `LIBERO_LIBERO_PACK` 透传（镜像其它 AI_FLOW_* 旋钮）；
+- 四个 release 变体 `setdefault("AI_FLOW_PACK", "1")` = legacy 单 manager 全卡串行
+  （8 workers ~200GB，任何节点都稳）；a2/a0 探针协议不受影响，翻全量后自动兜底；
+- a1 任务 e6318fee 请用户停掉；a3 重提同样带 PACK=1。已跑成果不浪费：spatial@D0 +
+  object@D0 各 500 eps 在 TAG 下，skip-existing / manager 只补缺失自动计入。
+
+**PACK=1 全量时长**：D0 补 goal/10（~1h）+ D5-D40（2000 eps/delay，8 workers
+~20-30s/ep → ~1.5-2h/delay）≈ **8-9h 过夜**，明早出 a1/a3 全量读数。a3 待同样
+配置提交；a2 本地探针 17:05 起跑已收官（读数见下条补记）；a0 训练 ~21:20 落盘。
+冒烟注意：同进程连续 import 多个变体会因基座模块缓存 + env setdefault 串味
+（四个全显示第一个的 TAG）——平台每任务独立进程无此问题，冒烟须逐个独立进程跑。
+
 ## 2026-10-14 17:05 探针终值双源互证 + a2 探针提前链上；用户重提 a1/a3 全量
 
 平台探针任务（07855134/f973b5fe，pod 在 16:10 翻回全量前启动 → 跑的是探针协议）与本地

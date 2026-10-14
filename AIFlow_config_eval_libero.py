@@ -90,6 +90,12 @@ AI_FLOW_EVAL_EXTRA = os.environ.get("AI_FLOW_EVAL_EXTRA", "").strip()
 # hydra task 组透传（留空 = sweep 脚本从 RUN_DIR/config.yaml 自动推导：
 # kv_codec.enabled → codec 消融 task，否则 frozen-cloud；一般不用设）。
 AI_FLOW_EVAL_TASK = os.environ.get("AI_FLOW_EVAL_TASK", "").strip()
+# 并发 worker 密度旋钮（10-14 节点内存墙事故后新增）：默认空 = 脚本按卡型
+# 自动（H200→PACK=4, 8 卡全场 32 workers）；部分集群节点主机内存撑不住
+# 32 workers 全载（-6 abort / -9 OOM-kill 遍地，10-14 e6318fee 实锤），
+# 变体应 setdefault "1"（legacy 单 manager 全卡串行，8 workers ~200GB，
+# 任何节点都稳）。平台注入同名 env 时以 env 为准。
+AI_FLOW_PACK = os.environ.get("AI_FLOW_PACK", "").strip()
 
 SWEEP_REL = Path("scripts") / "eval_leapbotce_libero_sweep_2653853.sh"
 
@@ -132,6 +138,8 @@ def _build_cmd() -> str:
         smoke += f" LIBERO_EVAL_EXTRA={_q(AI_FLOW_EVAL_EXTRA)}"
     if AI_FLOW_EVAL_TASK:
         smoke += f" LIBERO_EVAL_TASK={_q(AI_FLOW_EVAL_TASK)}"
+    if AI_FLOW_PACK:
+        smoke += f" LIBERO_LIBERO_PACK={_q(AI_FLOW_PACK)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
         f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)} RUN_DIR={_q(AI_FLOW_RUN_DIR)}"
