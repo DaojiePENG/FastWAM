@@ -82,7 +82,22 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# ── 自拷贝 re-exec 到本地盘（NFS stale-handle 加固，10-15 a3 fb73e4f6 实锤）──
+# 平台 pod 的 userPath 是 NFS 视图；5h+ 任务里 bash 增量读脚本文件遇 NFS 偶发
+# stale handle 直接打断（a3 在全部 delay 完成+summary 写盘后死在收尾，任务被平台
+# 标「训练程序错误」）。开场把脚本+env 拷到 /tmp 再 exec 本地副本，长跑不再持有
+# NFS 文件句柄；PROJECT_ROOT 经 env 转发保持指向真仓库（副本里 env 也已就位）。
+if [[ -z "${LEAPBOTCE_PROJECT_ROOT:-}" && "${SCRIPT_DIR}" == /dahuafs/* && -d /tmp ]]; then
+  _LOCAL="/tmp/leapbotce_sweep_local"
+  if mkdir -p "${_LOCAL}/scripts" \
+     && cp "${BASH_SOURCE[0]}" "${_LOCAL}/scripts/" \
+     && cp "${SCRIPT_DIR}/env_2653853.sh" "${_LOCAL}/scripts/"; then
+    echo "[libero-sweep] re-exec from local copy: ${_LOCAL}/scripts/ (NFS stale-handle hardening)"
+    export LEAPBOTCE_PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+    exec bash "${_LOCAL}/scripts/$(basename -- "${BASH_SOURCE[0]}")" "$@"
+  fi
+fi
+PROJECT_ROOT="${LEAPBOTCE_PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 # shellcheck source=env_2653853.sh
 source "${SCRIPT_DIR}/env_2653853.sh"
 cd "${PROJECT_ROOT}"
