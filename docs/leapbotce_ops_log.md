@@ -3,6 +3,29 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-15 10:45 用户双指示：时延档位准则 D{0,10,20,40} + a1 检查点趋势测试发车
+
+**准则 1（长期）**：时延评测一律只测 D{0,10,20,40}，不跑 D5（memory 已存
+`delay-eval-delays-rule`）。落地：a0 全量变体 `AI_FLOW_DELAYS` 改 "0 10 20 40"
+（FastWAM 65308c8 + daojie acdccc6 双树），a0 提交预估 8.5h→~6.8h；a3 fill-up
+只缺 D0 不受影响。a1/a2 的 D5 数据仅作参考列，论文矩阵列 = D0/D10/D20/D40。
+
+**准则 2 → 趋势测试**：用户假说 = 双流 0.5:0.5 加权下训太多步「保留率↑但 D0↓」
+（过度训练），参照 CloudEdgeVLA 自家 ~95+。测试布局（卡 4/5/7，卡 6 有 VLASH
+长跑绕开；spatial × 50 trials = 500 eps/格，seed 1234）：
+
+| ckpt | D0 | D20 | tag |
+|---|---|---|---|
+| step_008317 (3.3ep) | 新跑 | 新跑 | a1_release_step008317_probe_local |
+| step_016634 (6.7ep) | 新跑 | 新跑 | a1_release_step016634_probe_local |
+| step_024951 (10ep) | 已有 94.4 | 新跑 | a1_release_step24951_probe_local（复用，skip D0 ✓） |
+
+10:41/10:42 三实例起跑，driver log = `$LR/driver_a1_step{008317,016634}_trend.log`
++ `driver_a1_step024951_trend_d20.log`；24951 的 skip 走新守卫（"规范目录已满
+10 份"）验证通过。ETA ~2-3h。判读：D0 随步数单调降 + D20 保留率升 = 过度训练
+实锤（药方：减步数/λ warmup/中期挑 ckpt）；D0 单调升 = 欠训练（LoRA/续训方向）；
+16634 峰值 = 最优 ckpt 在中间 → 后续配中期 eval 挑选。
+
 ## 2026-10-15 10:30 codec 架构 + D0 差距归因 + 训练预算对比（系统分析）
 
 **Codec 结构**（`src/fastwam/models/wan22/cloud_kv_adapter.py`）：不是「先适配再 codec」——
