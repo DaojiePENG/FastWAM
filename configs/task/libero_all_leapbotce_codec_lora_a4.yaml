@@ -1,0 +1,66 @@
+# @package _global_
+defaults:
+  - override /data: libero_all_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# A4: producer-side adaptation — a1 (codec + tied K/V) continued from its
+# 10-epoch endpoint with LoRA injected into the frozen video expert's
+# attention projections (q/k/v/o, rank 16).  Two effects in one run, cleanly
+# attributable:
+#   * continued dual-stream training (fresh:stale 1:1) -> retention keeps
+#     climbing (probe evidence: D20 +9.0 points per 3.3 epochs, zero decay);
+#   * LoRA -> D0 / goal / libero_10 gap (D0 plateaus by ~6.7 epochs under
+#     pure continued training, so any D0 gain is attributable to LoRA).
+# The LoRA B factors are zero-initialized and resume loads a1's delta
+# weights, so step 0 reproduces a1's endpoint behaviour exactly.
+#
+# lr: constant 1e-4 (cosine already annealed to 0; restart must not shock the
+# converged modules; 1e-4 is the LoRA standard and matches the official
+# expert recipe).  Video-expert gradient checkpointing is enabled by the edge
+# train factory right after LoRA injection (post-MoT-init), so LoRA backward
+# can flow through the 5B tower without keeping every block's activations; the
+# constructor-level video_dit_config switch below must stay false because the
+# MoT __init__ guard rejects any per-expert checkpointing at build time.
+batch_size: 16
+num_workers: 8
+learning_rate: 1.0e-4
+lr_scheduler_type: constant
+num_epochs: 10
+max_steps: 24951
+log_every: 10
+save_every: 12475
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 1
+weight_decay: 1.0e-2
+# Weight-only resume from the a1 endpoint (optimizer/scheduler restart fresh).
+resume: /mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt
+seed: 42
+model:
+  mot_checkpoint_mixed_attn: false
+  video_dit_config:
+    # Must stay false at construction (MoT __init__ guard); the edge train
+    # factory flips the video expert's runtime flag after LoRA injection.
+    use_gradient_checkpointing: false
+  video_lora:
+    enabled: true
+    rank: 16
+    alpha: 32.0
+    dropout: 0.0
+    targets: [q, k, v, o]
+  cloudedge:
+    stale_loss_warmup_steps: -1
+    kv_codec:
+      enabled: true
+      pool_grid: [7, 8]
+      use_kv_decoder: false
+  edge_vision:
+    mode: select
+    tokens_per_view: 5
+wandb:
+  project: leapbotce
+  name: libero_all_leapbotce_codec_lora_a4
+MULTIRUN:
+  evaluator_script: experiments/libero/eval_libero_cloudedge.py
+  task_suite_names: [libero_spatial, libero_object, libero_goal, libero_10]

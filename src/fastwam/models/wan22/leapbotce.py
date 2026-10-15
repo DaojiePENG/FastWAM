@@ -548,6 +548,13 @@ class LeapBotCE(FastWAM):
         if self.cloud_kv_codec is not None:
             payload["cloud_kv_codec"] = self.cloud_kv_codec.state_dict()
             payload["leapbotce_meta"]["cloud_kv_codec"] = self.cloud_kv_codec.config()
+        video_lora_wrappers = getattr(self, "video_lora_wrappers", None)
+        if video_lora_wrappers:
+            payload["video_lora"] = [w.state_dict() for w in video_lora_wrappers]
+            payload["leapbotce_meta"]["video_lora"] = {
+                "num_wrappers": len(video_lora_wrappers),
+                "rank": int(video_lora_wrappers[0].rank),
+            }
         if self.proprio_encoder is not None:
             payload["proprio_encoder"] = self.proprio_encoder.state_dict()
         if optimizer is not None:
@@ -595,6 +602,26 @@ class LeapBotCE(FastWAM):
                 raise ValueError(
                     "The model expects a cloud_kv_codec, but the checkpoint has none; "
                     "rebuild the model with the matching codec configuration."
+                )
+            lora_states = payload.get("video_lora")
+            lora_wrappers = getattr(self, "video_lora_wrappers", None)
+            if lora_states is not None:
+                if not lora_wrappers:
+                    raise ValueError(
+                        "Checkpoint contains video_lora state, but the model was created "
+                        "with video_lora.enabled=false; rebuild the model with LoRA injected."
+                    )
+                if len(lora_states) != len(lora_wrappers):
+                    raise ValueError(
+                        f"Checkpoint has {len(lora_states)} LoRA states but the model "
+                        f"has {len(lora_wrappers)} wrappers; configuration mismatch."
+                    )
+                for wrapper, state in zip(lora_wrappers, lora_states):
+                    wrapper.load_state_dict(state, strict=True)
+            elif lora_wrappers:
+                logger.warning(
+                    "Checkpoint has no video_lora state; keeping LoRA factors at "
+                    "zero-init (B=0, injection is a no-op)."
                 )
             if optimizer is not None and "optimizer" in payload:
                 optimizer.load_state_dict(payload["optimizer"])

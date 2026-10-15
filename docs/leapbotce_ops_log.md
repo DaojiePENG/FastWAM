@@ -3,6 +3,77 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-15 21:15 a4 LoRA 全链路冒烟通过：训练侧 20 步 + 评测侧 load+双路前向，可以提交
+
+**a4 = a1 终点 resume + LoRA(video expert q/k/v/o, r16/α32) + 10ep constant lr 1e-4**，
+双重收益单线归因：续训 → 保留率继续爬（趋势探针 D20 +9.0/3.3ep 零递减）；
+LoRA → D0/goal/10 缺口（纯续训 D0 6.7ep 已饱和，D0 上涨只能归因 LoRA）。
+
+**实现（全部已 commit）**：
+- `video_lora.py`：LoRALinear（base 存普通 list 不进 module 树 → trainer
+  freeze-then-enable 只启 lora 因子，base 恒冻结）+ inject_video_lora（120 wrappers
+  = 30 层 × qkvo，11.80M 参数，Kaiming-A/零-B → 注入瞬间行为=a1 终点）。
+- factory（leapbotce_edge_train_factory.py）：pop video_lora 配置 → 注入 → 注册
+  `model.dit["video_lora"]` → **post-init 开 video expert checkpointing**。
+- save/load（leapbotce.py）：checkpoint 增 `video_lora` 段（120×(lora_a,lora_b) +
+  meta）；load 侧 states/wrappers 数量不匹配即 raise，无 states 有 wrappers 仅警告。
+
+**关键坑（MoT 守卫）**：MoT.__init__ 硬禁任何 expert 开 gradient checkpointing
+（"compiled tensor core" 守卫，mot.py:53-62），但其运行时 checkpoint 路径
+`_apply_post_with_optional_checkpoint` 是完整实现且 `compile_training_layers=False`
+硬编码（:31）→ compile 冲突实际不存在。**解法 = 构造期保持 false 过守卫，
+factory 注入 LoRA 后（MoT.__init__ 已过）直接设
+`model.video_expert.use_gradient_checkpointing = True`**（MoT.mixtures 持同一对象，
+运行时读取生效）。a1/a2/a3 路径零改动。
+
+**训练侧冒烟（B4, 20 步, GPU4/H800）**：权重加载 74s 无 modelscope 问题（17:55
+前夜的 ConnectTimeout = env 未齐/瞬时网络，非代码）→ MoT 构建过守卫 → LoRA 注入
+打印 ✓ → resume 加载 a1 step_024951（weight-only）✓ → 20/20 步 loss 0.52-1.16 ✓
+→ ckpt 含 video_lora 120 项，**lora_b abs-sum=22.0 ≠ 0（梯度确实流动）** ✓。
+
+**评测侧冒烟（关键新链路）**：eval 与训练共用 `_target_=
+leapbotce_edge_train_factory.create_leapbotce`（configs/model/leapbotce.yaml:1）→
+eval 按 run config instantiate 自动注入 → load_checkpoint strict 恢复
+**lora_b=22.0000 与训练端逐位一致** ✓ → encode_cloud 前向 ✓（cache 56 token/30 层，
+LoRA 在 cloud KV 生产路径生效）→ infer_action_edge 前向 ✓（edge 消费路径 2 步去噪
+完整返回）。eval 里 self.training=False → checkpointing 不触发，零推理开销。
+sweep 脚本固定 `model.load_text_encoder=true`（:315），评测载入 T5 在线编码。
+
+**显存外推**：B4/H800 冒烟自用 ~16GB（权重 6GB + ZeRO-1 优化器 + B4 激活，
+checkpointing 已省掉 _post_fn 大头）。B16/H200 激活增量估算：30 层 ×
+(attn_input+q+k+v+mixed) × [16,~300,3072] bf16 ≈ +5GB 量级，141GB 富余极大。
+
+**a4 训练提交命令（8×H200 单机，模板=a1_release bb2ed8e6 实测改参）**：
+
+```
+bash scripts/train_leapbotce_libero_2653853.sh \
+  --task libero_all_leapbotce_codec_lora_a4 \
+  --gpus 8 --batch-size 16 --accum 1 --delay 20 --seed 42 \
+  --steps 24951 --lr 0.0001 --scheduler constant \
+  --weight-decay 0.01 --grad-clip 1.0 --workers 8 \
+  --stale-lambda 0.5 --stale-warmup -1 \
+  --save-every 12475 --keep-ckpt 1 \
+  --run-name codec_a4_lora_seed42_h200 --wandb \
+  -- resume=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt \
+     model.mot_pretrained_path=/mnt/c2-worldmodel/2638088/fastwam/fastwam_release/libero_uncond_2cam224.pt \
+     wandb.name=codec_a4_lora_seed42_h200 wandb.project=leapbotce
+```
+
+时长预估：a1_release 实测 ~24h（10-13 13:14 → 10-14 13:23）；a4 video expert 建图
++ checkpoint 重算 → **~30-36h**。中点 ckpt step_012475（save_every 12475）落盘后
+可先做 spatial 探针门控，不必等终点。
+
+**待提交清单（更新，表格制式）**：
+
+| 优先级 | 任务名 | 卡型×卡数 | 时长 | 前置 | config |
+|---|---|---|---|---|---|
+| 1 | leapbot_ce_eval_libero_a3_release（同名重提，只补 D0 三套件）【已提交排队】 | H200×8 | ~1.5h | 无 | daojie_leap_configs/AIFlow_config_eval_libero_a3_release.py |
+| 2 | leapbot_ce_eval_libero_a0_release（重提；坏节点 ~2min 快速失败再重提）【已提交排队】 | H200×8 | ~6.8h | 无 | daojie_leap_configs/AIFlow_config_eval_libero_a0_release.py |
+| 3 | leapbot_ce_train_libero（a4 LoRA 线，命令见上） | H200×8 单机 | ~30-36h | 无（a1 终点 ckpt 已在存储；冒烟已过） | FastWAM task=libero_all_leapbotce_codec_lora_a4 |
+
+a4 与 1/2 不冲突（训练 vs 评测不同资源池），可同时提交（24 卡 < 空闲常态 ~32）。
+暂缓不变：λ 消融线（非迫切）、P0 200k 终点评测、RoboTwin 侧（两个 fork 在跑，不动）。
+
 ## 2026-10-15 17:55 a0 失败定性：又抽中小内存节点（8 workers 集体 SIGABRT）；脚本加内存 preflight；全盘提交清单
 
 **a0（22012929 / df18020a）错误定性**：17:00 起 pod，每个 delay 双尝试全灭
