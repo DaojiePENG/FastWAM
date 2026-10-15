@@ -3,6 +3,35 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-15 10:30 codec 架构 + D0 差距归因 + 训练预算对比（系统分析）
+
+**Codec 结构**（`src/fastwam/models/wan22/cloud_kv_adapter.py`）：不是「先适配再 codec」——
+`cloud_kv_adapter`（低秩残差适配器）在全部 release 线 enabled:false，**KV 直接进 codec**。
+数据流 = 30 层 video-expert **V cache（K 整体丢弃）** → 固定不可学 `adaptive_avg_pool2d`
+[7,8]=56 tokens → 可学层间 softmax 标量混合（30 层→1）→ 逐点 MLP 瓶颈（C→1024→C，
+无 token 间交互）→ z。a1/a3 tied K=V（z 同时当 K 和 V，逐层标量 scale 调制）；a2
+低秩 decoder（rank 256）从同一 z 解耦。五个表达力天花板：①K 丢弃 ②固定池化 ③层轴
+单混合 ④无 token 间 attention ⑤tied K=V。
+
+**D0 差距归因（关键对照 = a0）**：a0（无压缩、全 KV 直传、同超参）spatial D0 探针
+91.0 ≈ a1 的 94.4/93.2 —— **压缩本身在 D0 几乎零成本**。a1 全量 D0 macro 91.5
+（object 96.0 / spatial 93.2 / goal 89.6 / 10 87.2）vs 官方 expert 97.4 的 ~6 点差
+不在 codec 表达力，在「冻结 5B expert + 只训 1.05B（action expert + projector +
+codec）+ 边缘接口要重新学会消费 KV」（raw-Wan 不微调直接走接口 = 59%）。
+**预算对比**：官方 libero_uncond_2cam224_1e-4.yaml = 同 4 套件 / batch 16 / 10
+epochs / lr 1e-4 / eval_every 200 挑 best；我们 = 同 epoch 数（24951 步恰好 10
+epochs）/ lr 2.8e-4 / 只评终点 ckpt。我们的任务更难（新模块从零学 + delay≤20
+随机化 + 压缩在环），diag 同协议 step8317 42.0% → step24951 61.0%（+19，均系
+mot_pretrained_path 修复前破损基座，绝对值不可比、delta 有效）= 训练末期仍陡升，
+**欠训练有实证**。
+
+**结论与建议**：等 a2 全量（ETA 13:00）——a2≈a1 则 tied K=V 也非 D0 主要瓶颈，
+架构天花板暂不绑定；最直接检验 = a1 续训 2× 预算（warm restart 或恒定小 lr）+
+打开中途 eval 挑 best ckpt（对齐官方做法）；架构升级（传 K / per-group 层混合 /
+bottleneck 后加 token 间轻量 self-attn / edge tokens 5→8）只在预算拉平仍卡 91-92
+时再动。D40 大跌（70.1）另有原因：训练 max_delay_steps=20，D40 属外推，协议问题
+非容量问题。
+
 ## 2026-10-15 09:50 a3「训练程序错误」定性：NFS stale handle 收尾打断，数据完好；脚本自拷贝加固
 
 a3 主任务（21985458 / fb73e4f6）平台状态「训练程序错误」，实查：**全部工作已完成**
@@ -19,11 +48,6 @@ a3 主任务（21985458 / fb73e4f6）平台状态「训练程序错误」，实�
 **平台任务现状**：a1（21998396 / 2a64d68e）08:11 干净收官（全部结束 5×40/40）；
 a2（21998406 / 4167f848）08:11 起 pod，全量协议 + PACK=1 ✓，D0 已完（67 min/2000 eps）
 09:20 起 D5，ETA ~13:00。待提交：a3 D0 fill-up（同名重提，~1.5h）、a0 全量（~8.5h）。
-
-## 2026-10-15 07:37 收割隔夜全量：a3 主任务完（D5-D40 零死亡），a1 重提 03:14 健康（D40 收尾），初步矩阵读数
-
-> 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
-> 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
 ## 2026-10-15 07:37 收割隔夜全量：a3 主任务完（D5-D40 零死亡），a1 重提 03:14 健康（D40 收尾），初步矩阵读数
 
