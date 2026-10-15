@@ -3,6 +3,28 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-15 09:50 a3「训练程序错误」定性：NFS stale handle 收尾打断，数据完好；脚本自拷贝加固
+
+a3 主任务（21985458 / fb73e4f6）平台状态「训练程序错误」，实查：**全部工作已完成**
+——D5/D10/D20/D40 各 40/40、delay_sweep_summary.json + delay_sweep_tasks.csv 落盘、
+零 worker 死亡；train.log 最后一行 `error reading input file: Stale file handle` =
+跑了 5h 后 bash 增量读 NFS 上的脚本文件遇 NFS 偶发 stale handle，死在**收尾阶段**
+（数据写盘之后），平台按退出码标错误。纯展示问题。
+
+**加固**（ac4a400）：脚本开场自拷贝（脚本 + env_2653853.sh）到 /tmp/leapbotce_sweep_local
+再 `exec` 本地副本，`LEAPBOTCE_PROJECT_ROOT` env 转发保持指向真仓库——5h+ 长跑不再
+持有 NFS 文件句柄。假 GPU 自测：re-exec → env 探测 → preflight 响亮失败，链路全通。
+后续任务（a0 及以后的 fill-up）都走此路径。
+
+**平台任务现状**：a1（21998396 / 2a64d68e）08:11 干净收官（全部结束 5×40/40）；
+a2（21998406 / 4167f848）08:11 起 pod，全量协议 + PACK=1 ✓，D0 已完（67 min/2000 eps）
+09:20 起 D5，ETA ~13:00。待提交：a3 D0 fill-up（同名重提，~1.5h）、a0 全量（~8.5h）。
+
+## 2026-10-15 07:37 收割隔夜全量：a3 主任务完（D5-D40 零死亡），a1 重提 03:14 健康（D40 收尾），初步矩阵读数
+
+> 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
+> 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
+
 ## 2026-10-15 07:37 收割隔夜全量：a3 主任务完（D5-D40 零死亡），a1 重提 03:14 健康（D40 收尾），初步矩阵读数
 
 **任务状态**：
