@@ -3,6 +3,37 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-15 17:55 a0 失败定性：又抽中小内存节点（8 workers 集体 SIGABRT）；脚本加内存 preflight；全盘提交清单
+
+**a0（22012929 / df18020a）错误定性**：17:00 起 pod，每个 delay 双尝试全灭
+（rc=1, 0/40）。worker log 显示 episode 正常跑（多个 success=True MP4 落盘）
+→ 无声 SIGABRT —— **10-14 内存墙死亡模式，但这次 PACK=1（8 workers ~240GB）
+也撑不住** = 平台节点池里存在 MemAvailable <200GB 的更小内存节点（比 10-14
+的 350-700GB 墙更低）。四 delay 全灭 → 此节点必死，非任务问题。
+
+**防复发（73a63f1）**：sweep 脚本加内存 preflight —— `MemAvailable < 260GB`
+直接 fail-fast（exit 3，日志明示"同名重提换节点"，旁路开关
+LEAPBOTCE_SKIP_MEM_PREFLIGHT）。坏节点从浪费 40 min 变 ~2 min 快速失败。
+本调试节点 1435GB，正常节点（≥700GB）不误伤。
+
+**全盘盘点（17:55，平台无排队任务）**：
+- 已完成：a1 全量 ✓ / a2 全量 ✓ / a3 全量 D5-D40 ✓ / 本地趋势探针 ✓
+  （读数见 14:35 条目）；a2/a3 的 stale handle 均展示问题无需重提。
+- 失败待重提：a0 全量（0/40，坏节点，重提即可）。
+- 缺口待补：a3 D0 的 object/goal/10（fill-up 重提）。
+- 进行中（本地）：a4 = LoRA(Wan qkvo r16)+codec 续训线实现（未完，冒烟后给提交表格）。
+
+**待提交清单（表格制式）**：
+
+| 优先级 | 任务名 | 卡型×卡数 | 时长 | 前置 | config |
+|---|---|---|---|---|---|
+| 1 | leapbot_ce_eval_libero_a3_release（同名重提，只补 D0 三套件，守卫已验证） | H200×8 | ~1.5h | 无 | daojie_leap_configs/AIFlow_config_eval_libero_a3_release.py |
+| 2 | leapbot_ce_eval_libero_a0_release（重提；若再抽坏节点 ~2min 快速失败，再重提即可） | H200×8 | ~6.8h | 无 | daojie_leap_configs/AIFlow_config_eval_libero_a0_release.py |
+| 3 | a4 LoRA 训练线（任务名待定） | H200×8 | ~1.5 天 | 本会话完成 LoRA 注入实现+本地冒烟 | 待产出 |
+
+1/2 可同时提交（合计 16 卡，空闲常态 ~32）。暂缓：λ 消融线（用户指示非迫切）、
+P0 200k 终点评测（旧线，新矩阵优先）、RoboTwin 侧（两个 fork 在跑，不动）。
+
 ## 2026-10-15 14:35 a2 全量收官（stale handle 同剧本，数据完好）+ tied K=V 判决 + a1 趋势探针三行表
 
 **a2 平台任务（21998406）错误定性**：14:16:50 完成 D40（40/40）后 14:17 死于
