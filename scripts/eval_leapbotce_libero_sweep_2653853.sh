@@ -102,6 +102,22 @@ PROJECT_ROOT="${LEAPBOTCE_PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 source "${SCRIPT_DIR}/env_2653853.sh"
 cd "${PROJECT_ROOT}"
 
+# ── 节点内存 preflight（10-15 a0 df18020a 实锤：部分平台节点 MemAvailable 连
+#    PACK=1 的 8 workers (~240GB 峰值 RSS) 都撑不住，满载后 ~4 分钟 8 worker 集体
+#    SIGABRT 0/40，四个 delay 各双尝试全灭，40 min 全废。低于阈值直接 fail-fast，
+#    平台快速标失败 → 同名重提自然换节点）──
+if [[ -z "${LEAPBOTCE_SKIP_MEM_PREFLIGHT:-}" && -r /proc/meminfo ]]; then
+  _avail_gb=$(( $(awk '/^MemAvailable:/{print $2}' /proc/meminfo) / 1024 / 1024 ))
+  if (( _avail_gb < 260 )); then
+    echo "[libero-sweep] FATAL: 节点 MemAvailable ${_avail_gb}GB < 260GB — 8 workers 需 ~240GB 峰值," >&2
+    echo "[libero-sweep] 此节点必死（worker 集体 SIGABRT 0/40，见 10-14/10-15 内存墙事故）。" >&2
+    echo "[libero-sweep] 处理：直接同名重提换节点；确要强跑设 LEAPBOTCE_SKIP_MEM_PREFLIGHT=1。" >&2
+    exit 3
+  fi
+  echo "[libero-sweep] mem preflight OK: MemAvailable ${_avail_gb}GB (>=260GB)"
+  unset _avail_gb
+fi
+
 RUN_DIR="${RUN_DIR:-/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce/dtrain20_seed42_200k}"
 EVAL_ROOT="/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce"
 LOG_DIR="${EVAL_ROOT}/logs"
