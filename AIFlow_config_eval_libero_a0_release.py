@@ -5,7 +5,8 @@
 
 评测对象 = release-init 矩阵 A0 线 24951 终点
 （runs/libero_all_leapbotce/a0_release_seed42_h200，接口线无 codec）。
-协议 = 4 套件 × D{0,5,10,20,40} × 50 trials（与原 A0 dtrain20 扫描同款）。
+协议 = 4 套件 × D{0,10,20,40} × 50 trials（2026-10-15 用户准则：时延评测
+只测 D{0,10,20,40}、不再跑 D5；由原 A0 dtrain20 扫描同款协议减去 D5）。
 模型侧 model.* 全部由 RUN_DIR 的 config.yaml 推导（sweep 白名单自动转发
 mot_pretrained_path —— delta ckpt 只存微调部分，冻结基座必须从同一 release
 ckpt 重建，见 LeapBotCE.save_checkpoint）。
@@ -33,7 +34,7 @@ os.environ.setdefault(
     "a0_release_seed42_h200/checkpoints/weights/step_024951.pt",
 )
 os.environ.setdefault("AI_FLOW_TAG", "a0_release_step24951")
-os.environ.setdefault("AI_FLOW_DELAYS", "0 5 10 20 40")
+os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40")  # 10-15 准则：时延评测只测 D{0,10,20,40}
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
 # 10-14 20:xx 内存墙事故，见 a1 变体 docstring：32 workers 部分节点遍地 -6/-9，
 # 钉 legacy 单 manager 串行模式（本变体当前即全量协议，直接生效）。
