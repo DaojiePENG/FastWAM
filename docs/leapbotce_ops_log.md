@@ -41,11 +41,19 @@ py_compile ✓ / 分发器选中 ✓ / 旧任务名 leapbot_ce_train_libero 仍�
 --keep-ckpt 2 --resume <a1 .pt> -- model.mot_pretrained_path=...）✓ / resume
 为 .pt 文件 → world-size 守卫自动跳过 ✓。
 
-**待提交清单（表格制式）**：
+**待提交清单（表格制式，多卡数参考 — 10-16 用户准则：训练脚本兼容多卡数，预期给多档参考）**：
 
-| 优先级 | 任务名 | 卡型×卡数 | 时长 | 前置 | config |
-|---|---|---|---|---|---|
-| 1 | leapbot_ce_train_libero_a4_lora（任务名即选配置，无 CMD 编辑；工作目录照旧 FastWAM 根） | H200×8 单机 | ~30-36h | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM AIFlow_config_libero_a4_lora.py（task=libero_all_leapbotce_codec_lora_a4） |
+| 优先级 | 任务名 | 卡型×卡数 | 总步数/等效 | 时长 | 前置 | config |
+|---|---|---|---|---|---|---|
+| 1 | leapbot_ce_train_libero_a4_lora | H200×8 单机 | 24951 步 = 10ep 续训 | ~33-36h | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM AIFlow_config_libero_a4_lora.py（task=libero_all_leapbotce_codec_lora_a4） |
+| 1' | 同上（16 卡变体） | H200×16 双机 | 24951 步 = **20ep 续训** | ~36-40h（每卡 bs 不变、步数不变 → 时长≈8 卡 +跨机开销 ~10%） | 同上 | 同上（任务名不变，平台分配决定；run 名自动加 _n2） |
+
+16 卡注：变体天然兼容双机（GPU_NUM=8/节点钉死，NNODES/NODE_RANK/MASTER_ADDR
+由平台 params 自动注入，train_zero1.sh 原生多机 — RoboTwin 16×H200 双机 118k 步
+已验证同款启动链）；lr/steps 显式固定不随卡数漂移，有效 batch 256 时 24951 步
+= 20ep 等效 = 「更长 epoch」诉求的正解。若想 16 卡省时间可把 steps 减半
+（12476 = 10ep @ batch256，~18-20h），但大 batch 动力学偏移 a1（lr 需 √2
+放大），不如 A/B 干净，不推荐。
 
 提交后节奏：中点 ckpt step_012475（约 15-18h）落盘 → 本地 spatial 探针门控
 （读数对比 a1 同步数 94.8/79.5% 基线）→ 终点 step_024951 → 全量
