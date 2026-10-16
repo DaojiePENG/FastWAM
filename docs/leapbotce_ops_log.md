@@ -3,6 +3,31 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-16 18:30 a4 探针本地开跑(用户指示)+ eval task 推导修复(三坑实录)
+
+**用户定案**:检查点探针本地调试卡跑,及时出结果。执行 = step_004340 先探,
+卡 5/6 各挤 1 worker(~25GB,与宿主进程共存,缓冲 ~17GB),spatial ×
+D{20,0} × 25 trials(250 eps/档)。18:27 worker 全部过模型加载 +
+**video LoRA 120 wrappers 注入 + step_004340 加载通过**。时间线:D20
+~20:15 出,D0 ~22:15 出;002170 随后(视 004340 结果)。对照基线 a1:
+2170 步 D0 90.0/D20 66.4(a1 探针 50 trials 口径,本次 25 trials,判读
+留 ±3% 噪声余量)。
+
+**三坑实录(30 分钟排障)**:
+1. **eval task 推导缺 LoRA 分支**:sweep 脚本 auto 推导只看 kv_codec →
+   task=libero_all_leapbotce_codec → LeapBotCE.load_checkpoint raise
+   "Checkpoint contains video_lora state ... rebuild with LoRA injected"
+   (3 worker 全灭)。**修复 = 推导加 video_lora.enabled → lora_a4 task
+   优先级最高**(a4_lora 全量变体明早同踩此雷,已一并解除),推导单测
+   过(a4 config → lora_a4),probe 显式传 LIBERO_EVAL_TASK 双保险。
+2. **双实例互踩**:v1(坏推导)delay_20 失败后转 delay_0 继续跑,与 v2
+   delay_20 同时挤三卡 → 79GB 满 OOM(v1 workers 42GB 残留未清)。
+   kill-by-pgid 两个进程组全停(vlash 17 天老进程 502767 不在组内,未动)。
+3. **挤卡 OOM**:宿主 3 进程 37GB + worker 25GB 本可共存,叠加残留后爆。
+   清理后单实例双卡,expandable_segments:True 防碎片,稳态 62.9/61.1GB。
+
+教训:**sweep 重跑前必须 ps 确认旧实例全灭**(manager 失败会自动串行
+转入下一 delay,不会自己退)。
 ## 2026-10-16 16:55 a4 中程进展 + run 目录推导实证 + probe 决策(用户定:本地跑,不占集群)
 
 - **进度** step 5130/10848(47%,2.4ep),0.29 step/s,ETA 5:37 → **终点 ~22:26**。

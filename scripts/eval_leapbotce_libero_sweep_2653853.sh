@@ -176,7 +176,16 @@ model = cfg.get("model") or {}
 cloudedge = model.get("cloudedge") or {}
 edge = model.get("edge_vision") or {}
 codec = cloudedge.get("kv_codec") or {}
-print("libero_all_leapbotce_codec" if codec.get("enabled") else "libero_all_leapbotce")
+# LoRA-continued runs (a4) store video_lora state in every ckpt; loading
+# without LoRA injected is rejected by LeapBotCE.load_checkpoint, so the
+# lora task (which carries the video_lora block) must win over the codec task.
+lora = model.get("video_lora") or {}
+if lora.get("enabled"):
+    print("libero_all_leapbotce_codec_lora_a4")
+elif codec.get("enabled"):
+    print("libero_all_leapbotce_codec")
+else:
+    print("libero_all_leapbotce")
 if codec.get("enabled"):
     grid = codec.get("pool_grid")
     if grid:
