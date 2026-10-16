@@ -15,9 +15,10 @@ defaults:
 # The LoRA B factors are zero-initialized and resume loads a1's delta
 # weights, so step 0 reproduces a1's endpoint behaviour exactly.
 #
-# lr: constant 1e-4 (cosine already annealed to 0; restart must not shock the
-# converged modules; 1e-4 is the LoRA standard and matches the official
-# expert recipe).  Epoch-first sizing (10-16 user rule): 1ep = 277713 frames /
+# lr: constant 5e-5 + LoRA alpha 16 (A4b, 10-17): A4 (lr 1e-4, alpha 32)
+# cratered the converged skills (spatial D20 84.4 -> 52.0 @2ep -> 76.8 @5ep,
+# no full recovery, task7 regressed); quarter-rate perturbation targets
+# no-crater adaptation with endpoint >= 84.  Epoch-first sizing (10-16 user rule): 1ep = 277713 frames /
 # eff batch 128 = 2170 steps; 5 epochs = 10848 steps ~= 15h, one ckpt per
 # epoch (2170/4340/6510/8680/10848) kept for mid-run probing.  Video-expert gradient checkpointing is enabled by the edge
 # train factory right after LoRA injection (post-MoT-init), so LoRA backward
@@ -26,7 +27,7 @@ defaults:
 # MoT __init__ guard rejects any per-expert checkpointing at build time.
 batch_size: 16
 num_workers: 8
-learning_rate: 1.0e-4
+learning_rate: 5.0e-5
 lr_scheduler_type: constant
 num_epochs: 5
 max_steps: 10848
@@ -48,7 +49,7 @@ model:
   video_lora:
     enabled: true
     rank: 16
-    alpha: 32.0
+    alpha: 16.0
     dropout: 0.0
     targets: [q, k, v, o]
   cloudedge:
@@ -62,7 +63,7 @@ model:
     tokens_per_view: 5
 wandb:
   project: leapbotce
-  name: libero_all_leapbotce_codec_lora_a4
+  name: libero_all_leapbotce_codec_lora_a4b
 MULTIRUN:
   evaluator_script: experiments/libero/eval_libero_cloudedge.py
   task_suite_names: [libero_spatial, libero_object, libero_goal, libero_10]

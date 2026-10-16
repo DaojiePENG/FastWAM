@@ -10,7 +10,9 @@
   * 零-B 注入 + 权重续训 → step0 行为 = a1 终点，严格衔接；
   * 续训收益（D20 保留率，趋势探针 +9.0/3.3ep 零递减）与 LoRA 收益
     （D0/goal/10，纯续训 D0 已饱和）单线干净归因。
-配方：constant lr 1e-4（cosine 已走完，重启不砸已收敛模块）、8×H200 bs16
+配方（A4b，10-17 定案）：constant lr 5e-5 + LoRA α 16（scale 2→1），扰动速率
+~1/4——A4 谷底实锤（D20 84.4→52.0@2ep→76.8@5ep，未爬回且 task7 倒退），
+低速率目标 = 不进谷底、终点 ≥84、D0 有机会上拉。前版：8×H200 bs16, lr 1e-4, α32
 （对齐 a1）、epoch 主口径 5ep = 10848 步（每 1ep 存 1 个 ckpt 共 5 个，供中途
 测评）、stale warmup -1 = 自动取总步数/2（leapbotce.py set_training_step
 语义；10-16 实跑核实，基座注释正确，此前"立即满权重"注解系误判）——
@@ -101,7 +103,7 @@ AI_FLOW_BATCH_SIZE = 16    # 对齐 a1 release 轮（8卡×bs16 = 有效 batch 1
                            # 显存余量极大（冒烟 B4 自用 ~16GB，checkpointing 已省激活
                            # 大头；B16 激活增量仅 +5GB 量级）。
 AI_FLOW_ACCUM = 1          # 梯度累积步数；原轮就是 1，保持
-AI_FLOW_LR = 0.0001        # LoRA 标准 lr + 续训稳定性：cosine 已走完，constant 1e-4
+AI_FLOW_LR = 0.00005        # A4b（10-17）：1e-4 砸谷底实锤后降半档 + α16（见 docstring）
                            # 不砸已收敛模块（action expert / codec / LoRA 同一 lr）。
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 显存(GB)阈值 → 每卡 batch，从上往下取第一个满足的
@@ -149,7 +151,7 @@ AI_FLOW_RESUME = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
 # ─────────────────────────────────────────────────────────────────────
 AI_FLOW_WANDB = 1                # 1 = 打开 wandb 在线上报（train.yaml 默认关闭，这里强制打开）
 AI_FLOW_WANDB_PROJECT = "leapbotce"  # wandb 项目名（与之前几轮一致，方便对比曲线）
-AI_FLOW_RUN_NAME = "codec_a4_lora_seed42_h200"
+AI_FLOW_RUN_NAME = "codec_a4b_lora_lr5e5_alpha16_seed42_h200"
                                  # 输出 runs/libero_all_leapbotce_codec/<run名>/（沿用
                                  # codec 线目录，评测线按 run 目录 config.yaml 重建模型）
 
