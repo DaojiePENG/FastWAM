@@ -12,8 +12,9 @@
     （D0/goal/10，纯续训 D0 已饱和）单线干净归因。
 配方：constant lr 1e-4（cosine 已走完，重启不砸已收敛模块）、8×H200 bs16
 （对齐 a1）、epoch 主口径 5ep = 10848 步（每 1ep 存 1 个 ckpt 共 5 个，供中途
-测评）、stale warmup -1 = 立即满权重 0.5（leapbotce.py 语义，
-与 a1 动力学无缝衔接，无重新爬坡）。
+测评）、stale warmup -1 = 自动取总步数/2（leapbotce.py set_training_step
+语义；10-16 实跑核实，基座注释正确，此前"立即满权重"注解系误判）——
+与 a1 同为半程 ramp 构型，动力学同构。
 本地冒烟已全链路通过（FastWAM 5dbc687）：训练侧 20 步 loss 正常 + lora_b
 非零；评测侧按 run config 重建 + strict load 逐位一致 + 双路前向。
 
@@ -109,8 +110,8 @@ AI_FLOW_EPOCHS = 5        # a4 续训量：5ep = 10848 步 ≈ 15h（用户指�
                           # 过训迹象，5ep 足够出结果，不够可从终点 ckpt 再续）
 AI_FLOW_MAX_STEPS = 0     # 0 = 按 AI_FLOW_EPOCHS 折算总步数（10-16 用户准则：epoch
                           # 为主口径）。8 卡 eff128 下 1ep = 277713/128 = 2170 步。
-                          # stale warmup=-1 → 立即满权重 0.5（leapbotce.py 语义），
-                          # 与 a1 动力学无缝衔接。
+                          # stale warmup=-1 → 自动 total//2（半程线性 ramp），
+                          # 与 a1 配方同构（a1: 24951 步 → warmup 12475）。
 
 # ─────────────────────────────────────────────────────────────────────
 # ③ 其余训练超参（官方/已验证默认值，一般不动）
