@@ -3,6 +3,26 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-16 21:40 a4 探针判读:逐任务全面大跌 + action expert 大幅重写 + B 计划定案(等终点数据触发)
+
+**分任务对照(a1 终点 50trials 基线 vs a4@2ep 25trials,同任务同难度)**:
+task0 94→48、task1 96→48、task2 90→72、task3 72→60、task4 80→28 ——
+全面 -12~-52 分,非难度分布假象。
+
+**ckpt 正确性已排除**(step=4340/120 wrappers/正确 run 目录/strict load 过)。
+**数值实锤破坏**:action expert 相对 a1 终点偏移 median 49%、head 134%
+(正常续训 1-10% 量级);LoRA B 范数 1.06(1ep)→1.55(2ep)加速爬升,
+ΔW=2·B·A 直接加在冻结 base 上 → video 特征漂移 → action expert 追移动
+目标整体重写 → 已收敛技能暂时崩。loss 平滑降(0.046)= 重构中,但 a1 历史
+轨迹(66.4→84.4 爬 8ep)表明 5ep 大概率爬不回。
+
+**用户方案讨论定案**:zero-B 初始化已实现(video_lora.py reset_parameters
+= kaiming A + zeros B,step0 严格=a1 终点);问题在漂移速率不在初始化。
+**B 计划(等终点探针触发)= ① lr 1e-4→5e-5 + ② α 32→16(scale 2→1)**,
+正交零风险,扰动速率 ~1/4;③ LoRA lr warmup 留下一档;stale warmup -1
+不动(与本案无关)。验证线:a1 终点同链路重评(卡 4,21:00 起,排除
+eval 链路错;~22:00 前几任务出方向)→ a4 终点探针(22:26 训练完,
+卡 5/6 D20+D0,~01:15 出)。
 ## 2026-10-16 18:30 a4 探针本地开跑(用户指示)+ eval task 推导修复(三坑实录)
 
 **用户定案**:检查点探针本地调试卡跑,及时出结果。执行 = step_004340 先探,
