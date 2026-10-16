@@ -41,24 +41,33 @@ py_compile ✓ / 分发器选中 ✓ / 旧任务名 leapbot_ce_train_libero 仍�
 --keep-ckpt 2 --resume <a1 .pt> -- model.mot_pretrained_path=...）✓ / resume
 为 .pt 文件 → world-size 守卫自动跳过 ✓。
 
-**待提交清单（表格制式，多卡数参考 — 10-16 用户准则：训练脚本兼容多卡数，预期给多档参考）**：
+**待提交清单（10-16 定案：8 卡 + epoch 主口径 5ep + 每 epoch 存 ckpt 测评）**：
 
 | 优先级 | 任务名 | 卡型×卡数 | 总步数/等效 | 时长 | 前置 | config |
 |---|---|---|---|---|---|---|
-| 1 | leapbot_ce_train_libero_a4_lora | H200×8 单机 | 24951 步 = 10ep 续训 | ~33-36h | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM AIFlow_config_libero_a4_lora.py（task=libero_all_leapbotce_codec_lora_a4） |
-| 1' | 同上（16 卡变体） | H200×16 双机 | 24951 步 = **20ep 续训** | ~36-40h（每卡 bs 不变、步数不变 → 时长≈8 卡 +跨机开销 ~10%） | 同上 | 同上（任务名不变，平台分配决定；run 名自动加 _n2） |
+| 1 | leapbot_ce_train_libero_a4_lora | H200×8 单机 | **5ep = 10848 步**（1ep = 277713/128 = 2170 步） | **~15h** | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM AIFlow_config_libero_a4_lora.py（task=libero_all_leapbotce_codec_lora_a4） |
 
-16 卡注：变体天然兼容双机（GPU_NUM=8/节点钉死，NNODES/NODE_RANK/MASTER_ADDR
-由平台 params 自动注入，train_zero1.sh 原生多机 — RoboTwin 16×H200 双机 118k 步
-已验证同款启动链）；lr/steps 显式固定不随卡数漂移，有效 batch 256 时 24951 步
-= 20ep 等效 = 「更长 epoch」诉求的正解。若想 16 卡省时间可把 steps 减半
-（12476 = 10ep @ batch256，~18-20h），但大 batch 动力学偏移 a1（lr 需 √2
-放大），不如 A/B 干净，不推荐。
+- **epoch 主口径（10-16 用户准则）**：步数由 epoch 折算（MAX_STEPS=0 +
+  EPOCHS=5），不按 step 直设；1ep = 2170 步 @ eff128。a1 的 24951 步按此口径
+  = 11.5ep（管理文件旧注"10 epochs"系笔误，趋势探针 8317/16634/24951 步 =
+  3.8/7.7/11.5ep）。
+- **每 epoch 存 1 个 ckpt**（用户指示留测评）：save_every=2170 →
+  2170/4340/6510/8680/10848 共 5 个，keep 5（delta ≈2GB/个 ≈10GB）。
+  2170 步 ckpt 落盘即可做第一轮 spatial 探针（对比 a1 @3.8ep：D0 90.0 / D20 66.4）。
+- 多卡数参考（用户准则：预期给多档）：16 卡双机 = 24951 步（20ep）~36-40h；
+  变体天然兼容双机（NNODES/MASTER_ADDR 自动注入，run 名加 _n2），本轮用户
+  已定 8 卡。
 
-提交后节奏：中点 ckpt step_012475（约 15-18h）落盘 → 本地 spatial 探针门控
-（读数对比 a1 同步数 94.8/79.5% 基线）→ 终点 step_024951 → 全量
-D{0,10,20,40} 评测（8×H200 ~5.5h/线）。非迫切暂缓不变：λ 消融（2:1/3:1/4:1）、
-P0 200k 终点评测、RoboTwin 侧两 fork。
+**判读补充**：a0 D0 最高但跌得最快（D20 被 a1 反超）—— 无压缩的 D0 优势
+不传导到时延档，与「生产-消费适配是瓶颈」结论一致；保留率冠军 = a2，
+绝对值 D20/D40 冠军 = a2。a4（续训+LoRA）目标 = 把 a1 的 D0 拉向 95+
+同时保住保留率优势，完成后四线表加一行直接对比。
+
+**提交后节奏**：首个 ckpt step_002170（~3h）落盘 → spatial 探针门控（对比
+a1 同步数基线 D0 90.0 / D20 66.4）→ 每 epoch 滚动探针 → 终点 step_010848 →
+全量 D{0,10,20,40} 评测（8×H200 ~5.5h/线，届时给提交表格）。若 5ep 探针显示
+保留率仍陡峭上升，可从终点 ckpt 续练（变体 resume 换行即可）。非迫切暂缓
+不变：λ 消融（2:1/3:1/4:1）、P0 200k 终点评测、RoboTwin 侧两 fork。
 
 ## 2026-10-15 21:15 a4 LoRA 全链路冒烟通过：训练侧 20 步 + 评测侧 load+双路前向，可以提交
 

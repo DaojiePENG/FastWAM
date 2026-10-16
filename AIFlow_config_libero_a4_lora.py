@@ -11,8 +11,8 @@
   * 续训收益（D20 保留率，趋势探针 +9.0/3.3ep 零递减）与 LoRA 收益
     （D0/goal/10，纯续训 D0 已饱和）单线干净归因。
 配方：constant lr 1e-4（cosine 已走完，重启不砸已收敛模块）、8×H200 bs16
-（对齐 a1）、save_every 12475（中点 + 终点共 2 个）、stale warmup -1 =
-立即满权重 0.5（leapbotce.py stale_loss_weight: warmup<=0 直接返回 maximum，
+（对齐 a1）、epoch 主口径 5ep = 10848 步（每 1ep 存 1 个 ckpt 共 5 个，供中途
+测评）、stale warmup -1 = 立即满权重 0.5（leapbotce.py 语义，
 与 a1 动力学无缝衔接，无重新爬坡）。
 本地冒烟已全链路通过（FastWAM 5dbc687）：训练侧 20 步 loss 正常 + lora_b
 非零；评测侧按 run config 重建 + strict load 逐位一致 + 双路前向。
@@ -104,9 +104,13 @@ AI_FLOW_LR = 0.0001        # LoRA 标准 lr + 续训稳定性：cosine 已走完
                            # 不砸已收敛模块（action expert / codec / LoRA 同一 lr）。
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 显存(GB)阈值 → 每卡 batch，从上往下取第一个满足的
-AI_FLOW_EPOCHS = 11.5      # 仅 MAX_STEPS=0 时折算用；a4 由 MAX_STEPS=24951 精确覆盖
-AI_FLOW_MAX_STEPS = 24951  # 与 a1 release 轮完全同步数 = 再走 10 个 epoch 的量；
-                           # stale warmup=-1 → 立即满权重（见上），衔接 a1。
+AI_FLOW_EPOCHS = 5        # a4 续训量：5ep = 10848 步 ≈ 15h（用户指示尽快出结果、
+                          # epoch 从紧；a1 趋势探针显示续训收益主要在保留率且无
+                          # 过训迹象，5ep 足够出结果，不够可从终点 ckpt 再续）
+AI_FLOW_MAX_STEPS = 0     # 0 = 按 AI_FLOW_EPOCHS 折算总步数（10-16 用户准则：epoch
+                          # 为主口径）。8 卡 eff128 下 1ep = 277713/128 = 2170 步。
+                          # stale warmup=-1 → 立即满权重 0.5（leapbotce.py 语义），
+                          # 与 a1 动力学无缝衔接。
 
 # ─────────────────────────────────────────────────────────────────────
 # ③ 其余训练超参（官方/已验证默认值，一般不动）
@@ -127,10 +131,10 @@ AI_FLOW_STALE_WARMUP = -1        # stale 权重线性爬升步数；-1 = 自动�
 #   8×H200  总步数 24,951 → 每  4,991 步一个 →  5k/10k/15k/20k + 最终 24,951
 # （训练到总步数时 train.py 必存最终 checkpoint，与间隔是否整除无关，
 #   见 src/fastwam/trainer.py 训练循环结尾的 "[done] max_steps reached"）
-AI_FLOW_NUM_SAVE = 2            # 中点 + 终点共 2 个（用户指示不密集保存）；
-AI_FLOW_SAVE_EVERY = 12475       # 手动固定：中点 step_012475 + 终点 step_024951；
-                                 # 中点落盘即可先做 spatial 探针门控，不必等终点
-AI_FLOW_KEEP_CKPT = 2            # 保留中点 + 终点（delta ckpt ≈2GB/个，≈4GB）
+AI_FLOW_NUM_SAVE = 5            # 每 epoch 存 1 个（用户指示：中间 ckpt 留测评）；
+AI_FLOW_SAVE_EVERY = 0           # 0 = 自动按 NUM_SAVE 均分 → 每 2170 步（=每 1ep）
+                                 # 一个：2170/4340/6510/8680/10848（终点）
+AI_FLOW_KEEP_CKPT = 5            # 全保留（delta ckpt ≈2GB/个，5 个 ≈10GB）
 AI_FLOW_RESUME = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
                   "libero_all_leapbotce_codec/"
                   "codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt")

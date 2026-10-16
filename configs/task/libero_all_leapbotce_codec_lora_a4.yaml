@@ -17,7 +17,9 @@ defaults:
 #
 # lr: constant 1e-4 (cosine already annealed to 0; restart must not shock the
 # converged modules; 1e-4 is the LoRA standard and matches the official
-# expert recipe).  Video-expert gradient checkpointing is enabled by the edge
+# expert recipe).  Epoch-first sizing (10-16 user rule): 1ep = 277713 frames /
+# eff batch 128 = 2170 steps; 5 epochs = 10848 steps ~= 15h, one ckpt per
+# epoch (2170/4340/6510/8680/10848) kept for mid-run probing.  Video-expert gradient checkpointing is enabled by the edge
 # train factory right after LoRA injection (post-MoT-init), so LoRA backward
 # can flow through the 5B tower without keeping every block's activations; the
 # constructor-level video_dit_config switch below must stay false because the
@@ -26,13 +28,13 @@ batch_size: 16
 num_workers: 8
 learning_rate: 1.0e-4
 lr_scheduler_type: constant
-num_epochs: 10
-max_steps: 24951
+num_epochs: 5
+max_steps: 10848
 log_every: 10
-save_every: 12475
+save_every: 2170
 eval_every: 0
 gradient_accumulation_steps: 1
-keep_last_checkpoints: 1
+keep_last_checkpoints: 5
 weight_decay: 1.0e-2
 # Weight-only resume from the a1 endpoint (optimizer/scheduler restart fresh).
 resume: /mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt
