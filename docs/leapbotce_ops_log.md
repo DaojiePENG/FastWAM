@@ -3,6 +3,27 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-16 13:45 a4 拉起核实（22062112，三标志全中）+ stale warmup 语义勘误
+
+**任务 22062112 `leapbot_ce_train_libero_a4_lora`** 11:17 提交 / 11:48 拉起
+（10.194.160.21，8×H200），日志 `jinnTrainResult/leapbot_ce_train_libero_a4_lora-1ce47224/`。
+三标志全中：① `task=libero_all_leapbotce_codec_lora_a4`；② `video LoRA
+injected: 120 wrappers, 11.80M trainable (rank=16, q/k/v/o)`（8 rank 各打印
+一次）；③ resume 加载 a1 `step_024951.pt`。13:32 进度 step≈1890（0.30
+step/s，39.0 samples/s），ETA 8h10m → **~21:45 终点**（10848 步总时长约
+10h，快于 15h 预估）。loss 0.0561（fresh 0.0526 / stale 0.0729）正常。
+首个 ckpt step_002170 约 13:50 落盘。
+
+**stale warmup 语义勘误（10-16 实跑核实）**：`stale_loss_weight()` 的
+"warmup<=0 → 满权重" 分支只有**显式传 0** 才触发；传 **-1** 时
+`set_training_step()`（leapbotce.py:283-286）在第一步自动改写为
+`total_steps//2`，线性 ramp 至半程。基座注释"-1=自动总步数/2"是**正确的**，
+本文件与变体中此前"立即满权重"的注解系误判，已修正。实测轨迹吻合：
+a4（10848 步 → warmup 5424）step1610→0.1483、step1870→0.1732 =
+0.5×step/5424 精确吻合。**a4 与 a1 配方同构**（a1：24951 步 → warmup
+12475，同为半程 ramp），动力学可比性保持，任务无需任何干预。对探针判读的
+含义：同 step 处 a4 的 λ 比 a1 大（2170 步处 0.200 vs 0.087），早期 ckpt 的
+D20 探针预期略偏向受益侧。
 ## 2026-10-16 08:20 a0 收官（22041674，4.75h 全过）+ a3 D0 确认补齐 → 四线完整矩阵落表；唯一待提交 = a4 训练线
 
 **两任务判读**：
@@ -221,6 +242,8 @@ a1/a2/a3 主任务全部完成，均无需重提。
 失调**——当前终态 fresh:stale = 1:1（`leapbotce.py:477`
 `loss = (1−λ)·fresh + λ·stale`，λ→`stale_loss_lambda_max=0.5`，
 `stale_loss_warmup_steps=-1` 即无预热从第一步满值）应该给 **fresh 线加权**：
+（**10-16 勘误**：-1 实为自动取 total//2 半程 ramp，并非无预热满值——见
+10-16 13:45 条目。λ 消融若要"前期 λ=0"应显式传 `--stale-warmup 0`。）
 候选 fresh:stale = 2:1 / 3:1 / 4:1，对应 `stale_loss_lambda_max` =
 0.33 / 0.25 / 0.20（旋钮现成，config 一处改动）。
 
