@@ -28,11 +28,24 @@
 
 **当前状态**：四线 × D{0,10,20,40} 全量数据齐 ✓，平台无排队/运行任务。
 
+**a4 提交方式修正（10:xx 实录）**：用户平台提交 leapbot_ce_train_libero
+（22057922，10:21 拉起）——平台界面无 CMD 编辑框，沿用基座 AIFlow_config_libero.py
+常改区 = 旧 200k 续训命令（--task libero_all_leapbotce --gpus 4 --steps 200000
+resume state/step_110000），不是 a4。用户已取消该任务。**修正 = 新建 dispatcher
+变体 `AIFlow_config_libero_a4_lora.py`**（训练线函数 globals 绑定定义模块，env
+薄委托无效，故全量复制基座改常改区；管线逐字一致）：任务名
+`leapbot_ce_train_libero_a4_lora` → 整词匹配后缀 libero_a4_lora。本地已验证：
+py_compile ✓ / 分发器选中 ✓ / 旧任务名 leapbot_ce_train_libero 仍落基座（200k
+线不受影响）✓ / 拼出 CMD 与 21:15 手工版逐参数一致（--task ..._a4 --gpus 8
+--bs 16 --steps 24951 --lr 0.0001 --scheduler constant --save-every 12475
+--keep-ckpt 2 --resume <a1 .pt> -- model.mot_pretrained_path=...）✓ / resume
+为 .pt 文件 → world-size 守卫自动跳过 ✓。
+
 **待提交清单（表格制式）**：
 
 | 优先级 | 任务名 | 卡型×卡数 | 时长 | 前置 | config |
 |---|---|---|---|---|---|
-| 1 | leapbot_ce_train_libero（a4 LoRA 线，提交命令见 21:15 条目） | H200×8 单机 | ~30-36h | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM task=libero_all_leapbotce_codec_lora_a4 |
+| 1 | leapbot_ce_train_libero_a4_lora（任务名即选配置，无 CMD 编辑；工作目录照旧 FastWAM 根） | H200×8 单机 | ~30-36h | 无（冒烟已过，a1 终点 ckpt 已在存储） | FastWAM AIFlow_config_libero_a4_lora.py（task=libero_all_leapbotce_codec_lora_a4） |
 
 提交后节奏：中点 ckpt step_012475（约 15-18h）落盘 → 本地 spatial 探针门控
 （读数对比 a1 同步数 94.8/79.5% 基线）→ 终点 step_024951 → 全量
