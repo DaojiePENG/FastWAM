@@ -3,6 +3,25 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-16 16:55 a4 中程进展 + run 目录推导实证 + probe 决策(用户定:本地跑,不占集群)
+
+- **进度** step 5130/10848(47%,2.4ep),0.29 step/s,ETA 5:37 → **终点 ~22:26**。
+  loss 0.4853(起步)→0.0461 平滑下降(5080 处 fresh 0.0289/stale 0.0403);
+  λ=0.4682,~300 步后(5424)满 0.5 进入纯 1:1 双流。ckpt step_002170(13:51)/
+  step_004340(16:03)已落盘(2.08GB/个),6510 预计 ~18:15。
+- **wandb 降级 offline**(启动脚本双保险生效:代理 127.0.0.1:33716 不可达),
+  曲线在 run 目录 wandb/offline-run-...-26930wht,终点后 wandb sync 补传。
+- **run 目录推导实证**:输出落在
+  `runs/libero_all_leapbotce_codec_lora_a4/codec_a4_lora_seed42_h200/`
+  —— **runs/<hydra task 名>/<run name>**,不是 a1 的
+  `runs/libero_all_leapbotce_codec/`(a1 task 名恰好没有后缀段)。两个 a4
+  eval 变体的 RUN_DIR/CKPT 按此修正(否则集群提交即路径错),已复验+提交。
+- **probe 决策(用户 16:49)**:spatial 探针属门控信号,单卡足够
+  (PACK=1 串行 ~2-3h),不提交 8×H200;本地 H800 现状 8 卡全满(宿主进程
+  795xxx 连号 8 分片,非本 pod 任务,不可管理)→ 等 4-6 空闲本地探
+  step_004340(可选增益,不阻塞主线);**主线 = 终点后直接全量评
+  leapbot_ce_eval_libero_a4_lora**(中间 ckpt 全在盘上,随时可补探)。
+  a1 同步数对照基线不变:2170 步 D0 90.0/D20 66.4。
 ## 2026-10-16 13:45 a4 拉起核实（22062112，三标志全中）+ stale warmup 语义勘误
 
 **任务 22062112 `leapbot_ce_train_libero_a4_lora`** 11:17 提交 / 11:48 拉起
