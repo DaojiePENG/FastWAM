@@ -15,7 +15,7 @@ defaults:
 # The LoRA B factors are zero-initialized and resume loads a1's delta
 # weights, so step 0 reproduces a1's endpoint behaviour exactly.
 #
-# lr: constant 5e-5 + LoRA alpha 16 (A4b, 10-17): A4 (lr 1e-4, alpha 32)
+# lr: constant 2e-5 + LoRA alpha 16 (A4b, 10-17 user call): A4 (lr 1e-4, alpha 32)
 # cratered the converged skills (spatial D20 84.4 -> 52.0 @2ep -> 76.8 @5ep,
 # no full recovery, task7 regressed); quarter-rate perturbation targets
 # no-crater adaptation with endpoint >= 84.  Epoch-first sizing (10-16 user rule): 1ep = 277713 frames /
@@ -27,7 +27,7 @@ defaults:
 # MoT __init__ guard rejects any per-expert checkpointing at build time.
 batch_size: 16
 num_workers: 8
-learning_rate: 5.0e-5
+learning_rate: 2.0e-5
 lr_scheduler_type: constant
 num_epochs: 5
 max_steps: 10848
