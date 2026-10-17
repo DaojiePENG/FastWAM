@@ -1,0 +1,67 @@
+# @package _global_
+defaults:
+  - override /data: libero_all_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# A6: LoRA + codec trained jointly from step 0 (10-17 user call, two-line
+# plan).  A4's failure mode — resume a converged endpoint, then inject LoRA —
+# shatters the co-adapted (video features x KV codec x action expert) state:
+# spatial D20 84.4 -> 52.0 @2ep -> 76.8 @5ep while D0 stayed intact (93.6),
+# i.e. the damage is delay-specific and re-learning it is slow/incomplete.
+# A6 removes the injection shock entirely: the LoRA (q/k/v/o, rank 16, alpha
+# 16) trains alongside the codec and the action expert from the start, on the
+# same cold-start init as a1 (official ActionDiT ckpt, no resume).
+#
+# Everything else is item-for-item a1's recipe: 8xH200 bs16 accum1 (eff 128),
+# lr 2.8e-4 (sqrt-batch scaling), full cosine anneal, stale lambda 0.5 with
+# warmup -1 (auto total/2 = 16272, same half-ramp shape as a1's 12475/24951).
+# 15 epochs = 32544 steps (a1 stopped at 11.5 ep with D20 still climbing, so
+# +3.5 ep); one checkpoint per epoch (2170-step ladder) kept for per-epoch
+# probing — the run can be killed early once the ladder flattens.
+#
+# Eval note: the sweep script's LoRA branch keys on video_lora.enabled and
+# resolves to task libero_all_leapbotce_codec_lora_a4; this yaml's model block
+# is byte-identical to that one, so model instantiation and strict loading are
+# compatible.
+batch_size: 16
+num_workers: 8
+learning_rate: 2.8e-4
+lr_scheduler_type: cosine
+num_epochs: 15
+max_steps: 32544
+log_every: 10
+save_every: 2170
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 15
+weight_decay: 1.0e-2
+resume: null
+seed: 42
+model:
+  mot_checkpoint_mixed_attn: false
+  video_dit_config:
+    # Must stay false at construction (MoT __init__ guard); the edge train
+    # factory flips the video expert's runtime flag after LoRA injection.
+    use_gradient_checkpointing: false
+  video_lora:
+    enabled: true
+    rank: 16
+    alpha: 16.0
+    dropout: 0.0
+    targets: [q, k, v, o]
+  cloudedge:
+    stale_loss_warmup_steps: -1
+    kv_codec:
+      enabled: true
+      pool_grid: [7, 8]
+      use_kv_decoder: false
+  edge_vision:
+    mode: select
+    tokens_per_view: 5
+wandb:
+  project: leapbotce
+  name: libero_all_leapbotce_codec_lora_a6
+MULTIRUN:
+  evaluator_script: experiments/libero/eval_libero_cloudedge.py
+  task_suite_names: [libero_spatial, libero_object, libero_goal, libero_10]

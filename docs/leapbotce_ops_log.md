@@ -3,6 +3,38 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-17 12:35 用户定两线:a4b 停线 → a5(纯续训)+ a6(LoRA 从头训)
+
+**用户判决**:a4b"续训+中途注入 LoRA"构型**不伦不类**,改走两条干净线。
+落地(FastWAM 新文件 ×4,验证全过;daojie 文档同步):
+
+- **a5 = a1 欠训练检验**(任务名 `leapbot_ce_train_libero_a5_cont`,变体
+  `AIFlow_config_libero_a5_cont.py` + task yaml `..._codec_cont.yaml`):
+  a1 终点 weight-only 续训,**无 LoRA**,constant lr **4e-5**(a1 峰值 2.8e-4
+  的 1/7,落在 a1 尾段仍产出的 ~3-11e-5 区间中位偏下;2e-5 有假阴性风险
+  ——平曲线分不清"饱和"还是"lr 太小没推动"),10ep = 21696 步,每 1ep 存
+  1 ckpt(+1..+10ep 梯子,keep 10 ≈20GB),**stale warmup 显式 0**(step0 即
+  满权重 λ0.5 = 续 a1 终点状态;a4 的 -1 自动半程 ramp 会让前半程 λ 重爬,
+  污染"最优 epoch"判读),mot_pretrained_path 钉死同源。判读:逐 ep 本地
+  探针(spatial D{20,0}×25)——D20 持续爬 = 欠训练实锤,取爬平点为最优
+  epoch;+3ep 平 = a1 已收敛。8×H200 ~19h。
+- **a6 = LoRA+codec 从头联合训练**(任务名 `leapbot_ce_train_libero_a6_lora_fs`,
+  变体 `AIFlow_config_libero_a6_lora_fs.py` + task yaml `..._codec_lora.yaml`):
+  a1 原配方逐项对齐(冷启动官方 ActionDiT ckpt、lr 2.8e-4 cosine 全退火、
+  λ0.5 warmup -1 自动 total/2 = 16272 与 a1 同构)+ video LoRA q/k/v/o
+  r16/α16 从 step0 co-adapt——a4 谷底教训的直接解药(中途注入打散
+  video×codec×action 联合适配,D20 未爬回而 D0 93.6 完好 → 破坏是 delay
+  特异的,co-adaptation 必须从头),15ep = 32544 步(超 a1 的 11.5ep 共
+  3.5ep;每 ep 存 ckpt,中途饱和可杀任务保留已存 ckpt)。8×H200 ~29h。
+- **评测口径(两线零改动)**:a5 的 sweep 推导落 task
+  `libero_all_leapbotce_codec`(模型侧逐字一致);a6 的推导落
+  `libero_all_leapbotce_codec_lora_a4`(a6 yaml model 块与 a4 逐字一致,
+  strict load 兼容)——全量评测届时只改 eval 变体的 RUN_DIR/CKPT/TAG。
+- **验证**:yaml 校验 ×2 PASS;分发器路由(a5_cont / a6_lora_fs 整词后缀
+  命中)PASS;CMD a5 12 项 / a6 11 项 ALL PASS(含 stale-warmup 0/-1、
+  resume 有无、冷启动无 --resume 反向断言)。a4b 变体文件加停线横幅留档
+  (误提交 = 复现 a4 式中途注入)。
+
 ## 2026-10-17 11:55 a4 终点 D0 定案(93.6%,D0 完好)→ 破坏是 delay 特异的 + A4b lr 终定 2e-5
 
 **D0 终表(a4_probe_step010848_loc25/delay_0,10/10,25 trials)**:宏 a1

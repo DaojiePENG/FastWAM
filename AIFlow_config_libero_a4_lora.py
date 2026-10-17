@@ -1,7 +1,16 @@
 """AIFlow 平台训练变体：a4 = codec 主线续训 + video-expert LoRA（producer 侧适配）。
 
+⛔⛔⛔ 停线（10-17 用户定）："a1 终点续训 + 中途注入 LoRA"构型被否 —— 不伦不类：
+   续训收益与 LoRA 扰动耦合在一起，且 a4 谷底（D20 84.4→52.0@2ep→76.8@5ep）
+   实锤中途注入会打散已收敛的联合适配。改走两条干净线：
+     a5 = 同构型去 LoRA 纯续训（AIFlow_config_libero_a5_cont.py，
+          leapbot_ce_train_libero_a5_cont）—— 查 a1 欠训练 + 找最优 epoch；
+     a6 = LoRA+codec 从头联合训练（AIFlow_config_libero_a6_lora_fs.py，
+          leapbot_ce_train_libero_a6_lora_fs）—— co-adaptation 从 step0。
+   本文件留档勿提交（误提交 = 复现 a4 式中途注入）。
+
 ═══════════════════════════════════════════════════════════════════════
-★ 当前用途（10-16 定）：a4 LoRA 线 — a1 终点 resume + LoRA 续训 10ep
+（留档）当时用途（10-16 定）：a4 LoRA 线 — a1 终点 resume + LoRA 续训
 ═══════════════════════════════════════════════════════════════════════
 背景：a0≈a1（无压缩也 91.9）+ a2≈a1（kv_decoder 解耦无增益）双判决把 D0 /
 保留率缺口归因于「生产-消费适配 / 训练配方」。a4 = 对冻结的 Wan video expert

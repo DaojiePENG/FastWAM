@@ -1,0 +1,57 @@
+# @package _global_
+defaults:
+  - override /data: libero_all_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# A5: pure continued training of the a1 codec endpoint — NO LoRA, small
+# constant lr, 10 epochs with one checkpoint per epoch (a +1..+10ep ladder).
+# Question (10-17 user call, two-line plan): was a1 simply undertrained?  Its
+# D20 trend probe was still climbing at the 11.5-epoch endpoint (66.4 / 75.4 /
+# 84.4 at 3.8 / 7.7 / 11.5 ep).  Model side is byte-identical to
+# libero_all_leapbotce_codec (codec 7x8 + edge select prefix, no video LoRA).
+#
+# lr 4e-5 constant = 1/7 of a1's peak (2.8e-4), mid-low inside the band where
+# a1's annealing tail was still producing gains (~3-11e-5); 2e-5 risks a false
+# negative (a flat ladder cannot distinguish "saturated" from "lr too small").
+# stale warmup 0 = full stale weight (0.5) from step 0, i.e. continue a1's END
+# regime — the -1 auto half-ramp (a4) would re-ramp lambda and confound the
+# per-epoch ladder.  Weight-only resume from the a1 endpoint (optimizer and
+# step counter restart fresh).  Epoch-first sizing (10-16 user rule): 1ep =
+# 277713 frames / eff batch 128 = 2170 steps; 10 epochs = 21696 steps.
+batch_size: 16
+num_workers: 8
+learning_rate: 4.0e-5
+lr_scheduler_type: constant
+num_epochs: 10
+max_steps: 21696
+log_every: 10
+save_every: 2170
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 10
+weight_decay: 1.0e-2
+# Weight-only resume from the a1 endpoint.
+resume: /mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt
+seed: 42
+model:
+  cloudedge:
+    # Explicit 0 = full stale weight from step 0 (continue a1's end regime);
+    # -1 would auto-resolve to max_steps/2 in LeapBotCE.set_training_step and
+    # re-ramp lambda over the first half, confounding the epoch ladder.
+    stale_loss_warmup_steps: 0
+    # Cloud payload: 30-layer 98-token cache -> 7x8 = 56 planning tokens.
+    kv_codec:
+      enabled: true
+      pool_grid: [7, 8]
+      use_kv_decoder: false
+  edge_vision:
+    # CLS + top-4 patches per view -> 2 views x 5 = 10 prefix tokens.
+    mode: select
+    tokens_per_view: 5
+wandb:
+  project: leapbotce
+  name: libero_all_leapbotce_codec_cont_a5
+MULTIRUN:
+  evaluator_script: experiments/libero/eval_libero_cloudedge.py
+  task_suite_names: [libero_spatial, libero_object, libero_goal, libero_10]
