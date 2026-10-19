@@ -3,6 +3,23 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-10-19 13:40 a5/a6 全量评测变体就位(两树分发自测全过),待用户提交
+
+- **交付**:`AIFlow_config_eval_libero_a6_lora_fs.py`(a6=15ep 终点
+  step_032544,cosine lr→0 自然终点;探针梯子 7ep 82.0 / 9ep 76.8 回吐谷底 /
+  **15ep 88.8 全梯子最高**,spatial 25-trial)与 `AIFlow_config_eval_libero_a5_cont.py`
+  (a5=+8ep 峰值 step_017360 **88.8**;+10ep 终点 85.6 双降故不评终点)。
+  FastWAM 根 + daojie_leap_configs 双树逐字一致(平台 userPath=FastWAM 根,
+  靠树根分发;a4 两个 eval 变体只在 daojie 是历史遗留——a4 评测全走本地调试卡)。
+- **自测**(10-19 新准则,四步独立子进程):S1 旧任务名无回归
+  (a1_release 照旧)/ S2 a6 CMD 7 断言(RUN_DIR/CKPT/TAG/DELAYS/TRIALS/PACK/
+  sweep 脚本,且无 EVAL_TASK/EVAL_EXTRA 串入)/ S3 a5 CMD 6 断言(且无
+  video_lora 串入)/ S4 裸任务名+哈希剥除不劫持 → 缺省、bench≡eval 归一命中。
+  两 ckpt 在盘核验;run config 推导面核验(a6 带 video_lora → `_lora_a4`
+  task,strict load 沿 a4 冒烟结论;a5 无 → codec task,沿 a1 收割路径)。
+- **协议**:4 套件 × D{0,10,20,40} × 50 trials,PACK=1(内存墙口径),
+  H200×8 ~8.5h/线。提交方式:userPath=FastWAM 仓库根,任务名见变体 docstring。
+
 ## 2026-10-19 02:10 第二轮探针齐:a5 梯子定案(+8ep 最优);a6 高 lr 中途回吐全景确认
 
 **第二轮(10-18 16:45 起跑,卡 4/6)**:a5 终点 step_021696(+10ep)、
