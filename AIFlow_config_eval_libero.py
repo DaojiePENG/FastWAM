@@ -96,6 +96,13 @@ AI_FLOW_EVAL_TASK = os.environ.get("AI_FLOW_EVAL_TASK", "").strip()
 # 变体应 setdefault "1"（legacy 单 manager 全卡串行，8 workers ~200GB，
 # 任何节点都稳）。平台注入同名 env 时以 env 为准。
 AI_FLOW_PACK = os.environ.get("AI_FLOW_PACK", "").strip()
+# worker 数上限旋钮（10-19 a6 全量事故后新增）：默认空 = 脚本用全部发现卡
+# （legacy PACK=1 时 = 8 worker）。8 worker × ~25-30GB ≈ 200-240GB 峰值在
+# 部分节点（10-19 xsyd-ai-h100-7）顶到容器内存墙：~12-13 分钟 8 worker 主进程
+# 集体 SIGABRT(-6) 无任何 stderr，仅 fork 的任务子进程幸存续写。设 "N" =
+# 只用前 N 张卡（→ N worker，RSS 峰值同步减半；4 worker ≈ 100-120GB，
+# 40 任务/格 ~2.2h，4 格一晚收完）。平台注入同名 env 时以 env 为准。
+AI_FLOW_GPU_NUM = os.environ.get("AI_FLOW_GPU_NUM", "").strip()
 
 SWEEP_REL = Path("scripts") / "eval_leapbotce_libero_sweep_2653853.sh"
 
@@ -140,6 +147,8 @@ def _build_cmd() -> str:
         smoke += f" LIBERO_EVAL_TASK={_q(AI_FLOW_EVAL_TASK)}"
     if AI_FLOW_PACK:
         smoke += f" LIBERO_LIBERO_PACK={_q(AI_FLOW_PACK)}"
+    if AI_FLOW_GPU_NUM:
+        smoke += f" GPU_NUM={_q(AI_FLOW_GPU_NUM)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
         f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)} RUN_DIR={_q(AI_FLOW_RUN_DIR)}"

@@ -1,0 +1,70 @@
+# @package _global_
+defaults:
+  - override /data: robotwin_cloudedge
+  - override /model: leapbotce
+  - _self_
+
+# A6-style recipe ported to RoboTwin 2.0 (2026-10-19 user call: 标准做法 =
+# LoRA + codec, epoch 锚官方 5ep). Item-for-item the LIBERO a6 recipe
+# (configs/task/libero_all_leapbotce_codec_lora.yaml) on the RoboTwin data
+# side: the video LoRA (q/k/v/o, rank 16, alpha 16) trains alongside the KV
+# codec and the action expert from step 0, cold-start init from the released
+# RoboTwin uncond checkpoint (robotwin_uncond_3cam_384.pt, injected by the
+# AIFlow train_robotwin_a6_lora variant via model.mot_pretrained_path — same
+# mechanism the LIBERO a6 variant uses for libero_uncond_2cam224.pt).
+#
+# RoboTwin-specific deltas vs LIBERO a6 (the only two):
+#   - edge_vision.num_views: 3 (head + both wrists), select mode 5 tokens
+#     per view -> 15 edge prefix tokens (LIBERO a6: 2 views / 10 tokens).
+#   - kv_codec.pool_grid: [6, 10] — the RoboTwin fused-frame token grid is
+#     12x10 (vs LIBERO 7x14; see the note in configs/model/leapbotce.yaml),
+#     so pooling to 6x10 = 60 planning tokens keeps the cloud->edge payload
+#     at the LIBERO a6 scale (~0.36 MB, ~100x compression).
+#
+# Training length: official RoboTwin anchor = 5 epochs (~237.3k steps at
+# effective batch 128 / ~118.7k at effective batch 256). The AIFlow variant
+# (AIFlow_config_train_robotwin_a6_lora.py) pins save_every to a fixed 14k
+# steps ~= 2 checkpoints/day — throughput is dataloader-bound so steps/day
+# stays ~28k at any rank count — giving the per-day probe ladder without a
+# per-shape recompute. keep 20 so nothing is deleted mid-run.
+batch_size: 8
+num_workers: 8
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine
+num_epochs: 5
+max_steps: null
+log_every: 10
+save_every: 5000
+eval_every: 0
+gradient_accumulation_steps: 1
+keep_last_checkpoints: 20
+weight_decay: 1.0e-2
+resume: null
+seed: 42
+model:
+  mot_checkpoint_mixed_attn: false
+  video_dit_config:
+    # Must stay false at construction (MoT __init__ guard); the edge train
+    # factory flips the video expert's runtime flag after LoRA injection.
+    use_gradient_checkpointing: false
+  video_lora:
+    enabled: true
+    rank: 16
+    alpha: 16.0
+    dropout: 0.0
+    targets: [q, k, v, o]
+  cloudedge:
+    # Resolve to half of max_steps in LeapBotCE.set_training_step when -1.
+    stale_loss_warmup_steps: -1
+    kv_codec:
+      enabled: true
+      pool_grid: [6, 10] # RoboTwin fused-frame grid is 12x10 (base yaml note)
+      use_kv_decoder: false
+  edge_vision:
+    # RoboTwin has 3 cameras (high + left/right wrist); LIBERO uses 2.
+    num_views: 3
+    mode: select
+    tokens_per_view: 5
+wandb:
+  project: leapbotce
+  name: robotwin_all_leapbotce_codec_lora

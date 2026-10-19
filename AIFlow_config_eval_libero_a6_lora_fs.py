@@ -47,6 +47,10 @@ os.environ.setdefault("AI_FLOW_TAG", "a6_lora_fs_step32544")
 os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40")  # 10-15 准则：时延评测只测 D{0,10,20,40}
 os.environ.setdefault("AI_FLOW_TRIALS", "50")
 os.environ.setdefault("AI_FLOW_PACK", "1")  # legacy 串行模式, 见 docstring 内存墙事故
+# 10-19 首提实锤: 8 worker 在 xsyd-ai-h100-7 上 ~12-13 分钟集体 SIGABRT(-6)
+# （容器内存顶格 ~200-240GB; 三轮同签名; fork 子进程幸存续写 delay_0）。
+# 减到 4 worker（~100-120GB）远离内存墙, 4 格一晚收完; skip-existing 补格。
+os.environ.setdefault("AI_FLOW_GPU_NUM", "4")
 
 from AIFlow_config_eval_libero import *  # noqa: F401,F403,E402
 from AIFlow_config_eval_libero import __C  # noqa: F401,E402 显式导入（star 不带下划线名），平台经分发器读 __C.TRAIN.CMD
