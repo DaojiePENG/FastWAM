@@ -22,8 +22,9 @@
   其余不动     d_train 20 / seed 42 / cosine / bs16 accum2 eff128 / video-action λ
                (0:1) / stale warmup -1 = 自动 total/2 ≈ 3254（前半程 λ 从 0 爬升
                = 白送的"先纯 fresh 修 D0、再补 stale 保底"两阶段调度）
-  续训         AI_FLOW_RESUME = a1 终点 step_024951.pt（仅权重，任意 world size
-               可载；冻结 expert 由同一 task yaml 从同一 release 重建，逐位一致）
+  续训         AI_FLOW_RESUME = a1 release 档终点 step_024951.pt（仅权重，任意
+               world size 可载；与 a4/a5 续训先例同一文件，冻结 expert 由同一
+               task yaml 从同一 release 重建，逐位一致）
 
 判据与探针（训练完立刻做，别等全量）：
   每 epoch 一个 ckpt（间隔 ≈ 2170 步）。spatial 25-trial 探针 D0/D20/D40
@@ -109,12 +110,12 @@ AI_FLOW_STALE_LAMBDA = 0.2        # ★ 实验变量：a1 预训 0.5 → 本变�
 AI_FLOW_STALE_WARMUP = -1  # 自动 = max_steps/2 ≈ 3254；前半程 fresh-heavy 两阶段调度
 
 # ─────────────────────────────────────────────────────────────────────
-# ④ 保存：3 个 ckpt（≈2170 步间隔 ≈ 每 epoch 1 个）× ~29GB ≈ 87GB/run
+# ④ 保存：3 个 ckpt（≈2170 步间隔 ≈ 每 epoch 1 个）× delta ~2GB ≈ 6GB/run
 # ─────────────────────────────────────────────────────────────────────
 AI_FLOW_NUM_SAVE = 3
 AI_FLOW_SAVE_EVERY = 0
 AI_FLOW_KEEP_CKPT = 0      # 全保留（探针梯子要逐个测）
-AI_FLOW_RESUME = "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_seed42_h200/checkpoints/weights/step_024951.pt"
+AI_FLOW_RESUME = "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec/codec_a1_release_seed42_h200/checkpoints/weights/step_024951.pt"
                            # a1 终点仅权重续训（文件 = weights-only；state 目录才
                            # 需 world-size 守卫，文件不需要）
 
