@@ -42,6 +42,11 @@ weight_decay: 1.0e-2
 resume: null
 seed: 42
 model:
+  # 冻结 5B video expert 的唯一来源：官方 RoboTwin uncond release（与训练注入
+  # 同源）。delta ckpt 只存可训参数（LoRA/codec/edge/action expert），eval 重建
+  # 缺此行 = video expert 回退 vanilla Wan 基座 ≠ 训练所见（10-21 LIBERO A7
+  # 事故同源教训；训练 variant 的 CLI 注入与本行同值，双保险）。
+  mot_pretrained_path: /mnt/c2-worldmodel/2638088/fastwam/fastwam_release/robotwin_uncond_3cam_384.pt
   mot_checkpoint_mixed_attn: false
   video_dit_config:
     # Must stay false at construction (MoT __init__ guard); the edge train
