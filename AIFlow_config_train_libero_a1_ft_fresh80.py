@@ -136,10 +136,14 @@ AI_FLOW_NCCL_CUMEM_ENABLE = "0"
 AI_FLOW_NCCL_TIMEOUT = "1200"
 
 # ─────────────────────────────────────────────────────────────────────
-# ⑦ 额外 Hydra 覆盖：无 —— 任务 yaml(libero_all_leapbotce_codec) 已含 a1 全部
-#    配方；冻结 expert init 同源重建，无需注入
+# ⑦ 额外 Hydra 覆盖：mot_pretrained_path 必须注入！a1 delta ckpt 只存可训
+#    参数，不含 5B 冻结 video expert；缺此行 = video expert 随机初始化且冻结
+#    不训 → 策略报废（10-21 事故根因：首轮两臂因此全废，对照
+#    AIFlow_config_libero_a4_lora.py / a5_cont.py 同款注入）。
 # ─────────────────────────────────────────────────────────────────────
-AI_FLOW_EXTRA_OVERRIDES: list[str] = []
+AI_FLOW_EXTRA_OVERRIDES: list[str] = [
+    "model.mot_pretrained_path=/mnt/c2-worldmodel/2638088/fastwam/fastwam_release/libero_uncond_2cam224.pt",
+]
 
 # ─────────────────────────────────────────────────────────────────────
 # ⑧ 环境（一般不动）
