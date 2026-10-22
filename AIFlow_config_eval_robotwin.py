@@ -9,6 +9,10 @@
 
     提交评测：任务名 leapbot_ce_eval_robotwin（或 …_smoke），userPath 选
     /dahuafs/userdata/2653853/code/FastWAM，8 卡起。
+    B6 梯子 run 全量：任务名 leapbot_ce_eval_robotwin_b6 —— 自动切 B6
+    codec_lora run + 独立结果根 robotwin_sweep_b6（默认值指向废 mot 基座的
+    B 线 run + 共享 sweep 根，B6 严禁走默认），时延窗按 10-15 准则只跑
+    {0,10,20,40}。
 
 1. 平台约定：userPath 下必须有名为 AIFlow_config.py 的脚本，平台 import 它、
    以 `cfg` 读取 __C.TRAIN.CMD 作为命令（非空 CMD → CUSTOM_CMD 分支直接 shell 执行）。
@@ -66,6 +70,25 @@ for _tok, _sub in (("d0510", "0 5 10"), ("d2040", "20 40"),
     if _tok in _TASK_NAME:
         AI_FLOW_DELAYS = _sub
         break
+# B6（codec_lora 梯子 run）快捷键（10-22）：任务名含 "b6" 即切 run + 结果根。
+# 默认值指向废 mot 基座的 B 线 run + 共享 sweep 根，B6 走默认 = 评错产物 +
+# 与 B 线全量 .done 撞车（整根全 skip）。时延窗按 10-15 长期准则只跑
+# {0,10,20,40}（B 线旧协议含 D5，不再跑）；名字里的 d40/d2040 等时延令牌
+# 优先于本默认（上面的 loop 先行赋值，此处只补空）。
+_B6_RUN_DIR = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+               "robotwin_all_leapbotce_codec_lora/"
+               "robotwin_all_codec_lora_dtrain20_seed42_gpu_n3")
+_B6_SWEEP_ROOT = ("/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+                  "leapbotce/robotwin_sweep_b6")
+AI_FLOW_RUN_DIR = os.environ.get("AI_FLOW_RUN_DIR", "").strip()
+AI_FLOW_SWEEP_ROOT = os.environ.get("AI_FLOW_SWEEP_ROOT", "").strip()
+if "b6" in _TASK_NAME:
+    if not AI_FLOW_RUN_DIR:
+        AI_FLOW_RUN_DIR = _B6_RUN_DIR
+    if not AI_FLOW_SWEEP_ROOT:
+        AI_FLOW_SWEEP_ROOT = _B6_SWEEP_ROOT
+    if not AI_FLOW_DELAYS:
+        AI_FLOW_DELAYS = "0 10 20 40"
 # checkpoint："latest" = 训练 run 下最新 step_*.pt；或具体 ckpt 绝对路径
 AI_FLOW_CKPT = os.environ.get("AI_FLOW_CKPT", "latest")
 
@@ -102,9 +125,14 @@ def _build_cmd() -> str:
         smoke += f" ROBOTWIN_EVAL_DELAYS={_q(AI_FLOW_DELAYS)}"
     if AI_FLOW_TASKS:
         smoke += f" ROBOTWIN_EVAL_TASKS={_q(AI_FLOW_TASKS)}"
+    extra = ""
+    if AI_FLOW_RUN_DIR:
+        extra += f" LEAPBOTCE_RUN_DIR={_q(AI_FLOW_RUN_DIR)}"
+    if AI_FLOW_SWEEP_ROOT:
+        extra += f" LEAPBOTCE_SWEEP_ROOT={_q(AI_FLOW_SWEEP_ROOT)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
-        f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)}{smoke} "
+        f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)}{smoke}{extra} "
         f"bash {_q(SWEEP_REL)}"
     )
 
