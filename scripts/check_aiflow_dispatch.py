@@ -20,23 +20,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (任务名, 期望 dispatcher 变体后缀, CMD 必含子串, CMD 必不含子串)
 CASES = [
-    # B 线默认提交：不得带 RUN_DIR/SWEEP_ROOT（保持 B 线默认路由）
+    # B 线默认提交：不得带 RUN_DIR/SWEEP_ROOT/EVAL_TASK（保持 B 线默认路由）
     ("leapbot_ce_eval_robotwin", "eval_robotwin",
      ["eval_leapbotce_robotwin_sweep_2653853.sh", "LEAPBOTCE_CKPT=latest"],
-     ["LEAPBOTCE_RUN_DIR", "LEAPBOTCE_SWEEP_ROOT"]),
-    # B6 全量：三旋钮齐 + 四窗默认
+     ["LEAPBOTCE_RUN_DIR", "LEAPBOTCE_SWEEP_ROOT", "LEAPBOTCE_EVAL_TASK"]),
+    # B6 全量：四旋钮齐 + 四窗默认（EVAL_TASK=codec_lora 配方，10-26 事故修复）
     ("leapbot_ce_eval_robotwin_b6", "eval_robotwin",
      ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
       "robotwin_all_leapbotce_codec_lora/robotwin_all_codec_lora_dtrain20_seed42_gpu_n3",
       "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
       "leapbotce/robotwin_sweep_b6",
-      "ROBOTWIN_EVAL_DELAYS='0 10 20 40'"],
+      "ROBOTWIN_EVAL_DELAYS='0 10 20 40'",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora"],
      []),
     # b6 + 时延令牌：令牌优先（d40 ⊃ "d4" 无关，但 b6 仍须命中 run 切换）
     ("leapbot_ce_eval_robotwin_b6_d40", "eval_robotwin",
      ["ROBOTWIN_EVAL_DELAYS=40",
       "LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
-      "robotwin_all_leapbotce_codec_lora"],
+      "robotwin_all_leapbotce_codec_lora",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora"],
      []),
     # 裸 d40（无 b6）：B 线默认，绝不得带 B6 run
     ("leapbot_ce_eval_robotwin_d40", "eval_robotwin",

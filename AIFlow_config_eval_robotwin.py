@@ -80,8 +80,15 @@ _B6_RUN_DIR = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
                "robotwin_all_codec_lora_dtrain20_seed42_gpu_n3")
 _B6_SWEEP_ROOT = ("/mnt/c2-worldmodel/2653853/baseline-evaluations/"
                   "leapbotce/robotwin_sweep_b6")
+_B6_EVAL_TASK = "robotwin_all_leapbotce_codec_lora"
 AI_FLOW_RUN_DIR = os.environ.get("AI_FLOW_RUN_DIR", "").strip()
 AI_FLOW_SWEEP_ROOT = os.environ.get("AI_FLOW_SWEEP_ROOT", "").strip()
+AI_FLOW_EVAL_TASK = os.environ.get("AI_FLOW_EVAL_TASK", "").strip()
+# 评测配方（lane 驱动的 LEAPBOTCE_EVAL_TASK，决定 hydra task= 即模型构建配方）。
+# 10-26 事故：b6 全量首提 40 格全灭（71 min 快败）—— lane 缺省回 B 线
+# recipe `robotwin_all_leapbotce`（edge_vision projector 为 plain Sequential），
+# 加载 codec_lora ckpt（scale_k/scale_v/proj.*）必键不匹配。b6 分支强制
+# 注入 codec_lora 配方；裸 B 线提交不受影响（默认即 B 线配方）。
 if "b6" in _TASK_NAME:
     if not AI_FLOW_RUN_DIR:
         AI_FLOW_RUN_DIR = _B6_RUN_DIR
@@ -89,6 +96,8 @@ if "b6" in _TASK_NAME:
         AI_FLOW_SWEEP_ROOT = _B6_SWEEP_ROOT
     if not AI_FLOW_DELAYS:
         AI_FLOW_DELAYS = "0 10 20 40"
+    if not AI_FLOW_EVAL_TASK:
+        AI_FLOW_EVAL_TASK = _B6_EVAL_TASK
 # checkpoint："latest" = 训练 run 下最新 step_*.pt；或具体 ckpt 绝对路径
 AI_FLOW_CKPT = os.environ.get("AI_FLOW_CKPT", "latest")
 
@@ -130,6 +139,8 @@ def _build_cmd() -> str:
         extra += f" LEAPBOTCE_RUN_DIR={_q(AI_FLOW_RUN_DIR)}"
     if AI_FLOW_SWEEP_ROOT:
         extra += f" LEAPBOTCE_SWEEP_ROOT={_q(AI_FLOW_SWEEP_ROOT)}"
+    if AI_FLOW_EVAL_TASK:
+        extra += f" LEAPBOTCE_EVAL_TASK={_q(AI_FLOW_EVAL_TASK)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
         f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)}{smoke}{extra} "
