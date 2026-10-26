@@ -93,7 +93,7 @@ stamp_seal           turn_switch
 | env | infer: starwam-libero-2653853;eval: robotwin-2653853 |
 | 入口 | `baseline_delay/starwam_robotwin_v2_chains_2653853.sh`(链式启动器:4 窗 × P 链 round-robin 分 50 任务)→ `starwam_robotwin_sweep_lane_2653853.sh <GPU> <D> <task...>`(任务走 argv ✓) |
 | 结果根 | lane ROOT 已改 `STARWAM_SWEEP_ROOT` env 覆写(10-26),chains 缺省即 v2 独立根 ✓ |
-| 平台入口 | **code/StarWAM/AIFlow_config.py 已建**(10-26,首个平台入口):任务名 `starwam_eval_robotwin_v2`(全量)/`…_smoke`(单格 place_shoe×D0)/`…_d2040`、`…_d010`(拆单);分发自测 `scripts_check/check_aiflow_dispatch_v2.py` **5/5 PASS** |
+| 平台入口 | **code/StarWAM/AIFlow_config.py 已建**(10-26,首个平台入口):任务名 `leapbot_ce_eval_robotwin_starwam_v2`(全量)/`…_smoke`(单格 place_shoe×D0)/`…_d2040`、`…_d010`(拆单);分发自测 `scripts_check/check_aiflow_dispatch_v2.py` **5/5 PASS** |
 | GPU 编号 | 平台 CUDA_VISIBLE_DEVICES → 逻辑槽位(与 FastWAM cluster-sweep、AHA xpolicy sweep 同约定);lane 显卡用户态接线已改 nvidia_userland_wire.sh 节点自适应(平台驱动 ≠ 535.183.06 也能渲染) |
 | smoke 先例 | 10-11 beat_block_hammer D0 MoT 5/5 通过 |
 | text cache | recipe 占位 /path/to/... 为 pod 本地懒编码产物;10-26 起 lane 缺省 `STARWAM_TEXT_CACHE_DIR` 指共享盘(2016 条既有条目已并入),server 启动器加可选覆写(XPolicyLab 6547afd)→ 新任务首格懒编码一次后全节点复用 |
@@ -132,7 +132,7 @@ stamp_seal           turn_switch
   裸名(robotwin-2653853、starwam-libero-2653853)→ 共享盘 .envs prefix
   路径(AHA 平台教训 0e3fcf1e:平台 pod 无本机 env 注册,裸名失效;
   prefix 激活 shelf 行为不变,双 env import 级验证过)。STARWAM 正式
-  任务名 `starwam_eval_robotwin_v2`,userPath=/dahuafs/userdata/2653853/code/StarWAM,
+  任务名 `leapbot_ce_eval_robotwin_starwam_v2`,userPath=/dahuafs/userdata/2653853/code/StarWAM,
   零参数,×8 卡。
 
 - **2026-10-26 17:55 v2 smoke ② GREEN(AHA 100%),lane ROOT 落根缺陷修复**。
