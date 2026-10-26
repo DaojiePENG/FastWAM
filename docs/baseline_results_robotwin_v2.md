@@ -123,6 +123,18 @@ stamp_seal           turn_switch
 
 ## 7. 状态日志(新条目在最上)
 
+- **2026-10-26 17:55 v2 smoke ② GREEN(AHA 100%),lane ROOT 落根缺陷修复**。
+  ① AHA click_bell × D0 × 50 eps:**50/50 = 100%**(31 min,管线健康),
+  **P1 提单 `leapbot_ce_eval_robotwin_ahawam_v2` 解锁**。② 实锤一处
+  通道缺陷:xpolicy **lane 驱动 ROOT 硬编码**旧根,cluster 驱动的
+  SWEEP_BASE/SUFFIX 只影响自身记账 → smoke 产物先落错根(旧根
+  delay_0/click_bell,与既有 10 任务不撞、数据真实),已 mv 搬正至
+  ahawam/robotwin_v2_smoke;修复 = cluster 驱动 export
+  XPOLICY_SWEEP_ROOT + lane 驱动 ROOT 可覆写(RoboTwin 9af26de,
+  bash -n 双过,checker 2/2,旧根恢复 10 任务原样)—— **v2 全量提交
+  的落根链路由此才真正打通**(未修则 AIFlow 全量会写进旧根)。
+  StarWAM lane 同款坑已在通道建设时先行修复。
+
 - **2026-10-26 17:30 v2 smoke ① GREEN 收官,smoke ②(AHA)启动**。
   ① ours stack_bowls_two × D0:lane 16:54 exit 0,50 eps 终值
   **96%**(_result_clean 0.96,.done 落;两段各 24/25)—— codec_lora
