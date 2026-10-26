@@ -28,6 +28,15 @@
   - ours: `/mnt/c2-worldmodel/2653853/baseline-evaluations/leapbotce/robotwin_v2_sweep_b6/`
   - AHA: `/mnt/c2-worldmodel/2653853/baseline-evaluations/ahawam/robotwin_v2_sweep/`
   - StarWAM: `/mnt/c2-worldmodel/2653853/baseline-evaluations/starwam/robotwin_v2_sweep/`
+- **clean vs random(10-26 用户确认)**:官方 RoboTwin 2.0 提供两套 task_config
+  —— `demo_clean.yml`(instruction=seen、干净背景、无光照/高度随机)与
+  `demo_randomized.yml`(instruction=unseen、随机背景+杂乱+光照,
+  clean_background_rate=0.02)。**v2 基准用 demo_clean**(与既有全部基线行
+  —— AHA 10-05 sweep、X-WAM、Motus、B 线 —— 同协议,跨表可比);
+  demo_randomized 暂不跑,若加做每方法格数翻倍(200→400),另行排期。
+- 任务清单实锤(10-26 二次核验):`code/RoboTwin/envs/`、
+  `FastWAM/third_party/RoboTwin/envs/` 两树各 50 个任务文件,
+  与 §3 冻结清单逐名 diff 零差异(即官方 benchmark 任务全集)。
 
 ## 3. 50 任务清单(envs/ 注册表,两树一致)
 
@@ -82,8 +91,10 @@ stamp_seal           turn_switch
 | 代码树 | `/dahuafs/userdata/2653853/code/StarWAM`(examples/robotwin,dual-server adapter)+ sim 在 code/RoboTwin(XPolicyLab) |
 | ckpt | `/mnt/c2-worldmodel/2653853/baselines/starwam/starwam-robotwin/mot/starwam_wan225b_robotwin_mot.pt`(+ action_stats.json);recipe starwam_robotwin_mot_wan22_5b.yaml;qpos 14-d |
 | env | infer: starwam-libero-2653853;eval: robotwin-2653853 |
-| 入口 | `baseline_delay/starwam_robotwin_sweep_lane_2653853.sh <GPU> <D> <task...>`(任务走 argv ✓) |
-| 结果根 | ROOT 硬编码 `starwam/robotwin_sweep` → **需加 env 覆写(小改)** |
+| 入口 | `baseline_delay/starwam_robotwin_v2_chains_2653853.sh`(链式启动器:4 窗 × P 链 round-robin 分 50 任务)→ `starwam_robotwin_sweep_lane_2653853.sh <GPU> <D> <task...>`(任务走 argv ✓) |
+| 结果根 | lane ROOT 已改 `STARWAM_SWEEP_ROOT` env 覆写(10-26),chains 缺省即 v2 独立根 ✓ |
+| 平台入口 | **code/StarWAM/AIFlow_config.py 已建**(10-26,首个平台入口):任务名 `starwam_eval_robotwin_v2`(全量)/`…_smoke`(单格 place_shoe×D0)/`…_d2040`、`…_d010`(拆单);分发自测 `scripts_check/check_aiflow_dispatch_v2.py` **5/5 PASS** |
+| GPU 编号 | 平台 CUDA_VISIBLE_DEVICES → 逻辑槽位(与 FastWAM cluster-sweep、AHA xpolicy sweep 同约定);lane 显卡用户态接线已改 nvidia_userland_wire.sh 节点自适应(平台驱动 ≠ 535.183.06 也能渲染) |
 | smoke 先例 | 10-11 beat_block_hammer D0 MoT 5/5 通过 |
 | 未知风险 | 新任务 text cache(precompute_text_cache.sh);server+sim 同卡显存 |
 
@@ -99,16 +110,40 @@ stamp_seal           turn_switch
 ## 6. 推进计划
 
 1. **本地 smoke(各 1 格新任务 × D0 × 50 eps,调 Cards 5/6,一卡一格)**:
-   ours = stack_bowls_two;AHA = click_bell;StarWAM = place_shoe。
-   调度:GPU 6 今日 ~14:00(rung-10 前半收工后)依次 ours → AHA;
-   StarWAM 明日 GPU 6。
-2. **config 小改 + 四步自测**(10-19 铁律):ours b6v2 变体、AHA v2 旋钮、
-   StarWAM ROOT 覆写;`check_aiflow_dispatch.py` 扩 CASES。
-3. **平台提单(用户)**:每方法一单,8 卡;建议 ours → AHA → StarWAM
-   错峰(空闲卡常态 ~32,可两单并行)。
+   ours = stack_bowls_two(10-26 14:13 GPU 6 起评,在飞);AHA = click_bell
+   (排 ours 后);StarWAM = place_shoe(平台 smoke 单提即可,shelf smoke
+   可省 —— 平台链路 dual-server + 渲染接线与 shelf 不同,须平台验)。
+2. **config 小改 + 四步自测**(10-19 铁律):✅ 10-26 全部完成 —— ours
+   b6v2(7/7)、AHA v2 旋钮(2/2)、StarWAM 新入口(5/5)。
+3. **平台提单(用户)**:每方法一单,8 卡;ours smoke ① 绿即可提 b6v2
+   全量;AHA smoke ② 绿后提;StarWAM 提 smoke 单验平台链路,过即提全量。
+   错峰建议见交付的提单指引表。
 4. 收数判读(异常即停)→ §5 表格回填 → 本文档 + daojie md 双归档。
 
 ## 7. 状态日志(新条目在最上)
+
+- **2026-10-26 15:30 三方法平台提单通道全部打通**。①ours b6v2(FastWAM
+  097065e,checker 7/7);②AHA v2 旋钮(RoboTwin b4ed4f6,checker 2/2);
+  ③**StarWAM 通道收口**(code/StarWAM 非独立 git 仓,文件落盘+chown):
+  - lane 驱动:`STARWAM_SWEEP_ROOT` env 覆写 + 显卡用户态接线改
+    nvidia_userland_wire.sh 节点自适应(本 pod 干跑 = 精确 535.183.06 包,
+    与原硬编码行为一致);
+  - 新建 `baseline_delay/starwam_robotwin_v2_chains_2653853.sh`:4 窗 ×
+    P=max(1,NGPU/4) 链,50 任务 round-robin 分链,平台 CVD 逻辑槽位;
+    dry-run 三拓扑验证(8 卡=8 链×25 格,4 卡=4 链×50 格,smoke=1 链);
+  - 新建 `code/StarWAM/AIFlow_config.py`(首个 StarWAM 平台入口)+
+    `scripts_check/check_aiflow_dispatch_v2.py` **5/5 PASS**(全量/smoke/
+    d2040/d010/哈希尾剥离);shlex 无空格值不加引号 → 自测断言按落盘形态。
+  - clean vs random 口径:demo_clean(seen)为 v2 协议,与全部既有基线行
+    同协议;demo_randomized 暂不做(用户 10-26 问询确认)。
+- **2026-10-26 15:20 在飞状态**:B6 平台 22518318(四窗 40 格)D0 5/10
+  done、D10 3/10,四旋钮修复在产线验证中;3 格日志内有 RoboTwin 任务级
+  episode 异常(click_alarmclock/grab_roller 的 get_grasp_pose None),
+  为"该 episode 判负、评测继续"的标准路径 —— click_alarmclock D0 仍以
+  1.0 收格,非加载类故障。rung-9(s112k)后半收齐:handover 0.32 /
+  put 0.70 / scan 0.76 / shake 1.00 / stack 0.98,十格均值 86.8%
+  (85-90 平台带内;handover 回落至震荡带下沿)。v2 smoke ①(ours
+  stack_bowls_two,GPU 6)在评。
 
 - **2026-10-26 14:15 v2 smoke ①(ours)启动**:GPU 6 14:13 起评
   stack_bowls_two × D0 × 50 eps(root robotwin_v2_sweep_b6,ckpt
