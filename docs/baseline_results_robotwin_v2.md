@@ -123,6 +123,17 @@ stamp_seal           turn_switch
 
 ## 7. 状态日志(新条目在最上)
 
+- **2026-10-26 17:30 v2 smoke ① GREEN 收官,smoke ②(AHA)启动**。
+  ① ours stack_bowls_two × D0:lane 16:54 exit 0,50 eps 终值
+  **96%**(_result_clean 0.96,.done 落;两段各 24/25)—— codec_lora
+  ckpt(step_158206)+ 新任务管线(instruction/文本编码/评测)平台级
+  首验通过。**P0 提单 `leapbot_ce_eval_robotwin_b6v2` 正式解锁**。
+  ② AHA smoke(click_bell × D0 × 50 eps)16:56 起,GPU 6(调试卡,
+  空闲 ~73GB ≥45GB 达标),xpolicy 驱动预检全绿(render OK/单 lane),
+  root = ahawam/robotwin_v2_smoke(独立后缀防撞正式根)。
+  同窗:B6 22518318 D0 7/10 收(已收 7 格 99.1%)、D10 6/10(97.3%)、
+  D20 3/10;详见 daojie md §6 17:20 条。
+
 - **2026-10-26 15:30 三方法平台提单通道全部打通**。①ours b6v2(FastWAM
   097065e,checker 7/7);②AHA v2 旋钮(RoboTwin b4ed4f6,checker 2/2);
   ③**StarWAM 通道收口**(code/StarWAM 非独立 git 仓,文件落盘+chown):
