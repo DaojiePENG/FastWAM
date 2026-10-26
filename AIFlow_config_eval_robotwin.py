@@ -81,6 +81,27 @@ _B6_RUN_DIR = ("/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
 _B6_SWEEP_ROOT = ("/mnt/c2-worldmodel/2653853/baseline-evaluations/"
                   "leapbotce/robotwin_sweep_b6")
 _B6_EVAL_TASK = "robotwin_all_leapbotce_codec_lora"
+_B6V2_SWEEP_ROOT = ("/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+                    "leapbotce/robotwin_v2_sweep_b6")
+# RoboTwin 2.0 全量 50 任务(v2 基准,envs/ 注册表,10-26 冻结;见
+# docs/baseline_results_robotwin_v2.md §3)。前 10 = dtrain20 既有评测子集。
+_B6V2_TASKS = (" ".join([
+    "adjust_bottle", "beat_block_hammer", "blocks_ranking_rgb",
+    "blocks_ranking_size", "click_alarmclock", "click_bell",
+    "dump_bin_bigbin", "grab_roller", "handover_block", "handover_mic",
+    "hanging_mug", "lift_pot", "move_can_pot", "move_pillbottle_pad",
+    "move_playingcard_away", "move_stapler_pad", "open_laptop",
+    "open_microwave", "pick_diverse_bottles", "pick_dual_bottles",
+    "place_a2b_left", "place_a2b_right", "place_bread_basket",
+    "place_bread_skillet", "place_burger_fries", "place_can_basket",
+    "place_cans_plasticbox", "place_container_plate", "place_dual_shoes",
+    "place_empty_cup", "place_fan", "place_mouse_pad",
+    "place_object_basket", "place_object_scale", "place_object_stand",
+    "place_phone_stand", "place_shoe", "press_stapler",
+    "put_bottles_dustbin", "put_object_cabinet", "rotate_qrcode",
+    "scan_object", "shake_bottle", "shake_bottle_horizontally",
+    "stack_blocks_three", "stack_blocks_two", "stack_bowls_three",
+    "stack_bowls_two", "stamp_seal", "turn_switch"]))
 AI_FLOW_RUN_DIR = os.environ.get("AI_FLOW_RUN_DIR", "").strip()
 AI_FLOW_SWEEP_ROOT = os.environ.get("AI_FLOW_SWEEP_ROOT", "").strip()
 AI_FLOW_EVAL_TASK = os.environ.get("AI_FLOW_EVAL_TASK", "").strip()
@@ -89,7 +110,20 @@ AI_FLOW_EVAL_TASK = os.environ.get("AI_FLOW_EVAL_TASK", "").strip()
 # recipe `robotwin_all_leapbotce`（edge_vision projector 为 plain Sequential），
 # 加载 codec_lora ckpt（scale_k/scale_v/proj.*）必键不匹配。b6 分支强制
 # 注入 codec_lora 配方；裸 B 线提交不受影响（默认即 B 线配方）。
-if "b6" in _TASK_NAME:
+if "b6v2" in _TASK_NAME:
+    # v2 全量 50 任务基准(10-26):同 B6 run/配方/四窗,独立结果根 +
+    # 全量任务表。分支须先于裸 b6 命中("b6v2" 含子串 "b6")。
+    if not AI_FLOW_RUN_DIR:
+        AI_FLOW_RUN_DIR = _B6_RUN_DIR
+    if not AI_FLOW_SWEEP_ROOT:
+        AI_FLOW_SWEEP_ROOT = _B6V2_SWEEP_ROOT
+    if not AI_FLOW_DELAYS:
+        AI_FLOW_DELAYS = "0 10 20 40"
+    if not AI_FLOW_EVAL_TASK:
+        AI_FLOW_EVAL_TASK = _B6_EVAL_TASK
+    if not AI_FLOW_TASKS:
+        AI_FLOW_TASKS = _B6V2_TASKS
+elif "b6" in _TASK_NAME:
     if not AI_FLOW_RUN_DIR:
         AI_FLOW_RUN_DIR = _B6_RUN_DIR
     if not AI_FLOW_SWEEP_ROOT:

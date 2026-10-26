@@ -24,6 +24,16 @@ CASES = [
     ("leapbot_ce_eval_robotwin", "eval_robotwin",
      ["eval_leapbotce_robotwin_sweep_2653853.sh", "LEAPBOTCE_CKPT=latest"],
      ["LEAPBOTCE_RUN_DIR", "LEAPBOTCE_SWEEP_ROOT", "LEAPBOTCE_EVAL_TASK"]),
+    # B6 v2 全量 50 任务:独立 v2 根 + 50 任务表 + 四旋钮;先于裸 b6 命中
+    ("leapbot_ce_eval_robotwin_b6v2", "eval_robotwin",
+     ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "robotwin_all_leapbotce_codec_lora/robotwin_all_codec_lora_dtrain20_seed42_gpu_n3",
+      "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_v2_sweep_b6",
+      "ROBOTWIN_EVAL_DELAYS='0 10 20 40'",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
+      "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer"],
+     ["leapbotce/robotwin_sweep_b6'"]),
     # B6 全量：四旋钮齐 + 四窗默认（EVAL_TASK=codec_lora 配方，10-26 事故修复）
     ("leapbot_ce_eval_robotwin_b6", "eval_robotwin",
      ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
