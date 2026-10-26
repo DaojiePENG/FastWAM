@@ -96,7 +96,8 @@ stamp_seal           turn_switch
 | 平台入口 | **code/StarWAM/AIFlow_config.py 已建**(10-26,首个平台入口):任务名 `starwam_eval_robotwin_v2`(全量)/`…_smoke`(单格 place_shoe×D0)/`…_d2040`、`…_d010`(拆单);分发自测 `scripts_check/check_aiflow_dispatch_v2.py` **5/5 PASS** |
 | GPU 编号 | 平台 CUDA_VISIBLE_DEVICES → 逻辑槽位(与 FastWAM cluster-sweep、AHA xpolicy sweep 同约定);lane 显卡用户态接线已改 nvidia_userland_wire.sh 节点自适应(平台驱动 ≠ 535.183.06 也能渲染) |
 | smoke 先例 | 10-11 beat_block_hammer D0 MoT 5/5 通过 |
-| 未知风险 | 新任务 text cache(precompute_text_cache.sh);server+sim 同卡显存 |
+| text cache | recipe 占位 /path/to/... 为 pod 本地懒编码产物;10-26 起 lane 缺省 `STARWAM_TEXT_CACHE_DIR` 指共享盘(2016 条既有条目已并入),server 启动器加可选覆写(XPolicyLab 6547afd)→ 新任务首格懒编码一次后全节点复用 |
+| 未知风险 | server+sim 同卡显存(平台卡型);cache 落盘权限由共享盘路径消除 |
 
 ## 5. 结果表(待填)
 
