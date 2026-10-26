@@ -110,6 +110,13 @@ stamp_seal           turn_switch
 
 ## 7. 状态日志(新条目在最上)
 
+- **2026-10-26 14:15 v2 smoke ①(ours)启动**:GPU 6 14:13 起评
+  stack_bowls_two × D0 × 50 eps(root robotwin_v2_sweep_b6,ckpt
+  step_158206,LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora
+  四旋钮齐);过 = 40 新任务管线首验通过,再排 AHA(click_bell)/
+  StarWAM(place_shoe)smoke。同窗:B6 平台重提(22518318)金丝雀
+  全绿在跑(上轮第四旋钮事故已修复,详见 daojie md §6 14:00 条)。
+
 - **2026-10-26 12:45 文档创建**。①50 任务清单实锤(envs/ 注册表,
   FastWAM/standalone 两树逐名一致);②三方法管线盘点完成(§4 资产卡),
   改动点:ours config v2 变体、AHA 根覆写、StarWAM ROOT 覆写,均小改 +
