@@ -123,6 +123,18 @@ stamp_seal           turn_switch
 
 ## 7. 状态日志(新条目在最上)
 
+- **2026-10-26 18:50 平台提单落地 + StarWAM env 平台化收尾**。
+  ① 用户已提并排队:**22529754 leapbot_ce_eval_robotwin_b6v2**(gpu:8)、
+  **22529775 leapbot_ce_eval_robotwin_ahawam_v2**(gpu:8),资源紧张排队中。
+  ② smoke 取舍:ours(96%)/AHA(100%)双绿且均有平台先例 → 无需再提;
+  StarWAM 跳过独立 smoke、直接提正式版(队列紧张不双排队;StarWAM 格
+  故障为快败型,首格盯防即可)。③ StarWAM 平台化最后一处:lane/env
+  裸名(robotwin-2653853、starwam-libero-2653853)→ 共享盘 .envs prefix
+  路径(AHA 平台教训 0e3fcf1e:平台 pod 无本机 env 注册,裸名失效;
+  prefix 激活 shelf 行为不变,双 env import 级验证过)。STARWAM 正式
+  任务名 `starwam_eval_robotwin_v2`,userPath=/dahuafs/userdata/2653853/code/StarWAM,
+  零参数,×8 卡。
+
 - **2026-10-26 17:55 v2 smoke ② GREEN(AHA 100%),lane ROOT 落根缺陷修复**。
   ① AHA click_bell × D0 × 50 eps:**50/50 = 100%**(31 min,管线健康),
   **P1 提单 `leapbot_ce_eval_robotwin_ahawam_v2` 解锁**。② 实锤一处
