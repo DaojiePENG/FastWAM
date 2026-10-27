@@ -59,6 +59,27 @@ CASES = [
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),
+    # ── Table 4 training ablations（10-27 三变体，母本 a6_lora_fs）──
+    # stale0：λmax=0。断言用 "--stale-lambda 0 --stale-warmup" 尾随词锚定——
+    # 若漏改仍为 0.5，子串 "--stale-lambda 0" 会被 "0.5" 藏住造成假阳
+    ("leapbot_ce_train_libero_a6_stale0", "libero_a6_stale0",
+     ["--delay 20", "--stale-lambda 0 --stale-warmup",
+      "--run-name codec_a6_stale0_15ep_seed42_h200",
+      "wandb.name=codec_a6_stale0_15ep_seed42_h200"],
+     ["--stale-lambda 0.5"]),
+    ("leapbot_ce_train_libero_a6_stale1", "libero_a6_stale1",
+     ["--delay 20", "--stale-lambda 1 --stale-warmup",
+      "--run-name codec_a6_stale1_15ep_seed42_h200"],
+     []),
+    ("leapbot_ce_train_libero_a6_dtrain40", "libero_a6_dtrain40",
+     ["--delay 40", "--stale-lambda 0.5",
+      "--run-name codec_a6_dtrain40_15ep_seed42_h200"],
+     ["--delay 20"]),
+    # 母本回归锁：三个新变体文件不得劫持 a6_lora_fs 本名
+    ("leapbot_ce_train_libero_a6_lora_fs", "libero_a6_lora_fs",
+     ["--delay 20", "--stale-lambda 0.5",
+      "--run-name codec_a6_lora_fs_15ep_seed42_h200"],
+     ["--delay 40"]),
 ]
 
 SNIP = r"""
