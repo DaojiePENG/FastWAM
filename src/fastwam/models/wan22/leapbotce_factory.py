@@ -58,6 +58,7 @@ def create_leapbotce(edge_vision=None, cloudedge=None, mot_pretrained_path=None,
         cloud_kv_codec_decoder_rank=int(kv_codec.get("decoder_rank", 256)),
         cloud_kv_codec_dropout=float(kv_codec.get("dropout", 0.0)),
         edge_prefix_enabled=bool(cloudedge.get("edge_prefix_enabled", True)),
+        use_cloud_proprio=bool(cloudedge.get("use_cloud_proprio", True)),
     )
     if mot_pretrained_path:
         # Optional init from a released FastWAM checkpoint (v1 full-MoT format:

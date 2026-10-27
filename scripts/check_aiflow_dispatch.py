@@ -80,6 +80,14 @@ CASES = [
      ["--delay 20", "--stale-lambda 0.5",
       "--run-name codec_a6_lora_fs_15ep_seed42_h200"],
      ["--delay 40"]),
+    # nocloudproprio：λ/delay 全部母本值，唯一配方差异在 EXTRA_OVERRIDES 的
+    # use_cloud_proprio=false；run_name 区分
+    ("leapbot_ce_train_libero_a6_nocloudproprio", "libero_a6_nocloudproprio",
+     ["--delay 20", "--stale-lambda 0.5",
+      "--run-name codec_a6_nocloudproprio_15ep_seed42_h200",
+      "model.cloudedge.use_cloud_proprio=false",
+      "model.mot_pretrained_path="],
+     ["use_cloud_proprio=true"]),
 ]
 
 SNIP = r"""

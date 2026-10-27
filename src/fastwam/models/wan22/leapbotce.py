@@ -220,7 +220,7 @@ class LeapBotCE(FastWAM):
                  cloud_kv_codec_enabled=False, cloud_kv_codec_pool_grid=None,
                  cloud_kv_codec_bottleneck_dim=1024, cloud_kv_codec_use_decoder=False,
                  cloud_kv_codec_decoder_rank=256, cloud_kv_codec_dropout=0.0,
-                 edge_prefix_enabled=True,
+                 edge_prefix_enabled=True, use_cloud_proprio=True,
                  **kwargs):
         super().__init__(*args, **kwargs)
         # Select-mode prefix K/V are concatenated with the per-layer video
@@ -243,6 +243,12 @@ class LeapBotCE(FastWAM):
         # Eval-time ablation switch (A4): set False to drop the edge prefix
         # K/V entirely and fall back to the cloud-only two-way attention.
         self.edge_prefix_enabled = bool(edge_prefix_enabled)
+        # Training-time ablation switch (Table 4 "w/o cloud proprioception"):
+        # set False to drop proprioception from every cloud-side context
+        # fusion (fresh cache, stale cache, and the inference-time
+        # encode_cloud), leaving a vision-only cloud payload; the edge side
+        # always fuses its own current state.  Mirrors edge_prefix_enabled.
+        self.use_cloud_proprio = bool(use_cloud_proprio)
         self.stale_loss_lambda_max = float(stale_loss_lambda_max)
         self.stale_loss_warmup_steps = int(stale_loss_warmup_steps)
         self.training_step = 0
@@ -295,6 +301,12 @@ class LeapBotCE(FastWAM):
         return context, context_mask
 
     def _with_proprio(self, context, context_mask, proprio, source):
+        # "w/o cloud proprioception" ablation: every cloud-side fusion
+        # (sources "cloud", "cloud current", "cloud stale") becomes a no-op,
+        # so the planning cache is vision-only; the edge side is untouched.
+        # getattr guard keeps checkpoints saved before this switch loadable.
+        if not getattr(self, "use_cloud_proprio", True) and source.startswith("cloud"):
+            return context, context_mask
         if getattr(self, "proprio_encoder", None) is not None:
             if proprio is None:
                 raise ValueError(f"LeapBotCE requires {source} proprio.")
@@ -441,7 +453,8 @@ class LeapBotCE(FastWAM):
         target = self.train_action_scheduler.training_target(action, noise, timestep)
         cloud_current_proprio = sample.get("cloud_current_proprio", edge_proprio)
         cloud_stale_proprio = sample.get("cloud_stale_proprio")
-        if self.proprio_encoder is not None and cloud_stale_proprio is None:
+        if (self.proprio_encoder is not None and self.use_cloud_proprio
+                and cloud_stale_proprio is None):
             raise ValueError(
                 "LeapBotCE requires cloud_stale_proprio so the stale cloud cache "
                 "cannot be conditioned on current edge state."

@@ -54,6 +54,13 @@ cloudedge:
   # K/V and fall back to cloud-only attention.  Training keeps it on unless
   # explicitly overridden.
   edge_prefix_enabled: true
+  # Table 4 training ablation "w/o cloud proprioception": set false to drop
+  # proprioception from every cloud-side context fusion (fresh train branch,
+  # stale train branch, and the inference-time encode_cloud cache), leaving a
+  # vision-only cloud payload; the edge side always fuses its own current
+  # state.  true = protocol default: the delayed side carries image +
+  # proprioception of the same t-k entry (paper sec. 4 protocol contract).
+  use_cloud_proprio: true
 
 video_dit_config:
   has_image_input: false
