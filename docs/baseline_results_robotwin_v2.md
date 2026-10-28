@@ -99,14 +99,64 @@ stamp_seal           turn_switch
 | text cache | recipe 占位 /path/to/... 为 pod 本地懒编码产物;10-26 起 lane 缺省 `STARWAM_TEXT_CACHE_DIR` 指共享盘(2016 条既有条目已并入),server 启动器加可选覆写(XPolicyLab 6547afd)→ 新任务首格懒编码一次后全节点复用 |
 | 未知风险 | server+sim 同卡显存(平台卡型);cache 落盘权限由共享盘路径消除 |
 
-## 5. 结果表(待填)
+## 5. 结果表
 
-每方法一张 50 任务 × 4 窗成功率表 + 全任务均值;收数脚本沿用
-`_result_clean.txt` 尾行读取。**模板(收工后填):**
+每格 = `<root>/delay_<D>/<task>/_result_clean.txt` 尾行成功率;macro = 50 任务平均。
+**ours 已收齐(2026-10-28,单 22529754,b6v2);AHA / StarWAM 收数中,列待填。**
 
 | 任务 | ours D0/D10/D20/D40 | AHA D0/D10/D20/D40 | StarWAM D0/D10/D20/D40 |
 |---|---|---|---|
-| (50 行) | | | |
+| adjust_bottle | 1.00 / 1.00 / 1.00 / 1.00 | 待填 | 待填 |
+| beat_block_hammer | 0.98 / 0.96 / 0.92 / 0.90 | 待填 | 待填 |
+| blocks_ranking_rgb | 0.98 / 1.00 / 1.00 / 0.98 | 待填 | 待填 |
+| blocks_ranking_size | 0.98 / 0.84 / 0.72 / 0.80 | 待填 | 待填 |
+| click_alarmclock | 1.00 / 1.00 / 1.00 / 1.00 | 待填 | 待填 |
+| click_bell | 1.00 / 1.00 / 1.00 / 1.00 | 待填 | 待填 |
+| dump_bin_bigbin | 0.98 / 0.92 / 0.94 / 0.98 | 待填 | 待填 |
+| grab_roller | 1.00 / 1.00 / 0.98 / 0.98 | 待填 | 待填 |
+| handover_block | 0.98 / 0.72 / 0.58 / 0.24 | 待填 | 待填 |
+| handover_mic | 0.98 / 1.00 / 1.00 / 0.94 | 待填 | 待填 |
+| hanging_mug | 0.98 / 0.56 / 0.54 / 0.46 | 待填 | 待填 |
+| lift_pot | 0.98 / 0.92 / 1.00 / 0.92 | 待填 | 待填 |
+| move_can_pot | 0.98 / 0.54 / 0.44 / 0.46 | 待填 | 待填 |
+| move_pillbottle_pad | 0.98 / 0.96 / 0.96 / 0.96 | 待填 | 待填 |
+| move_playingcard_away | 0.98 / 0.96 / 0.96 / 0.96 | 待填 | 待填 |
+| move_stapler_pad | 0.98 / 0.60 / 0.58 / 0.50 | 待填 | 待填 |
+| open_laptop | 0.98 / 0.80 / 0.84 / 0.76 | 待填 | 待填 |
+| open_microwave | 0.98 / 0.40 / 0.46 / 0.40 | 待填 | 待填 |
+| pick_diverse_bottles | 0.98 / 0.80 / 0.68 / 0.70 | 待填 | 待填 |
+| pick_dual_bottles | 0.90 / 0.88 / 0.96 / 0.90 | 待填 | 待填 |
+| place_a2b_left | 1.00 / 0.96 / 0.94 / 0.92 | 待填 | 待填 |
+| place_a2b_right | 0.98 / 0.88 / 0.88 / 0.88 | 待填 | 待填 |
+| place_bread_basket | 0.98 / 0.86 / 0.84 / 0.90 | 待填 | 待填 |
+| place_bread_skillet | 0.74 / 0.88 / 0.84 / 0.74 | 待填 | 待填 |
+| place_burger_fries | 0.98 / 0.94 / 0.92 / 0.94 | 待填 | 待填 |
+| place_can_basket | 0.98 / 0.84 / 0.82 / 0.72 | 待填 | 待填 |
+| place_cans_plasticbox | 0.98 / 0.84 / 0.84 / 0.86 | 待填 | 待填 |
+| place_container_plate | 0.98 / 1.00 / 0.92 / 1.00 | 待填 | 待填 |
+| place_dual_shoes | 0.82 / 0.76 / 0.74 / 0.72 | 待填 | 待填 |
+| place_empty_cup | 0.98 / 1.00 / 1.00 / 0.98 | 待填 | 待填 |
+| place_fan | 0.98 / 0.94 / 0.94 / 0.82 | 待填 | 待填 |
+| place_mouse_pad | 0.98 / 0.64 / 0.66 / 0.62 | 待填 | 待填 |
+| place_object_basket | 0.80 / 0.86 / 0.90 / 0.84 | 待填 | 待填 |
+| place_object_scale | 0.92 / 0.84 / 0.86 / 0.82 | 待填 | 待填 |
+| place_object_stand | 0.96 / 0.96 / 0.94 / 0.90 | 待填 | 待填 |
+| place_phone_stand | 0.88 / 0.90 / 0.88 / 0.86 | 待填 | 待填 |
+| place_shoe | 0.88 / 0.88 / 0.92 / 0.84 | 待填 | 待填 |
+| press_stapler | 0.90 / 0.90 / 0.88 / 0.88 | 待填 | 待填 |
+| put_bottles_dustbin | 0.94 / 0.94 / 0.84 / 0.44 | 待填 | 待填 |
+| put_object_cabinet | 0.82 / 0.84 / 0.86 / 0.88 | 待填 | 待填 |
+| rotate_qrcode | 0.90 / 0.94 / 0.94 / 0.76 | 待填 | 待填 |
+| scan_object | 0.70 / 0.64 / 0.74 / 0.60 | 待填 | 待填 |
+| shake_bottle | 1.00 / 1.00 / 1.00 / 1.00 | 待填 | 待填 |
+| shake_bottle_horizontally | 1.00 / 1.00 / 1.00 / 1.00 | 待填 | 待填 |
+| stack_blocks_three | 0.96 / 0.86 / 0.92 / 0.86 | 待填 | 待填 |
+| stack_blocks_two | 0.98 / 0.98 / 1.00 / 0.96 | 待填 | 待填 |
+| stack_bowls_three | 0.66 / 0.80 / 0.84 / 0.74 | 待填 | 待填 |
+| stack_bowls_two | 0.96 / 0.98 / 0.98 / 0.90 | 待填 | 待填 |
+| stamp_seal | 0.74 / 0.74 / 0.74 / 0.70 | 待填 | 待填 |
+| turn_switch | 0.48 / 0.46 / 0.44 / 0.52 | 待填 | 待填 |
+| **macro(50 任务)** | **92.9 / 85.8 / 85.2 / 80.9** | 待填 | 待填 |
 
 ## 6. 推进计划
 
@@ -122,6 +172,8 @@ stamp_seal           turn_switch
 4. 收数判读(异常即停)→ §5 表格回填 → 本文档 + daojie md 双归档。
 
 ## 7. 状态日志(新条目在最上)
+
+- **2026-10-28 19:15 ours v2 全量收齐入表(§5 填列)**。b6v2 单 22529754 平台报完成,复核 200/200(`_result_clean.txt` 全可解析、FAILED=0),macro **D0 92.9 / D10 85.8 / D20 85.2 / D40 80.9**,单调退化平滑无跳变格;最低格 = handover_block D40 0.24 / open_microwave D40 0.40(难任务量级合理)。v1 老根(22518318)由本单完整取代。同窗收数:AHA 179/200(`_result.txt` 深层路径 `delay_<D>/<task>/eval_result/<task>/AHA_WAM/…/<ts>/`)、StarWAM 134/200,收齐后补 §5 两列。
 
 - **2026-10-26 18:50 平台提单落地 + StarWAM env 平台化收尾**。
   ① 用户已提并排队:**22529754 leapbot_ce_eval_robotwin_b6v2**(gpu:8)、
