@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtypes", default="bf16,int8")
     parser.add_argument(
         "--instruction", default="put the bowl on the stove")
+    parser.add_argument("--primary", default="", help="agentview frame png (raw camera)")
+    parser.add_argument("--wrist", default="", help="wrist frame png (raw camera)")
     parser.add_argument("--out", default="")
     parser.add_argument("--tag", default="bw_sweep")
     parser.add_argument("--timeout", type=float, default=600.0)

@@ -27,6 +27,12 @@ LeapBot-CE 的部署形态拆成两个独立服务，中间只过规划载荷 z�
   `--raw` 切到无 codec 反事实接口：云侧 `/encode_cloud_raw` 返回完整 30 层
   K/V cache（36.1 MB bf16），端侧 `/payload_raw` 收缓存直接装配（无 scale
   重建）；模型计算段与 codec 路径相同，用于单独量化传输腿差异。
+- **bw_sweep.py**：带宽 mini-study 扫描——对同一训练好的 codec 做
+  **零样本载荷变体**（请求头 `pool_grid` 重定向自适应池化目标网格 +
+  `payload_dtype=int8` 逐 token 对称量化，scale 内联帧头、端侧反量化），
+  网格 × dtype 各 n 次 replan，输出载荷字节 / z 相对误差 / codec 与
+  KV 重建开销（`results/bw_sweep.json`）。retention（成功率）不在此脚本
+  范围内，需完整评测协议。
 - **boot 自检**：cloud_server 启动时先在整模型上跑"拆分路径 vs 参考路径"
   逐位对齐（`encode_cloud`+`infer_action_edge` vs 编解码+重建+分阶段去噪，
   max|diff| 阈值 1e-2），通过后才裁掉边侧权重 —— 保证线上协议与评测代码

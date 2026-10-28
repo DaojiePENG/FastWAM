@@ -1,0 +1,123 @@
+{
+  "tag": "bw_sweep",
+  "ts": "2026-10-28 19:38:54",
+  "host": "2653853-d4066608-ad84-11f1-9795-c2cf5b2749cc-mdp78",
+  "cloud_url": "http://127.0.0.1:8600",
+  "edge_url": "http://127.0.0.1:8601",
+  "cloud_health": {
+    "status": "ok",
+    "stage": "cloud",
+    "gpu": "NVIDIA H800 PCIe",
+    "payload_tokens": 56,
+    "payload_bytes": 344064,
+    "ckpt": "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec_lora/codec_a6_lora_fs_15ep_seed42_h200/checkpoints/weights/step_032544.pt"
+  },
+  "edge_health": {
+    "status": "ok",
+    "stage": "edge",
+    "gpu": "NVIDIA H800 PCIe",
+    "payload_tokens": 56,
+    "ckpt": "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec_lora/codec_a6_lora_fs_15ep_seed42_h200/checkpoints/weights/step_032544.pt"
+  },
+  "rtt_baseline_ms": 1.887680497020483,
+  "n": 2,
+  "warmup": 1,
+  "instruction": "put the bowl on the stove",
+  "variants": {
+    "4x4_int8": {
+      "label": "4x4_int8",
+      "grid": [
+        4,
+        4
+      ],
+      "dtype": "int8",
+      "tokens": 16,
+      "payload_bytes": 49216,
+      "z_rel_err_pct": 0.96,
+      "legs": {
+        "cloud_codec_ms": {
+          "mean": 0.11835,
+          "p50": 0.11835,
+          "p95": 0.11866499999999999
+        },
+        "z_transfer_ms": {
+          "mean": 20.660731242969632,
+          "p50": 20.660731242969632,
+          "p95": 20.93386498745531
+        },
+        "kv_reinit_ms": {
+          "mean": 7.212,
+          "p50": 7.212,
+          "p95": 7.221
+        },
+        "edge_denoise_ms": {
+          "mean": 528.0672999999999,
+          "p50": 528.0672999999999,
+          "p95": 528.0812500000001
+        },
+        "edge_compute_ms": {
+          "mean": 536.457,
+          "p50": 536.457,
+          "p95": 536.4732
+        },
+        "round_trip_ms": {
+          "mean": 735.3196144104004,
+          "p50": 735.3196144104004,
+          "p95": 735.726847499609
+        }
+      }
+    }
+  },
+  "records": {
+    "4x4_int8": [
+      {
+        "replan_id": "4x4_int8_r0",
+        "warmup": true,
+        "cloud_vae_ms": 19.019,
+        "cloud_prefill_ms": 221.8084,
+        "cloud_codec_ms": 7.1313,
+        "cloud_compute_ms": 247.959,
+        "z_transfer_ms": 52.773887757211924,
+        "kv_reinit_ms": 7.264,
+        "edge_denoise_ms": 682.3964,
+        "edge_compute_ms": 1180.249,
+        "round_trip_ms": 1598.2904671691358,
+        "payload_bytes": 49216,
+        "seq_len": 16,
+        "action_finite": true
+      },
+      {
+        "replan_id": "4x4_int8_r1",
+        "warmup": false,
+        "cloud_vae_ms": 18.9855,
+        "cloud_prefill_ms": 90.7897,
+        "cloud_codec_ms": 0.1187,
+        "cloud_compute_ms": 109.894,
+        "z_transfer_ms": 20.96421318128705,
+        "kv_reinit_ms": 7.222,
+        "edge_denoise_ms": 528.0518,
+        "edge_compute_ms": 536.439,
+        "round_trip_ms": 734.8671332001686,
+        "payload_bytes": 49216,
+        "seq_len": 16,
+        "action_finite": true
+      },
+      {
+        "replan_id": "4x4_int8_r2",
+        "warmup": false,
+        "cloud_vae_ms": 18.9627,
+        "cloud_prefill_ms": 90.7351,
+        "cloud_codec_ms": 0.118,
+        "cloud_compute_ms": 109.816,
+        "z_transfer_ms": 20.357249304652214,
+        "kv_reinit_ms": 7.202,
+        "edge_denoise_ms": 528.0828,
+        "edge_compute_ms": 536.475,
+        "round_trip_ms": 735.7720956206322,
+        "payload_bytes": 49216,
+        "seq_len": 16,
+        "action_finite": true
+      }
+    ]
+  }
+}
