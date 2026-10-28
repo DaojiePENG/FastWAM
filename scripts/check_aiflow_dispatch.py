@@ -88,6 +88,36 @@ CASES = [
       "model.cloudedge.use_cloud_proprio=false",
       "model.mot_pretrained_path="],
      ["use_cloud_proprio=true"]),
+    # ── Table 4 四行终点 eval 变体（10-28；薄委托 a6_lora_fs eval 同款）──
+    # 协议四旋钮 DELAYS/TAG/TRIALS/PACK+GPU_NUM 与 deployed a6 行一致；
+    # stale0 额外断言不得串行（RUN_DIR/Tag 锚定）且不带 use_cloud_proprio 注入
+    ("leapbot_ce_eval_libero_a6_stale0", "eval_libero_a6_stale0",
+     ["RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "libero_all_leapbotce_codec_lora/codec_a6_stale0_15ep_seed42_h200",
+      "LEAPBOTCE_CKPT=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "libero_all_leapbotce_codec_lora/codec_a6_stale0_15ep_seed42_h200/"
+      "checkpoints/weights/step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_stale0_step32544",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'", "NUM_TRIALS=50",
+      "LIBERO_LIBERO_PACK=1", "GPU_NUM=4"],
+     ["use_cloud_proprio", "codec_a6_stale1", "a6_lora_fs"]),
+    ("leapbot_ce_eval_libero_a6_stale1", "eval_libero_a6_stale1",
+     ["codec_a6_stale1_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_stale1_step32544",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'"],
+     ["codec_a6_stale0"]),
+    ("leapbot_ce_eval_libero_a6_dtrain40", "eval_libero_a6_dtrain40",
+     ["codec_a6_dtrain40_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_dtrain40_step32544",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'"],
+     ["codec_a6_lora_fs"]),
+    # nocloudproprio eval：EVAL_EXTRA 注入 use_cloud_proprio=false 是必需项
+    # （sweep 推导白名单不含此键，漏注入=strict load 过但行为回 True，整行作废）
+    ("leapbot_ce_eval_libero_a6_nocloudproprio", "eval_libero_a6_nocloudproprio",
+     ["codec_a6_nocloudproprio_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_nocloudproprio_step32544",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_proprio=false"],
+     ["use_cloud_proprio=true"]),
 ]
 
 SNIP = r"""
