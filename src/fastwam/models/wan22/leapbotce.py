@@ -443,7 +443,10 @@ class LeapBotCE(FastWAM):
             context, context_mask, edge_proprio, "edge"
         )
         edge_prefix = self._encode_edge_prefix(sample["edge_current_views"])
-        if edge_prefix is None:
+        if edge_prefix is None and self.edge_vision.mode != "select":
+            # Mirror the inference-side guard: with select mode and the
+            # prefix switch off, no edge token joins the context (the raw
+            # select embedding is video-dim, not context-dim).
             edge_context, edge_mask = self._edge_context(
                 edge_context, edge_mask, sample["edge_current_views"]
             )
@@ -510,7 +513,12 @@ class LeapBotCE(FastWAM):
             planning_cache.context, planning_cache.context_mask, edge_proprio, "edge"
         )
         edge_prefix = self._encode_edge_prefix(current_views)
-        if edge_prefix is None:
+        if edge_prefix is None and self.edge_vision.mode != "select":
+            # Select mode + edge_prefix_enabled=false ("w/o edge prefix",
+            # eval-time): fall back to cloud-only attention with NO edge
+            # token -- the raw select embedding is video-dim and cannot be
+            # cat-ed onto the text context (the pooled token is the only
+            # context-dim one).
             edge_context, edge_mask = self._edge_context(edge_context, edge_mask, current_views)
         generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
         action = torch.randn((planning_cache.context.shape[0], action_horizon, self.action_expert.action_dim),
