@@ -118,6 +118,13 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_nocloudproprio_step32544",
       "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_proprio=false"],
      ["use_cloud_proprio=true"]),
+    # noedgeprefix：与 deployed a6 行同 ckpt，唯一差异 = EVAL_EXTRA 关 edge
+    # prefix；TAG 必须区别于 deployed 行（复用旧 TAG 会混结果）
+    ("leapbot_ce_eval_libero_a6_noedgeprefix", "eval_libero_a6_noedgeprefix",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_noedgeprefix",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.edge_prefix_enabled=false"],
+     ["TAG=a6_lora_fs_step32544 ", "use_cloud_proprio"]),
 ]
 
 SNIP = r"""
