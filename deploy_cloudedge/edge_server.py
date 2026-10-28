@@ -140,6 +140,12 @@ def _payload_sync(body: bytes, recv_start: float) -> tuple[dict, float, float]:
     with _LOCK:
         header, tensors = unpack_message(body)
         z = tensors[0].to(device=_STATE["policy"].model.device, dtype=torch.bfloat16)
+        if header.get("payload_dtype") == "int8":
+            # Dequantize (per-token symmetric scale, inlined in the header)
+            # before the zero-cost scale reconstruction.
+            scale = torch.as_tensor(header["qscale"], dtype=torch.float32,
+                                    device=z.device).view(z.shape[0], z.shape[1], 1)
+            z = z.float().mul(scale).to(torch.bfloat16)
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         context, mask = _STATE["sessions"][header["session_id"]]

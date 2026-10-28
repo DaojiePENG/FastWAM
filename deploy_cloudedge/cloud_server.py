@@ -192,7 +192,21 @@ def _encode_cloud_sync(body: bytes, recv_start: float) -> tuple[bytes, dict]:
         proprio_np = np.asarray(header["proprio"], dtype=np.float32)
         proprio = torch.as_tensor(proprio_np).unsqueeze(0).to(model.device, model.torch_dtype)
         context, mask = encode_prompt_cached(policy, header["prompt"])
-        z, seq_len, tpf, timings = encode_cloud_parts(model, image, context, mask, proprio)
+        # Optional zero-shot payload variants (bandwidth mini-study): a coarser
+        # pooling grid re-targets the same trained codec's adaptive pooling,
+        # and int8 quantizes z per token row.  Both are inference-time only;
+        # the codec state is restored before the lock is released.
+        grid_override = header.get("pool_grid")
+        codec = model.cloud_kv_codec
+        saved_grid, saved_tokens = codec.pool_grid, codec.num_tokens
+        try:
+            if grid_override:
+                codec.pool_grid = (int(grid_override[0]), int(grid_override[1]))
+                codec.num_tokens = codec.pool_grid[0] * codec.pool_grid[1]
+            z, seq_len, tpf, timings = encode_cloud_parts(
+                model, image, context, mask, proprio)
+        finally:
+            codec.pool_grid, codec.num_tokens = saved_grid, saved_tokens
         out_header = {
             "replan_id": header.get("replan_id"),
             "seq_len": seq_len,
@@ -203,6 +217,16 @@ def _encode_cloud_sync(body: bytes, recv_start: float) -> tuple[bytes, dict]:
             "recv_start_perf": recv_start,
             "recv_start_wall": time.time(),
         }
+        if header.get("payload_dtype") == "int8":
+            scale = z.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / 127.0
+            q = (z / scale).round().clamp(-127, 127).to(torch.int8)
+            z_ref = q.float().mul(scale).to(z.dtype)
+            out_header["payload_bytes"] = int(q.numel() * q.element_size() + scale.numel() * 4)
+            out_header["z_rel_err_pct"] = round(
+                100.0 * (z_ref.float() - z.float()).norm().item()
+                / (z.float().norm().item() + 1e-12), 3)
+            out_header["qscale"] = scale.squeeze(-1).squeeze(0).tolist()
+            return pack_message(out_header, [q]), out_header
         return pack_message(out_header, [z]), out_header
 
 
