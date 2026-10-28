@@ -55,27 +55,51 @@ bash run_h800_debug.sh              # 云 GPU 3 :8600，端 GPU 5 :8601，50 次
 ```
 
 - 两个服务把非本侧权重裁掉：云进程 ~21 GB（Wan+T5+VAE），端进程 ~4 GB
-  （action expert+SigLIP+proprio），这本身就是 4090D(48G)/5080(16G) 的
-  显存画像预演。
+  （action expert+SigLIP+proprio），这本身就是 4090D(48G) /
+  Jetson AGX Orin(64G unified) 的显存画像预演。
 - 同机时网络腿共享 CLOCK_MONOTONIC，z 传输 = 客户端墙钟 − 空 POST RTT 基线；
   跨机部署同一客户端直接量真实 LAN（墙钟戳同时写在帧头，跨机用 NTP 对齐）。
 - **口径注意**：调试卡与集群其它负载共享 GPU（util 常态 100%），模型段时延
   是"并发挤占下"的上界读数；z 传输腿（网络）不受影响，可直接当 LAN 参考。
 
-## 4090D / 5080 测试床（后续真机）
+## 4090D / Jetson AGX Orin 测试床（真机，校园网 WiFi）
 
 ```bash
 # 云机（4090D）
 python cloud_server.py --port 8600 --ckpt <同上> --stats <同上>
-# 端机（5080）
+# 端机（Jetson AGX Orin，随臂；JetPack + arm64 torch 轮子）
 python edge_server.py  --port 8601 --ckpt <同上> --stats <同上>
 # 任一机（或机器人工控机）
 python bench_client.py --cloud http://<云机IP>:8600 --edge http://<端机IP>:8601 \
     --out results/testbed.json
 ```
 
-依赖只有 `fastapi uvicorn requests pillow numpy torch`（eval env 已装齐）；
-不依赖 LIBERO/RoboTwin 仿真器，端机无需仿真栈。
+依赖只有 `fastapi uvicorn requests pillow numpy torch`（eval env 已装齐；
+Orin 需 JetPack 配套的 arm64 torch 轮子）；不依赖 LIBERO/RoboTwin 仿真器，
+端机无需仿真栈。
+
+### 链路带宽实测规程（写论文用，给实施者）
+
+链路 = 实验室校园网 WiFi（两台电脑同网段通信）。**论文报告实测有效带宽，
+不引用标称协议速率**——WiFi 实测带宽波动大，标称值不可信。规程：
+
+1. **iperf3 双向 × 多轮**：云机 `iperf3 -s`，端机
+   `iperf3 -c <云机IP> -t 30`（端→云上联方向，观测帧方向）与
+   `iperf3 -c <云机IP> -t 30 -R`（云→端，z 载荷方向）各测 3 轮，
+   **演示/评测开始前与结束后各一组**，记录每轮 Mbits/s 与组内波动。
+   可加 `-u -b 100M` 一轮记 UDP 丢包率——WiFi 丢包/重传直接打在 p95 腿上。
+2. **harness 交叉验证**：50 次 replan 的 z 传输腿均值反推有效吞吐
+   （`payload_bytes / mean(z_transfer_ms) ≈ 有效带宽`，与 iperf3 同方向
+   对比）。两者偏差大时以 harness 读数为准——它才是论文表格的口径
+   （iperf3 是无协议栈基准，harness 含真实 HTTP/帧开销）。
+3. **入库**：iperf3 原始输出存 `results/testbed_iperf.txt`（或 json）、
+   harness 读数在 `results/testbed.json`，随 `git add -f results/` 入库。
+4. **时段一致性**：校园网白天/晚高峰差异大，带宽测量与真机演示、
+   时延重测尽量同一时段完成；论文如报告带宽，注明测量时刻与轮数。
+5. **论文写法**：真机链路腿注明 "campus Wi-Fi, measured X–Y Mbit/s
+   (iperf3, n 轮, 演示前后)";WiFi 上载荷字节直接决定传输腿
+   （0.34 MB @ 30 Mbit/s ≈ 92 ms，raw 36 MB 同链路为秒级——反事实
+   对照行此时最有说服力）。
 
 ## 评测调用约定（真机控制循环）
 
@@ -96,9 +120,10 @@ POST，少一次 RTT）。
 
 ## 已知口径/后续
 
-- Table 7（论文）当前填的是本 pod H800 × 2 + localhost（LAN 语义）读数
+- 论文延迟表当前填的是本 pod H800 × 2 + localhost（LAN 语义）读数
   （含 `--raw` 无 codec 对照行）；4090D/Orin 真机部署后用同一脚本重测
-  覆盖即可，z 传输腿换真实 LAN IP。
+  覆盖即可，z 传输腿换校园网 WiFi IP，并按上面"链路带宽实测规程"
+  记录实测有效带宽。
 - SigLIP/prefill 在并发 GPU 上的读数偏大；若要干净上界可在空闲卡复测。
 - 动作后处理（gripper 二值化/反演）属 LIBERO 评测语义，不在这层服务里；
   真机控制循环按需在端侧加。
