@@ -1,0 +1,203 @@
+{
+  "tag": "raw_smoke",
+  "mode": "raw",
+  "ts": "2026-10-28 18:10:46",
+  "host": "2653853-d4066608-ad84-11f1-9795-c2cf5b2749cc-mdp78",
+  "cloud_url": "http://127.0.0.1:8600",
+  "edge_url": "http://127.0.0.1:8601",
+  "cloud_health": {
+    "status": "ok",
+    "stage": "cloud",
+    "gpu": "NVIDIA H800 PCIe",
+    "payload_tokens": 56,
+    "payload_bytes": 344064,
+    "ckpt": "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec_lora/codec_a6_lora_fs_15ep_seed42_h200/checkpoints/weights/step_032544.pt"
+  },
+  "edge_health": {
+    "status": "ok",
+    "stage": "edge",
+    "gpu": "NVIDIA H800 PCIe",
+    "payload_tokens": 56,
+    "ckpt": "/mnt/c2-worldmodel/2653853/leapbot-ce/runs/libero_all_leapbotce_codec_lora/codec_a6_lora_fs_15ep_seed42_h200/checkpoints/weights/step_032544.pt"
+  },
+  "payload_bytes": 36126720,
+  "instruction": "put the bowl on the stove",
+  "prompt": "A video recorded from a robot's point of view executing the following instruction: put the bowl on the stove",
+  "n": 3,
+  "warmup": 2,
+  "rtt_baseline_ms": 1.746584428474307,
+  "legs": {
+    "cloud_uplink_ms": {
+      "mean": 2.94839513177673,
+      "p50": 2.94675026088953,
+      "p95": 2.9808771796524525
+    },
+    "cloud_vae_ms": {
+      "mean": 18.8885,
+      "p50": 18.9026,
+      "p95": 18.96515
+    },
+    "cloud_prefill_ms": {
+      "mean": 90.81736666666666,
+      "p50": 90.8822,
+      "p95": 91.00045999999999
+    },
+    "cloud_codec_ms": {
+      "mean": 0.0,
+      "p50": 0.0,
+      "p95": 0.0
+    },
+    "cloud_compute_ms": {
+      "mean": 109.706,
+      "p50": 109.673,
+      "p95": 109.9547
+    },
+    "z_transfer_ms": {
+      "mean": 93.75190913366775,
+      "p50": 93.97693327628076,
+      "p95": 99.70874730497599
+    },
+    "kv_reinit_ms": {
+      "mean": 15.703333333333333,
+      "p50": 12.425,
+      "p95": 21.488
+    },
+    "edge_uplink_ms": {
+      "mean": 2.6370251240829625,
+      "p50": 2.5872220285236835,
+      "p95": 2.8228519950062037
+    },
+    "edge_siglip_ms": {
+      "mean": 10.714933333333333,
+      "p50": 8.4021,
+      "p95": 14.66772
+    },
+    "edge_denoise_ms": {
+      "mean": 536.7188,
+      "p50": 536.838,
+      "p95": 536.9581499999999
+    },
+    "edge_compute_ms": {
+      "mean": 547.4336666666667,
+      "p50": 545.35,
+      "p95": 551.0749
+    },
+    "round_trip_ms": {
+      "mean": 937.8495587346455,
+      "p50": 941.9466028921306,
+      "p95": 942.0781958382577
+    }
+  },
+  "records": [
+    {
+      "replan_id": "r0",
+      "warmup": true,
+      "cloud_uplink_ms": 2.399817109107971,
+      "cloud_vae_ms": 18.987,
+      "cloud_prefill_ms": 104.7484,
+      "cloud_codec_ms": 0.0,
+      "cloud_compute_ms": 123.735,
+      "z_transfer_ms": 149.96873796917498,
+      "kv_reinit_ms": 34.757,
+      "edge_uplink_ms": 2.9929098673164845,
+      "edge_siglip_ms": 411.4518,
+      "edge_denoise_ms": 557.3828,
+      "edge_compute_ms": 968.835,
+      "round_trip_ms": 1519.2308421246707,
+      "action_abs_mean": 0.22338376939296722,
+      "action_finite": true,
+      "action_shape": [
+        32,
+        7
+      ]
+    },
+    {
+      "replan_id": "r1",
+      "warmup": true,
+      "cloud_uplink_ms": 3.0508372001349926,
+      "cloud_vae_ms": 18.9718,
+      "cloud_prefill_ms": 90.9075,
+      "cloud_codec_ms": 0.0,
+      "cloud_compute_ms": 109.879,
+      "z_transfer_ms": 113.58725721947849,
+      "kv_reinit_ms": 30.702,
+      "edge_uplink_ms": 2.6491638273000717,
+      "edge_siglip_ms": 8.358,
+      "edge_denoise_ms": 536.4889,
+      "edge_compute_ms": 544.847,
+      "round_trip_ms": 989.5042008720338,
+      "action_abs_mean": 0.21752548217773438,
+      "action_finite": true,
+      "action_shape": [
+        32,
+        7
+      ]
+    },
+    {
+      "replan_id": "r2",
+      "warmup": false,
+      "cloud_uplink_ms": 2.913766074925661,
+      "cloud_vae_ms": 18.9721,
+      "cloud_prefill_ms": 91.0136,
+      "cloud_codec_ms": 0.0,
+      "cloud_compute_ms": 109.986,
+      "z_transfer_ms": 93.97693327628076,
+      "kv_reinit_ms": 12.425,
+      "edge_uplink_ms": 2.8490331023931503,
+      "edge_siglip_ms": 15.3639,
+      "edge_denoise_ms": 536.3469,
+      "edge_compute_ms": 551.711,
+      "round_trip_ms": 941.9466028921306,
+      "action_abs_mean": 0.2232549488544464,
+      "action_finite": true,
+      "action_shape": [
+        32,
+        7
+      ]
+    },
+    {
+      "replan_id": "r3",
+      "warmup": false,
+      "cloud_uplink_ms": 2.9846690595149994,
+      "cloud_vae_ms": 18.7908,
+      "cloud_prefill_ms": 90.8822,
+      "cloud_codec_ms": 0.0,
+      "cloud_compute_ms": 109.673,
+      "z_transfer_ms": 100.34561553038657,
+      "kv_reinit_ms": 22.495,
+      "edge_uplink_ms": 2.5872220285236835,
+      "edge_siglip_ms": 8.4021,
+      "edge_denoise_ms": 536.838,
+      "edge_compute_ms": 545.24,
+      "round_trip_ms": 942.0928172767162,
+      "action_abs_mean": 0.21703174710273743,
+      "action_finite": true,
+      "action_shape": [
+        32,
+        7
+      ]
+    },
+    {
+      "replan_id": "r4",
+      "warmup": false,
+      "cloud_uplink_ms": 2.94675026088953,
+      "cloud_vae_ms": 18.9026,
+      "cloud_prefill_ms": 90.5563,
+      "cloud_codec_ms": 0.0,
+      "cloud_compute_ms": 109.459,
+      "z_transfer_ms": 86.93317859433591,
+      "kv_reinit_ms": 12.19,
+      "edge_uplink_ms": 2.474820241332054,
+      "edge_siglip_ms": 8.3788,
+      "edge_denoise_ms": 536.9715,
+      "edge_compute_ms": 545.35,
+      "round_trip_ms": 929.5092560350895,
+      "action_abs_mean": 0.2146715372800827,
+      "action_finite": true,
+      "action_shape": [
+        32,
+        7
+      ]
+    }
+  ]
+}
