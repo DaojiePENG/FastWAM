@@ -1,0 +1,11 @@
+{
+  "completed_Asia_Shanghai": "2026-10-29T18:54:11.571181+08:00",
+  "source": "aihub:/tmp/leapbotce_20261029/artifacts/performance_a6shape_edge_seed0.pt",
+  "destination": "jetson:/tmp/leapbotce_20261029/edge_artifact.pt",
+  "bytes": 2233952781,
+  "sha256_source_and_destination": "ade398d5dc3eacae9703541913f81c6d165ba688de9184f506f18f05f9585f7e",
+  "method": "direct HTTP 10.7.140.45:8631, no local relay; curl completed with status0",
+  "network_coordination": "after before-iperf and transport probes; before model smoke",
+  "temporary_server_pid": 3572615,
+  "temporary_server_stopped_after_pid_command_match": true
+}

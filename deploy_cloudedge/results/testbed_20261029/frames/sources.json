@@ -1,0 +1,38 @@
+{
+  "primary": {
+    "source": "/data/Database/fastwam_data/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot/videos/chunk-000/observation.images.image/episode_000056.mp4",
+    "seek_seconds": 0.4,
+    "decoder": "ffmpeg libdav1d",
+    "shape": [
+      512,
+      512
+    ],
+    "sha256": "39052a6d5789043dd4b166b3e668f9a68f4c126547bb89ed1c5877a68462b430",
+    "bench_frame": "primary_224.png",
+    "bench_shape": [
+      224,
+      224,
+      3
+    ],
+    "resize": "PIL bilinear 512x512 to 224x224 before measured loop",
+    "bench_sha256": "7a5099f8c6c2f4c1718c4c5b9ec203cb0a14acd2b2ff4e298e210ef27c439b02"
+  },
+  "wrist": {
+    "source": "/data/Database/fastwam_data/data/libero_mujoco3.3.2/libero_object_no_noops_lerobot/videos/chunk-000/observation.images.wrist_image/episode_000056.mp4",
+    "seek_seconds": 0.4,
+    "decoder": "ffmpeg libdav1d",
+    "shape": [
+      512,
+      512
+    ],
+    "sha256": "0cb891f09c8efbe8a4e49f301d71691b53a9940bb5cb782ee1dd4f34b8f5317f",
+    "bench_frame": "wrist_224.png",
+    "bench_shape": [
+      224,
+      224,
+      3
+    ],
+    "resize": "PIL bilinear 512x512 to 224x224 before measured loop",
+    "bench_sha256": "5deee2b90a355dc7eb94124d24a25fc6e36ffcfe4eeb7333d8a7108fc6fcf21b"
+  }
+}

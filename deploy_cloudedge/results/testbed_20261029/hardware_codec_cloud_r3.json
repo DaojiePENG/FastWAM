@@ -1,0 +1,3434 @@
+{
+  "schema_version": 2,
+  "tag": "hardware_codec_cloud_r3",
+  "mode": "codec",
+  "ts": "2026-10-29T11:13:00.803476+00:00",
+  "host": "jetson",
+  "cloud_url": "http://10.7.140.45:8600",
+  "edge_url": "http://127.0.0.1:8601",
+  "session_id": "bench-2b6991b769334d2c9ae4cdd602e7f3fe",
+  "n": 50,
+  "warmup": 5,
+  "stage": "cloud",
+  "schedule": "serial",
+  "instruction": "put the bowl on the stove",
+  "prompt": "A video recorded from a robot's point of view executing the following instruction: put the bowl on the stove",
+  "seed": 0,
+  "action_horizon": 32,
+  "executed_steps_per_replan": 10,
+  "num_inference_steps": 10,
+  "http_connection": "keep-alive",
+  "client_software": {
+    "python": "3.10.19 (main, Oct 21 2025, 16:38:01) [GCC 11.2.0]",
+    "platform": "Linux-5.15.148-tegra-aarch64-with-glibc2.35",
+    "machine": "aarch64",
+    "torch": "2.8.0",
+    "torch_cuda_build": "12.6",
+    "numpy": "1.26.1",
+    "requests": "2.32.5",
+    "torch_num_threads": 8,
+    "torch_num_interop_threads": 12,
+    "thread_environment": {
+      "OMP_NUM_THREADS": "8",
+      "OPENBLAS_NUM_THREADS": "8",
+      "MKL_NUM_THREADS": "8",
+      "TOKENIZERS_PARALLELISM": "false"
+    },
+    "bench_client_sha256": "6b09317d159ce0f639d72b8d26a6121b9155da4654de57852012d70d0f80d244",
+    "protocol_sha256": "10c779233e98accbf12ac05de9bf64ded405c66af8cd0d3f4ea7c14d5aa90b0b"
+  },
+  "input": {
+    "primary": "/tmp/leapbotce_20261029/frames/primary_224.png",
+    "wrist": "/tmp/leapbotce_20261029/frames/wrist_224.png",
+    "primary_rgb_sha256": "3f048c75c58e9bff7496664f6bd449e77ea52645a20551c84d0984b051bb3268",
+    "wrist_rgb_sha256": "9d9f7d5cf6d72a0abebc5233a9118e5d895c55c8aab30e5de6f2c58b5cbce5bd",
+    "primary_shape": [
+      224,
+      224,
+      3
+    ],
+    "wrist_shape": [
+      224,
+      224,
+      3
+    ],
+    "observations": "fixed replay; no physical robot actuation"
+  },
+  "measurement_notes": {
+    "clock": "All request and replan durations use this client's perf_counter only.",
+    "topology": "cloud -> client -> edge relay; payload crosses two HTTP legs.",
+    "request_ms": "From dispatch until complete response body; includes upload, HTTP, server queue/host/GPU work and response download.",
+    "response_headers_wait_ms": "Dispatch until response headers; not upload-only or TTFB.",
+    "response_download_ms": "Time reading response body after headers were exposed to requests; buffered/previously arrived bytes are included. Not pure network time or a one-way latency.",
+    "payload_server_install_ms": "Edge X-Recv-Done minus X-Recv-Start (same server clock): queue, unpack, H2D and installation; starts after body reception.",
+    "payload_request_residual_ms": "Payload request duration minus server install interval; includes bidirectional network and other HTTP/server overhead. Not a one-way network latency.",
+    "body_bytes": "Application HTTP body only, including LBC1 framing; excludes HTTP/TCP/IP headers.",
+    "gpu_compute_ms": "Server CUDA-event substeps; excludes other host/server work.",
+    "capacity": "Successful chunks / measured batch elapsed, including failed attempt time; warmup and one-time prompt/session/cache preparation excluded.",
+    "actions": "Each step generates 32 actions by default; deployment consumes 10 before replanning. Neither action rate is measured robot control frequency.",
+    "warmup": "Warmup batch uses the selected schedule, drains fully, then measured batch starts.",
+    "stages": "full=cloud+payload+step; cloud=encode only; payload=repeated install of fixed precomputed payload; edge=step only with fixed preinstalled cache.",
+    "concurrency": "One stream; pipeline has one cloud lookahead and serial edge calls. Not multi-session or open-loop saturation capacity."
+  },
+  "deprecated_metrics": {
+    "cloud_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "edge_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "z_transfer_ms": "Old payload HTTP duration minus pooled RTT included installation and omitted the cloud response leg. No one-way transfer is measured.",
+    "rtt_baseline_ms": "Pooled cloud/edge RTT replaced by per-endpoint RTT samples."
+  },
+  "rtt_baseline_ms": null,
+  "records": [
+    {
+      "replan_id": "w0",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 144.4430090050446,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 32.74261299520731,
+          "x_cloud_compute_ms": 32.691,
+          "request_ms": 177.25439100468066
+        }
+      },
+      "started_perf": 93917.40650233,
+      "started_utc": "2026-10-29T11:13:01.084745+00:00",
+      "cloud_observation_pack_ms": 0.6067900103516877,
+      "cloud_response_unpack_ms": 0.42320400825701654,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1961,
+        "prefill": 22.3907,
+        "codec": 0.1045
+      },
+      "cloud_compute_ms": 32.691,
+      "cloud_header": {
+        "replan_id": "w0",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1961,
+          "prefill": 22.3907,
+          "codec": 0.1045
+        },
+        "cloud_compute_ms": 32.6911995112896,
+        "recv_start_perf": 2560370.387383146,
+        "recv_start_wall": 1793272381.2404623
+      },
+      "cloud_ready_perf": 93917.584902109,
+      "completed_perf": 93917.584945213,
+      "round_trip_ms": 178.44288299966138,
+      "cloud_request_ms": 177.25439100468066,
+      "cloud_response_headers_wait_ms": 144.4430090050446,
+      "cloud_response_download_ms": 32.74261299520731,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 10.1961,
+      "cloud_prefill_ms": 22.3907,
+      "cloud_codec_ms": 0.1045,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w1",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 136.7747370095458,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 43.04159998719115,
+          "x_cloud_compute_ms": 32.562,
+          "request_ms": 179.8781620018417
+        }
+      },
+      "started_perf": 93917.585016126,
+      "started_utc": "2026-10-29T11:13:01.263258+00:00",
+      "cloud_observation_pack_ms": 0.5537660035770386,
+      "cloud_response_unpack_ms": 0.40022800385486335,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0731,
+        "prefill": 22.3846,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.562,
+      "cloud_header": {
+        "replan_id": "w1",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0731,
+          "prefill": 22.3846,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.562175430357456,
+        "recv_start_perf": 2560370.559277277,
+        "recv_start_wall": 1793272381.412394
+      },
+      "cloud_ready_perf": 93917.765963547,
+      "completed_perf": 93917.766002619,
+      "round_trip_ms": 180.9864929964533,
+      "cloud_request_ms": 179.8781620018417,
+      "cloud_response_headers_wait_ms": 136.7747370095458,
+      "cloud_response_download_ms": 43.04159998719115,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.0731,
+      "cloud_prefill_ms": 22.3846,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w2",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 173.044809998828,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 54.530232009710744,
+          "x_cloud_compute_ms": 32.55,
+          "request_ms": 227.6404510048451
+        }
+      },
+      "started_perf": 93917.76607014,
+      "started_utc": "2026-10-29T11:13:01.444311+00:00",
+      "cloud_observation_pack_ms": 0.5089019978186116,
+      "cloud_response_unpack_ms": 0.41542800317984074,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0822,
+        "prefill": 22.3624,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.55,
+      "cloud_header": {
+        "replan_id": "w2",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0822,
+          "prefill": 22.3624,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.54975983500481,
+        "recv_start_perf": 2560370.772289216,
+        "recv_start_wall": 1793272381.6251724
+      },
+      "cloud_ready_perf": 93917.99474865,
+      "completed_perf": 93917.99479009,
+      "round_trip_ms": 228.71994999877643,
+      "cloud_request_ms": 227.6404510048451,
+      "cloud_response_headers_wait_ms": 173.044809998828,
+      "cloud_response_download_ms": 54.530232009710744,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.0822,
+      "cloud_prefill_ms": 22.3624,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w3",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 247.70267600251827,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 40.311587988981046,
+          "x_cloud_compute_ms": 32.551,
+          "request_ms": 288.06405699288007
+        }
+      },
+      "started_perf": 93917.994861003,
+      "started_utc": "2026-10-29T11:13:01.673103+00:00",
+      "cloud_observation_pack_ms": 0.5422779941000044,
+      "cloud_response_unpack_ms": 0.31574699096381664,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0844,
+        "prefill": 22.3613,
+        "codec": 0.1053
+      },
+      "cloud_compute_ms": 32.551,
+      "cloud_header": {
+        "replan_id": "w3",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0844,
+          "prefill": 22.3613,
+          "codec": 0.1053
+        },
+        "cloud_compute_ms": 32.550911977887154,
+        "recv_start_perf": 2560371.07640688,
+        "recv_start_wall": 1793272381.929489
+      },
+      "cloud_ready_perf": 93918.283882189,
+      "completed_perf": 93918.28391515,
+      "round_trip_ms": 289.0541469969321,
+      "cloud_request_ms": 288.06405699288007,
+      "cloud_response_headers_wait_ms": 247.70267600251827,
+      "cloud_response_download_ms": 40.311587988981046,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 10.0844,
+      "cloud_prefill_ms": 22.3613,
+      "cloud_codec_ms": 0.1053,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w4",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 255.67106899688952,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 50.43271600152366,
+          "x_cloud_compute_ms": 32.508,
+          "request_ms": 306.15341699740384
+        }
+      },
+      "started_perf": 93918.283967758,
+      "started_utc": "2026-10-29T11:13:01.962209+00:00",
+      "cloud_observation_pack_ms": 0.38067600689828396,
+      "cloud_response_unpack_ms": 0.300995001452975,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.055,
+        "prefill": 22.3474,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.508,
+      "cloud_header": {
+        "replan_id": "w4",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.055,
+          "prefill": 22.3474,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.50790348649025,
+        "recv_start_perf": 2560371.374527027,
+        "recv_start_wall": 1793272382.2273233
+      },
+      "cloud_ready_perf": 93918.590909216,
+      "completed_perf": 93918.590942112,
+      "round_trip_ms": 306.9743539963383,
+      "cloud_request_ms": 306.15341699740384,
+      "cloud_response_headers_wait_ms": 255.67106899688952,
+      "cloud_response_download_ms": 50.43271600152366,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 10.055,
+      "cloud_prefill_ms": 22.3474,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r0",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 194.1231329983566,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 27.701503000571392,
+          "x_cloud_compute_ms": 32.556,
+          "request_ms": 221.8776290101232
+        }
+      },
+      "started_perf": 93918.591009121,
+      "started_utc": "2026-10-29T11:13:02.269250+00:00",
+      "cloud_observation_pack_ms": 0.3508200024953112,
+      "cloud_response_unpack_ms": 0.32569900213275105,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0986,
+        "prefill": 22.352,
+        "codec": 0.1051
+      },
+      "cloud_compute_ms": 32.556,
+      "cloud_header": {
+        "replan_id": "r0",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0986,
+          "prefill": 22.352,
+          "codec": 0.1051
+        },
+        "cloud_compute_ms": 32.55564910173416,
+        "recv_start_perf": 2560371.619613719,
+        "recv_start_wall": 1793272382.4726088
+      },
+      "cloud_ready_perf": 93918.81364551,
+      "completed_perf": 93918.813679974,
+      "round_trip_ms": 222.67085300700273,
+      "cloud_request_ms": 221.8776290101232,
+      "cloud_response_headers_wait_ms": 194.1231329983566,
+      "cloud_response_download_ms": 27.701503000571392,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 10.0986,
+      "cloud_prefill_ms": 22.352,
+      "cloud_codec_ms": 0.1051,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r1",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 233.40037299203686,
+          "status_code": 200,
+          "response_body_bytes": 344395,
+          "response_download_ms": 26.172272002440877,
+          "x_cloud_compute_ms": 32.595,
+          "request_ms": 259.6450929995626
+        }
+      },
+      "started_perf": 93918.813730663,
+      "started_utc": "2026-10-29T11:13:02.491972+00:00",
+      "cloud_observation_pack_ms": 0.3968999953940511,
+      "cloud_response_unpack_ms": 0.43754100624937564,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.11,
+        "prefill": 22.3799,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.595,
+      "cloud_header": {
+        "replan_id": "r1",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.11,
+          "prefill": 22.3799,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.59497534483671,
+        "recv_start_perf": 2560371.884361768,
+        "recv_start_wall": 1793272382.7372925
+      },
+      "cloud_ready_perf": 93919.074316501,
+      "completed_perf": 93919.07436335,
+      "round_trip_ms": 260.632687000907,
+      "cloud_request_ms": 259.6450929995626,
+      "cloud_response_headers_wait_ms": 233.40037299203686,
+      "cloud_response_download_ms": 26.172272002440877,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344395,
+      "cloud_vae_ms": 10.11,
+      "cloud_prefill_ms": 22.3799,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r2",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 299.6593620046042,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 50.04358899896033,
+          "x_cloud_compute_ms": 32.412,
+          "request_ms": 349.74810300627723
+        }
+      },
+      "started_perf": 93919.074434967,
+      "started_utc": "2026-10-29T11:13:02.752678+00:00",
+      "cloud_observation_pack_ms": 0.5441660032374784,
+      "cloud_response_unpack_ms": 0.3004830068675801,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 9.9574,
+        "prefill": 22.3498,
+        "codec": 0.1045
+      },
+      "cloud_compute_ms": 32.412,
+      "cloud_header": {
+        "replan_id": "r2",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 9.9574,
+          "prefill": 22.3498,
+          "codec": 0.1045
+        },
+        "cloud_compute_ms": 32.411680430173874,
+        "recv_start_perf": 2560372.211015456,
+        "recv_start_wall": 1793272383.0634773
+      },
+      "cloud_ready_perf": 93919.42512916,
+      "completed_perf": 93919.425161352,
+      "round_trip_ms": 350.72638500423636,
+      "cloud_request_ms": 349.74810300627723,
+      "cloud_response_headers_wait_ms": 299.6593620046042,
+      "cloud_response_download_ms": 50.04358899896033,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 9.9574,
+      "cloud_prefill_ms": 22.3498,
+      "cloud_codec_ms": 0.1045,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r3",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 239.77197999192867,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 24.09340100712143,
+          "x_cloud_compute_ms": 32.592,
+          "request_ms": 263.9229819906177
+        }
+      },
+      "started_perf": 93919.425206984,
+      "started_utc": "2026-10-29T11:13:03.103447+00:00",
+      "cloud_observation_pack_ms": 0.37309199979063123,
+      "cloud_response_unpack_ms": 0.3843239974230528,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1069,
+        "prefill": 22.3795,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.592,
+      "cloud_header": {
+        "replan_id": "r3",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1069,
+          "prefill": 22.3795,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.59187260270119,
+        "recv_start_perf": 2560372.477044865,
+        "recv_start_wall": 1793272383.3300166
+      },
+      "cloud_ready_perf": 93919.689980087,
+      "completed_perf": 93919.690021495,
+      "round_trip_ms": 264.8145109997131,
+      "cloud_request_ms": 263.9229819906177,
+      "cloud_response_headers_wait_ms": 239.77197999192867,
+      "cloud_response_download_ms": 24.09340100712143,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.1069,
+      "cloud_prefill_ms": 22.3795,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r4",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 249.4970719999401,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 31.770824003615417,
+          "x_cloud_compute_ms": 32.697,
+          "request_ms": 281.3147130073048
+        }
+      },
+      "started_perf": 93919.690081304,
+      "started_utc": "2026-10-29T11:13:03.368323+00:00",
+      "cloud_observation_pack_ms": 0.47606800217181444,
+      "cloud_response_unpack_ms": 0.31549100822303444,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2318,
+        "prefill": 22.3601,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.697,
+      "cloud_header": {
+        "replan_id": "r4",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2318,
+          "prefill": 22.3601,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.69734326004982,
+        "recv_start_perf": 2560372.775179752,
+        "recv_start_wall": 1793272383.6282067
+      },
+      "cloud_ready_perf": 93919.972282747,
+      "completed_perf": 93919.972316155,
+      "round_trip_ms": 282.2348510089796,
+      "cloud_request_ms": 281.3147130073048,
+      "cloud_response_headers_wait_ms": 249.4970719999401,
+      "cloud_response_download_ms": 31.770824003615417,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2318,
+      "cloud_prefill_ms": 22.3601,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r5",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 269.2892129998654,
+          "status_code": 200,
+          "response_body_bytes": 344394,
+          "response_download_ms": 28.996460008784197,
+          "x_cloud_compute_ms": 32.534,
+          "request_ms": 298.3378650096711
+        }
+      },
+      "started_perf": 93919.972363739,
+      "started_utc": "2026-10-29T11:13:03.650604+00:00",
+      "cloud_observation_pack_ms": 0.3882279997924343,
+      "cloud_response_unpack_ms": 0.3237799974158406,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.07,
+        "prefill": 22.3583,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.534,
+      "cloud_header": {
+        "replan_id": "r5",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.07,
+          "prefill": 22.3583,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.5335034057498,
+        "recv_start_perf": 2560373.078036426,
+        "recv_start_wall": 1793272383.9309242
+      },
+      "cloud_ready_perf": 93920.271501517,
+      "completed_perf": 93920.271538541,
+      "round_trip_ms": 299.1748019994702,
+      "cloud_request_ms": 298.3378650096711,
+      "cloud_response_headers_wait_ms": 269.2892129998654,
+      "cloud_response_download_ms": 28.996460008784197,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344394,
+      "cloud_vae_ms": 10.07,
+      "cloud_prefill_ms": 22.3583,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r6",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 350.41618200193625,
+          "status_code": 200,
+          "response_body_bytes": 344395,
+          "response_download_ms": 37.279551004758105,
+          "x_cloud_compute_ms": 32.539,
+          "request_ms": 387.7524700073991
+        }
+      },
+      "started_perf": 93920.27159067,
+      "started_utc": "2026-10-29T11:13:03.949831+00:00",
+      "cloud_observation_pack_ms": 0.43859699508175254,
+      "cloud_response_unpack_ms": 0.37942799099255353,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0792,
+        "prefill": 22.3542,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.539,
+      "cloud_header": {
+        "replan_id": "r6",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0792,
+          "prefill": 22.3542,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.5386246368289,
+        "recv_start_perf": 2560373.457388972,
+        "recv_start_wall": 1793272384.310359
+      },
+      "cloud_ready_perf": 93920.660256205,
+      "completed_perf": 93920.66029627,
+      "round_trip_ms": 388.7055999948643,
+      "cloud_request_ms": 387.7524700073991,
+      "cloud_response_headers_wait_ms": 350.41618200193625,
+      "cloud_response_download_ms": 37.279551004758105,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344395,
+      "cloud_vae_ms": 10.0792,
+      "cloud_prefill_ms": 22.3542,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r7",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 249.33098000474274,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 25.350916999741457,
+          "x_cloud_compute_ms": 32.668,
+          "request_ms": 274.7514980001142
+        }
+      },
+      "started_perf": 93920.660352014,
+      "started_utc": "2026-10-29T11:13:04.338594+00:00",
+      "cloud_observation_pack_ms": 0.4399399913381785,
+      "cloud_response_unpack_ms": 0.4982130049029365,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2142,
+        "prefill": 22.3498,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.668,
+      "cloud_header": {
+        "replan_id": "r7",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2142,
+          "prefill": 22.3498,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.668480552732944,
+        "recv_start_perf": 2560373.746743038,
+        "recv_start_wall": 1793272384.5997558
+      },
+      "cloud_ready_perf": 93920.936161603,
+      "completed_perf": 93920.936214851,
+      "round_trip_ms": 275.86283699201886,
+      "cloud_request_ms": 274.7514980001142,
+      "cloud_response_headers_wait_ms": 249.33098000474274,
+      "cloud_response_download_ms": 25.350916999741457,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2142,
+      "cloud_prefill_ms": 22.3498,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r8",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 273.6801269929856,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 28.26099400408566,
+          "x_cloud_compute_ms": 32.682,
+          "request_ms": 302.013057997101
+        }
+      },
+      "started_perf": 93920.936290916,
+      "started_utc": "2026-10-29T11:13:04.614534+00:00",
+      "cloud_observation_pack_ms": 0.6070460076443851,
+      "cloud_response_unpack_ms": 0.42454799404367805,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2152,
+        "prefill": 22.3611,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.682,
+      "cloud_header": {
+        "replan_id": "r8",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2152,
+          "prefill": 22.3611,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.68176022171974,
+        "recv_start_perf": 2560374.045917219,
+        "recv_start_wall": 1793272384.8988771
+      },
+      "cloud_ready_perf": 93921.23945301,
+      "completed_perf": 93921.239499346,
+      "round_trip_ms": 303.20843000663444,
+      "cloud_request_ms": 302.013057997101,
+      "cloud_response_headers_wait_ms": 273.6801269929856,
+      "cloud_response_download_ms": 28.26099400408566,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2152,
+      "cloud_prefill_ms": 22.3611,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r9",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 299.6303039981285,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 43.10376899957191,
+          "x_cloud_compute_ms": 32.67,
+          "request_ms": 342.7906819997588
+        }
+      },
+      "started_perf": 93921.239571507,
+      "started_utc": "2026-10-29T11:13:04.917815+00:00",
+      "cloud_observation_pack_ms": 0.5817659985041246,
+      "cloud_response_unpack_ms": 0.36489899503067136,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1753,
+        "prefill": 22.3898,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.67,
+      "cloud_header": {
+        "replan_id": "r9",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1753,
+          "prefill": 22.3898,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.67049542069435,
+        "recv_start_perf": 2560374.376102259,
+        "recv_start_wall": 1793272385.2290826
+      },
+      "cloud_ready_perf": 93921.583417656,
+      "completed_perf": 93921.58345676,
+      "round_trip_ms": 343.8852529943688,
+      "cloud_request_ms": 342.7906819997588,
+      "cloud_response_headers_wait_ms": 299.6303039981285,
+      "cloud_response_download_ms": 43.10376899957191,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.1753,
+      "cloud_prefill_ms": 22.3898,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r10",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 253.9703130023554,
+          "status_code": 200,
+          "response_body_bytes": 344399,
+          "response_download_ms": 30.641753997770138,
+          "x_cloud_compute_ms": 32.654,
+          "request_ms": 284.69171600590926
+        }
+      },
+      "started_perf": 93921.583694267,
+      "started_utc": "2026-10-29T11:13:05.261936+00:00",
+      "cloud_observation_pack_ms": 0.49754099745769054,
+      "cloud_response_unpack_ms": 0.47517300117760897,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2152,
+        "prefill": 22.3345,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.654,
+      "cloud_header": {
+        "replan_id": "r10",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2152,
+          "prefill": 22.3345,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.654079116880894,
+        "recv_start_perf": 2560374.666143968,
+        "recv_start_wall": 1793272385.5192742
+      },
+      "cloud_ready_perf": 93921.869472873,
+      "completed_perf": 93921.86952353,
+      "round_trip_ms": 285.8292629971402,
+      "cloud_request_ms": 284.69171600590926,
+      "cloud_response_headers_wait_ms": 253.9703130023554,
+      "cloud_response_download_ms": 30.641753997770138,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344399,
+      "cloud_vae_ms": 10.2152,
+      "cloud_prefill_ms": 22.3345,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r11",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 314.8840880021453,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 33.85817099479027,
+          "x_cloud_compute_ms": 32.595,
+          "request_ms": 348.7933639989933
+        }
+      },
+      "started_perf": 93921.869597386,
+      "started_utc": "2026-10-29T11:13:05.547840+00:00",
+      "cloud_observation_pack_ms": 0.5544379964703694,
+      "cloud_response_unpack_ms": 0.32304300111718476,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.11,
+        "prefill": 22.3805,
+        "codec": 0.1047
+      },
+      "cloud_compute_ms": 32.595,
+      "cloud_header": {
+        "replan_id": "r11",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.11,
+          "prefill": 22.3805,
+          "codec": 0.1047
+        },
+        "cloud_compute_ms": 32.595199681818485,
+        "recv_start_perf": 2560375.008550039,
+        "recv_start_wall": 1793272385.8618286
+      },
+      "cloud_ready_perf": 93922.219378312,
+      "completed_perf": 93922.219414025,
+      "round_trip_ms": 349.81663900543936,
+      "cloud_request_ms": 348.7933639989933,
+      "cloud_response_headers_wait_ms": 314.8840880021453,
+      "cloud_response_download_ms": 33.85817099479027,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.11,
+      "cloud_prefill_ms": 22.3805,
+      "cloud_codec_ms": 0.1047,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r12",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 341.91869100322947,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 43.06623099546414,
+          "x_cloud_compute_ms": 32.687,
+          "request_ms": 385.0446349970298
+        }
+      },
+      "started_perf": 93922.219463753,
+      "started_utc": "2026-10-29T11:13:05.897705+00:00",
+      "cloud_observation_pack_ms": 0.4387240041978657,
+      "cloud_response_unpack_ms": 0.3542760096024722,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2113,
+        "prefill": 22.3713,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.687,
+      "cloud_header": {
+        "replan_id": "r12",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2113,
+          "prefill": 22.3713,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.687103904783726,
+        "recv_start_perf": 2560375.39279378,
+        "recv_start_wall": 1793272386.245939
+      },
+      "cloud_ready_perf": 93922.605392237,
+      "completed_perf": 93922.605431117,
+      "round_trip_ms": 385.9673639963148,
+      "cloud_request_ms": 385.0446349970298,
+      "cloud_response_headers_wait_ms": 341.91869100322947,
+      "cloud_response_download_ms": 43.06623099546414,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2113,
+      "cloud_prefill_ms": 22.3713,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r13",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 234.4366620091023,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 41.617448994657025,
+          "x_cloud_compute_ms": 32.587,
+          "request_ms": 276.1011830007192
+        }
+      },
+      "started_perf": 93922.605487598,
+      "started_utc": "2026-10-29T11:13:06.283729+00:00",
+      "cloud_observation_pack_ms": 0.44944499677512795,
+      "cloud_response_unpack_ms": 0.309890994685702,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0915,
+        "prefill": 22.3902,
+        "codec": 0.1051
+      },
+      "cloud_compute_ms": 32.587,
+      "cloud_header": {
+        "replan_id": "r13",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0915,
+          "prefill": 22.3902,
+          "codec": 0.1051
+        },
+        "cloud_compute_ms": 32.58675308525562,
+        "recv_start_perf": 2560375.675134051,
+        "recv_start_wall": 1793272386.528001
+      },
+      "cloud_ready_perf": 93922.88243791,
+      "completed_perf": 93922.882468918,
+      "round_trip_ms": 276.9813199993223,
+      "cloud_request_ms": 276.1011830007192,
+      "cloud_response_headers_wait_ms": 234.4366620091023,
+      "cloud_response_download_ms": 41.617448994657025,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.0915,
+      "cloud_prefill_ms": 22.3902,
+      "cloud_codec_ms": 0.1051,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r14",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 247.02991099911742,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 27.878460008651018,
+          "x_cloud_compute_ms": 32.612,
+          "request_ms": 274.9801799945999
+        }
+      },
+      "started_perf": 93922.882515511,
+      "started_utc": "2026-10-29T11:13:06.560756+00:00",
+      "cloud_observation_pack_ms": 0.3771880001295358,
+      "cloud_response_unpack_ms": 0.4202599957352504,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1181,
+        "prefill": 22.3886,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.612,
+      "cloud_header": {
+        "replan_id": "r14",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1181,
+          "prefill": 22.3886,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.612192541360855,
+        "recv_start_perf": 2560375.96568437,
+        "recv_start_wall": 1793272386.8188689
+      },
+      "cloud_ready_perf": 93923.158391732,
+      "completed_perf": 93923.158436916,
+      "round_trip_ms": 275.9214050020091,
+      "cloud_request_ms": 274.9801799945999,
+      "cloud_response_headers_wait_ms": 247.02991099911742,
+      "cloud_response_download_ms": 27.878460008651018,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.1181,
+      "cloud_prefill_ms": 22.3886,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r15",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 445.83339800010435,
+          "status_code": 200,
+          "response_body_bytes": 344399,
+          "response_download_ms": 42.33719799958635,
+          "x_cloud_compute_ms": 32.71,
+          "request_ms": 488.2273640105268
+        }
+      },
+      "started_perf": 93923.158506453,
+      "started_utc": "2026-10-29T11:13:06.836749+00:00",
+      "cloud_observation_pack_ms": 0.5404220137279481,
+      "cloud_response_unpack_ms": 0.3573159920051694,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2298,
+        "prefill": 22.3754,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.71,
+      "cloud_header": {
+        "replan_id": "r15",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2298,
+          "prefill": 22.3754,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.709631599485874,
+        "recv_start_perf": 2560376.440430967,
+        "recv_start_wall": 1793272387.2935088
+      },
+      "cloud_ready_perf": 93923.647741859,
+      "completed_perf": 93923.647780548,
+      "round_trip_ms": 489.2740950017469,
+      "cloud_request_ms": 488.2273640105268,
+      "cloud_response_headers_wait_ms": 445.83339800010435,
+      "cloud_response_download_ms": 42.33719799958635,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344399,
+      "cloud_vae_ms": 10.2298,
+      "cloud_prefill_ms": 22.3754,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r16",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 411.55838599661365,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 36.20043199043721,
+          "x_cloud_compute_ms": 32.871,
+          "request_ms": 447.8306909877574
+        }
+      },
+      "started_perf": 93923.647836804,
+      "started_utc": "2026-10-29T11:13:07.326079+00:00",
+      "cloud_observation_pack_ms": 0.48806899576447904,
+      "cloud_response_unpack_ms": 0.42899599066004157,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.3782,
+        "prefill": 22.3877,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.871,
+      "cloud_header": {
+        "replan_id": "r16",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.3782,
+          "prefill": 22.3877,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.87142410874367,
+        "recv_start_perf": 2560376.869541396,
+        "recv_start_wall": 1793272387.7228608
+      },
+      "cloud_ready_perf": 93924.096686641,
+      "completed_perf": 93924.096733618,
+      "round_trip_ms": 448.89681400673,
+      "cloud_request_ms": 447.8306909877574,
+      "cloud_response_headers_wait_ms": 411.55838599661365,
+      "cloud_response_download_ms": 36.20043199043721,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.3782,
+      "cloud_prefill_ms": 22.3877,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r17",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 279.0639830054715,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 27.003248993423767,
+          "x_cloud_compute_ms": 32.542,
+          "request_ms": 306.1326399911195
+        }
+      },
+      "started_perf": 93924.096805427,
+      "started_utc": "2026-10-29T11:13:07.775048+00:00",
+      "cloud_observation_pack_ms": 0.5399420042522252,
+      "cloud_response_unpack_ms": 0.4175729991402477,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0751,
+        "prefill": 22.357,
+        "codec": 0.1098
+      },
+      "cloud_compute_ms": 32.542,
+      "cloud_header": {
+        "replan_id": "r17",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0751,
+          "prefill": 22.357,
+          "codec": 0.1098
+        },
+        "cloud_compute_ms": 32.54192090779543,
+        "recv_start_perf": 2560377.211394603,
+        "recv_start_wall": 1793272388.064212
+      },
+      "cloud_ready_perf": 93924.404052991,
+      "completed_perf": 93924.404099359,
+      "round_trip_ms": 307.29393199726474,
+      "cloud_request_ms": 306.1326399911195,
+      "cloud_response_headers_wait_ms": 279.0639830054715,
+      "cloud_response_download_ms": 27.003248993423767,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 10.0751,
+      "cloud_prefill_ms": 22.357,
+      "cloud_codec_ms": 0.1098,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r18",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 466.31585000432096,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 38.695078997989185,
+          "x_cloud_compute_ms": 32.602,
+          "request_ms": 505.08187399827875
+        }
+      },
+      "started_perf": 93924.404171744,
+      "started_utc": "2026-10-29T11:13:08.082414+00:00",
+      "cloud_observation_pack_ms": 0.5500859988387674,
+      "cloud_response_unpack_ms": 0.4182760021649301,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1325,
+        "prefill": 22.3642,
+        "codec": 0.1049
+      },
+      "cloud_compute_ms": 32.602,
+      "cloud_header": {
+        "replan_id": "r18",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1325,
+          "prefill": 22.3642,
+          "codec": 0.1049
+        },
+        "cloud_compute_ms": 32.60150420665741,
+        "recv_start_perf": 2560377.681654976,
+        "recv_start_wall": 1793272388.5346682
+      },
+      "cloud_ready_perf": 93924.910336605,
+      "completed_perf": 93924.910381917,
+      "round_trip_ms": 506.2101729999995,
+      "cloud_request_ms": 505.08187399827875,
+      "cloud_response_headers_wait_ms": 466.31585000432096,
+      "cloud_response_download_ms": 38.695078997989185,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.1325,
+      "cloud_prefill_ms": 22.3642,
+      "cloud_codec_ms": 0.1049,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r19",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 405.3810900077224,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 26.55946799495723,
+          "x_cloud_compute_ms": 32.702,
+          "request_ms": 432.00887899729423
+        }
+      },
+      "started_perf": 93924.910451934,
+      "started_utc": "2026-10-29T11:13:08.588694+00:00",
+      "cloud_observation_pack_ms": 0.5396859924076125,
+      "cloud_response_unpack_ms": 0.424355996074155,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2144,
+        "prefill": 22.3827,
+        "codec": 0.1053
+      },
+      "cloud_compute_ms": 32.702,
+      "cloud_header": {
+        "replan_id": "r19",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2144,
+          "prefill": 22.3827,
+          "codec": 0.1053
+        },
+        "cloud_compute_ms": 32.70246523618698,
+        "recv_start_perf": 2560378.152791034,
+        "recv_start_wall": 1793272389.0058658
+      },
+      "cloud_ready_perf": 93925.343536471,
+      "completed_perf": 93925.343580024,
+      "round_trip_ms": 433.1280899932608,
+      "cloud_request_ms": 432.00887899729423,
+      "cloud_response_headers_wait_ms": 405.3810900077224,
+      "cloud_response_download_ms": 26.55946799495723,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2144,
+      "cloud_prefill_ms": 22.3827,
+      "cloud_codec_ms": 0.1053,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r20",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 194.61623100505676,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 35.9751459909603,
+          "x_cloud_compute_ms": 32.656,
+          "request_ms": 230.65380999469198
+        }
+      },
+      "started_perf": 93925.34380937,
+      "started_utc": "2026-10-29T11:13:09.022052+00:00",
+      "cloud_observation_pack_ms": 0.6212220032466576,
+      "cloud_response_unpack_ms": 0.3977319865953177,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1805,
+        "prefill": 22.3713,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.656,
+      "cloud_header": {
+        "replan_id": "r20",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1805,
+          "prefill": 22.3713,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.65628878027201,
+        "recv_start_perf": 2560378.374823584,
+        "recv_start_wall": 1793272389.2278454
+      },
+      "cloud_ready_perf": 93925.575597751,
+      "completed_perf": 93925.575637912,
+      "round_trip_ms": 231.82854200422298,
+      "cloud_request_ms": 230.65380999469198,
+      "cloud_response_headers_wait_ms": 194.61623100505676,
+      "cloud_response_download_ms": 35.9751459909603,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.1805,
+      "cloud_prefill_ms": 22.3713,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r21",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 146.88650199968833,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 46.309618002851494,
+          "x_cloud_compute_ms": 32.696,
+          "request_ms": 193.26341699343175
+        }
+      },
+      "started_perf": 93925.575702552,
+      "started_utc": "2026-10-29T11:13:09.253944+00:00",
+      "cloud_observation_pack_ms": 0.5493170028785244,
+      "cloud_response_unpack_ms": 0.40979598998092115,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2287,
+        "prefill": 22.3622,
+        "codec": 0.1054
+      },
+      "cloud_compute_ms": 32.696,
+      "cloud_header": {
+        "replan_id": "r21",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2287,
+          "prefill": 22.3622,
+          "codec": 0.1054
+        },
+        "cloud_compute_ms": 32.696320816874504,
+        "recv_start_perf": 2560378.5553547,
+        "recv_start_wall": 1793272389.4083173
+      },
+      "cloud_ready_perf": 93925.770034365,
+      "completed_perf": 93925.770076957,
+      "round_trip_ms": 194.37440499314107,
+      "cloud_request_ms": 193.26341699343175,
+      "cloud_response_headers_wait_ms": 146.88650199968833,
+      "cloud_response_download_ms": 46.309618002851494,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2287,
+      "cloud_prefill_ms": 22.3622,
+      "cloud_codec_ms": 0.1054,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r22",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 109.71144000359345,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 27.215345995500684,
+          "x_cloud_compute_ms": 32.696,
+          "request_ms": 136.9893469964154
+        }
+      },
+      "started_perf": 93925.770145822,
+      "started_utc": "2026-10-29T11:13:09.448388+00:00",
+      "cloud_observation_pack_ms": 0.5604860052699223,
+      "cloud_response_unpack_ms": 0.4138919903198257,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2042,
+        "prefill": 22.3868,
+        "codec": 0.1053
+      },
+      "cloud_compute_ms": 32.696,
+      "cloud_header": {
+        "replan_id": "r22",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2042,
+          "prefill": 22.3868,
+          "codec": 0.1053
+        },
+        "cloud_compute_ms": 32.69631975889206,
+        "recv_start_perf": 2560378.716040027,
+        "recv_start_wall": 1793272389.5690525
+      },
+      "cloud_ready_perf": 93925.908221324,
+      "completed_perf": 93925.908262892,
+      "round_trip_ms": 138.11707000422757,
+      "cloud_request_ms": 136.9893469964154,
+      "cloud_response_headers_wait_ms": 109.71144000359345,
+      "cloud_response_download_ms": 27.215345995500684,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2042,
+      "cloud_prefill_ms": 22.3868,
+      "cloud_codec_ms": 0.1053,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r23",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 112.68260699580424,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 28.72256100818049,
+          "x_cloud_compute_ms": 32.676,
+          "request_ms": 141.46775999688543
+        }
+      },
+      "started_perf": 93925.908331789,
+      "started_utc": "2026-10-29T11:13:09.586573+00:00",
+      "cloud_observation_pack_ms": 0.5065330042270944,
+      "cloud_response_unpack_ms": 0.38016399776097387,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1992,
+        "prefill": 22.371,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.676,
+      "cloud_header": {
+        "replan_id": "r23",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1992,
+          "prefill": 22.371,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.67574444413185,
+        "recv_start_perf": 2560378.855123433,
+        "recv_start_wall": 1793272389.7082407
+      },
+      "cloud_ready_perf": 93926.050792967,
+      "completed_perf": 93926.050832615,
+      "round_trip_ms": 142.50082599755842,
+      "cloud_request_ms": 141.46775999688543,
+      "cloud_response_headers_wait_ms": 112.68260699580424,
+      "cloud_response_download_ms": 28.72256100818049,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.1992,
+      "cloud_prefill_ms": 22.371,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r24",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 194.59075799386483,
+          "status_code": 200,
+          "response_body_bytes": 344399,
+          "response_download_ms": 26.249257003655657,
+          "x_cloud_compute_ms": 32.692,
+          "request_ms": 220.90631899482105
+        }
+      },
+      "started_perf": 93926.050898088,
+      "started_utc": "2026-10-29T11:13:09.729139+00:00",
+      "cloud_observation_pack_ms": 0.5233330011833459,
+      "cloud_response_unpack_ms": 0.4091239970875904,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2168,
+        "prefill": 22.3703,
+        "codec": 0.1051
+      },
+      "cloud_compute_ms": 32.692,
+      "cloud_header": {
+        "replan_id": "r24",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2168,
+          "prefill": 22.3703,
+          "codec": 0.1051
+        },
+        "cloud_compute_ms": 32.692223846912384,
+        "recv_start_perf": 2560379.078406628,
+        "recv_start_wall": 1793272389.9314961
+      },
+      "cloud_ready_perf": 93926.27285453,
+      "completed_perf": 93926.272897826,
+      "round_trip_ms": 221.99973800161388,
+      "cloud_request_ms": 220.90631899482105,
+      "cloud_response_headers_wait_ms": 194.59075799386483,
+      "cloud_response_download_ms": 26.249257003655657,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344399,
+      "cloud_vae_ms": 10.2168,
+      "cloud_prefill_ms": 22.3703,
+      "cloud_codec_ms": 0.1051,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r25",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 278.0345969949849,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 42.89985400100704,
+          "x_cloud_compute_ms": 32.672,
+          "request_ms": 320.9948029980296
+        }
+      },
+      "started_perf": 93926.272969379,
+      "started_utc": "2026-10-29T11:13:09.951212+00:00",
+      "cloud_observation_pack_ms": 0.5281009944155812,
+      "cloud_response_unpack_ms": 0.38086800486780703,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1968,
+        "prefill": 22.3684,
+        "codec": 0.1064
+      },
+      "cloud_compute_ms": 32.672,
+      "cloud_header": {
+        "replan_id": "r25",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1968,
+          "prefill": 22.3684,
+          "codec": 0.1064
+        },
+        "cloud_compute_ms": 32.67155312001705,
+        "recv_start_perf": 2560379.385560948,
+        "recv_start_wall": 1793272390.238779
+      },
+      "cloud_ready_perf": 93926.594981601,
+      "completed_perf": 93926.595021409,
+      "round_trip_ms": 322.05202999466565,
+      "cloud_request_ms": 320.9948029980296,
+      "cloud_response_headers_wait_ms": 278.0345969949849,
+      "cloud_response_download_ms": 42.89985400100704,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.1968,
+      "cloud_prefill_ms": 22.3684,
+      "cloud_codec_ms": 0.1064,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r26",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 257.59010200272314,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 43.54229199816473,
+          "x_cloud_compute_ms": 32.695,
+          "request_ms": 301.20004300260916
+        }
+      },
+      "started_perf": 93926.595084898,
+      "started_utc": "2026-10-29T11:13:10.273326+00:00",
+      "cloud_observation_pack_ms": 0.49613299779593945,
+      "cloud_response_unpack_ms": 0.4057000041939318,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2215,
+        "prefill": 22.3686,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.695,
+      "cloud_header": {
+        "replan_id": "r26",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2215,
+          "prefill": 22.3686,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.69536068290472,
+        "recv_start_perf": 2560379.688324991,
+        "recv_start_wall": 1793272390.541453
+      },
+      "cloud_ready_perf": 93926.897289463,
+      "completed_perf": 93926.897330679,
+      "round_trip_ms": 302.2457810002379,
+      "cloud_request_ms": 301.20004300260916,
+      "cloud_response_headers_wait_ms": 257.59010200272314,
+      "cloud_response_download_ms": 43.54229199816473,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2215,
+      "cloud_prefill_ms": 22.3686,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r27",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 197.72210999508388,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 29.510856009437703,
+          "x_cloud_compute_ms": 32.723,
+          "request_ms": 227.29808700387366
+        }
+      },
+      "started_perf": 93926.897396184,
+      "started_utc": "2026-10-29T11:13:10.575638+00:00",
+      "cloud_observation_pack_ms": 0.5168049974599853,
+      "cloud_response_unpack_ms": 0.4048039991175756,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2642,
+        "prefill": 22.3539,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.723,
+      "cloud_header": {
+        "replan_id": "r27",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2642,
+          "prefill": 22.3539,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.722592033445835,
+        "recv_start_perf": 2560379.92654285,
+        "recv_start_wall": 1793272390.779677
+      },
+      "cloud_ready_perf": 93927.125721608,
+      "completed_perf": 93927.125763753,
+      "round_trip_ms": 228.36756901233457,
+      "cloud_request_ms": 227.29808700387366,
+      "cloud_response_headers_wait_ms": 197.72210999508388,
+      "cloud_response_download_ms": 29.510856009437703,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2642,
+      "cloud_prefill_ms": 22.3539,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r28",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 166.65283900510985,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 31.36098600225523,
+          "x_cloud_compute_ms": 32.528,
+          "request_ms": 198.07756900263485
+        }
+      },
+      "started_perf": 93927.125830121,
+      "started_utc": "2026-10-29T11:13:10.804072+00:00",
+      "cloud_observation_pack_ms": 0.5382129893405363,
+      "cloud_response_unpack_ms": 0.3977309970650822,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0721,
+        "prefill": 22.3519,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.528,
+      "cloud_header": {
+        "replan_id": "r28",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0721,
+          "prefill": 22.3519,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.52838388830423,
+        "recv_start_perf": 2560380.127675014,
+        "recv_start_wall": 1793272390.9806519
+      },
+      "cloud_ready_perf": 93927.324958677,
+      "completed_perf": 93927.324999541,
+      "round_trip_ms": 199.16941999690607,
+      "cloud_request_ms": 198.07756900263485,
+      "cloud_response_headers_wait_ms": 166.65283900510985,
+      "cloud_response_download_ms": 31.36098600225523,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.0721,
+      "cloud_prefill_ms": 22.3519,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r29",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 211.32668500649743,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 27.7360839972971,
+          "x_cloud_compute_ms": 32.785,
+          "request_ms": 239.12933000246994
+        }
+      },
+      "started_perf": 93927.32506575,
+      "started_utc": "2026-10-29T11:13:11.003307+00:00",
+      "cloud_observation_pack_ms": 0.5052850028732792,
+      "cloud_response_unpack_ms": 0.3959720052080229,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.3284,
+        "prefill": 22.3516,
+        "codec": 0.1054
+      },
+      "cloud_compute_ms": 32.785,
+      "cloud_header": {
+        "replan_id": "r29",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.3284,
+          "prefill": 22.3516,
+          "codec": 0.1054
+        },
+        "cloud_compute_ms": 32.78540734946728,
+        "recv_start_perf": 2560380.372340033,
+        "recv_start_wall": 1793272391.2255006
+      },
+      "cloud_ready_perf": 93927.565205618,
+      "completed_perf": 93927.565247955,
+      "round_trip_ms": 240.18220500147436,
+      "cloud_request_ms": 239.12933000246994,
+      "cloud_response_headers_wait_ms": 211.32668500649743,
+      "cloud_response_download_ms": 27.7360839972971,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.3284,
+      "cloud_prefill_ms": 22.3516,
+      "cloud_codec_ms": 0.1054,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r30",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 300.27336499188095,
+          "status_code": 200,
+          "response_body_bytes": 344399,
+          "response_download_ms": 26.251558010699227,
+          "x_cloud_compute_ms": 32.558,
+          "request_ms": 326.5907789900666
+        }
+      },
+      "started_perf": 93927.565476117,
+      "started_utc": "2026-10-29T11:13:11.243719+00:00",
+      "cloud_observation_pack_ms": 0.535204992047511,
+      "cloud_response_unpack_ms": 0.40905999776441604,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0969,
+        "prefill": 22.3557,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.558,
+      "cloud_header": {
+        "replan_id": "r30",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0969,
+          "prefill": 22.3557,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.558081060647964,
+        "recv_start_perf": 2560380.700430155,
+        "recv_start_wall": 1793272391.5532663
+      },
+      "cloud_ready_perf": 93927.893126491,
+      "completed_perf": 93927.893169243,
+      "round_trip_ms": 327.69312600430567,
+      "cloud_request_ms": 326.5907789900666,
+      "cloud_response_headers_wait_ms": 300.27336499188095,
+      "cloud_response_download_ms": 26.251558010699227,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344399,
+      "cloud_vae_ms": 10.0969,
+      "cloud_prefill_ms": 22.3557,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r31",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 247.84957700467203,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 42.2629499953473,
+          "x_cloud_compute_ms": 32.699,
+          "request_ms": 290.17819100408815
+        }
+      },
+      "started_perf": 93927.893236124,
+      "started_utc": "2026-10-29T11:13:11.571478+00:00",
+      "cloud_observation_pack_ms": 0.5106939934194088,
+      "cloud_response_unpack_ms": 0.42682100320234895,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2489,
+        "prefill": 22.345,
+        "codec": 0.1052
+      },
+      "cloud_compute_ms": 32.699,
+      "cloud_header": {
+        "replan_id": "r31",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2489,
+          "prefill": 22.345,
+          "codec": 0.1052
+        },
+        "cloud_compute_ms": 32.69903986155987,
+        "recv_start_perf": 2560380.976525895,
+        "recv_start_wall": 1793272391.8298304
+      },
+      "cloud_ready_perf": 93928.18445743,
+      "completed_perf": 93928.184498295,
+      "round_trip_ms": 291.2621709983796,
+      "cloud_request_ms": 290.17819100408815,
+      "cloud_response_headers_wait_ms": 247.84957700467203,
+      "cloud_response_download_ms": 42.2629499953473,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2489,
+      "cloud_prefill_ms": 22.345,
+      "cloud_codec_ms": 0.1052,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r32",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 195.55682899954263,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 29.661350999958813,
+          "x_cloud_compute_ms": 32.68,
+          "request_ms": 225.283715990372
+        }
+      },
+      "started_perf": 93928.184566519,
+      "started_utc": "2026-10-29T11:13:11.862808+00:00",
+      "cloud_observation_pack_ms": 0.512932994752191,
+      "cloud_response_unpack_ms": 0.3953950072173029,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1888,
+        "prefill": 22.3857,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.68,
+      "cloud_header": {
+        "replan_id": "r32",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1888,
+          "prefill": 22.3857,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.67993584275246,
+        "recv_start_perf": 2560381.215610581,
+        "recv_start_wall": 1793272392.0686197
+      },
+      "cloud_ready_perf": 93928.410871174,
+      "completed_perf": 93928.410910438,
+      "round_trip_ms": 226.34391899919137,
+      "cloud_request_ms": 225.283715990372,
+      "cloud_response_headers_wait_ms": 195.55682899954263,
+      "cloud_response_download_ms": 29.661350999958813,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.1888,
+      "cloud_prefill_ms": 22.3857,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r33",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 237.9209560021991,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 30.098891002126038,
+          "x_cloud_compute_ms": 32.714,
+          "request_ms": 268.08327199250925
+        }
+      },
+      "started_perf": 93928.410976647,
+      "started_utc": "2026-10-29T11:13:12.089219+00:00",
+      "cloud_observation_pack_ms": 0.5451259930850938,
+      "cloud_response_unpack_ms": 0.4398119926918298,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2208,
+        "prefill": 22.3875,
+        "codec": 0.1054
+      },
+      "cloud_compute_ms": 32.714,
+      "cloud_header": {
+        "replan_id": "r33",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2208,
+          "prefill": 22.3875,
+          "codec": 0.1054
+        },
+        "cloud_compute_ms": 32.71372876316309,
+        "recv_start_perf": 2560381.478442395,
+        "recv_start_wall": 1793272392.331657
+      },
+      "cloud_ready_perf": 93928.680160602,
+      "completed_perf": 93928.680201722,
+      "round_trip_ms": 269.22507499693893,
+      "cloud_request_ms": 268.08327199250925,
+      "cloud_response_headers_wait_ms": 237.9209560021991,
+      "cloud_response_download_ms": 30.098891002126038,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.2208,
+      "cloud_prefill_ms": 22.3875,
+      "cloud_codec_ms": 0.1054,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r34",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 365.36945500120055,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 54.20677800429985,
+          "x_cloud_compute_ms": 32.689,
+          "request_ms": 419.64426600316074
+        }
+      },
+      "started_perf": 93928.680269179,
+      "started_utc": "2026-10-29T11:13:12.358511+00:00",
+      "cloud_observation_pack_ms": 0.5175729893380776,
+      "cloud_response_unpack_ms": 0.42627600487321615,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2164,
+        "prefill": 22.3693,
+        "codec": 0.1034
+      },
+      "cloud_compute_ms": 32.689,
+      "cloud_header": {
+        "replan_id": "r34",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2164,
+          "prefill": 22.3693,
+          "codec": 0.1034
+        },
+        "cloud_compute_ms": 32.68915168941021,
+        "recv_start_perf": 2560381.881394593,
+        "recv_start_wall": 1793272392.7344599
+      },
+      "cloud_ready_perf": 93929.100978511,
+      "completed_perf": 93929.101026959,
+      "round_trip_ms": 420.757779997075,
+      "cloud_request_ms": 419.64426600316074,
+      "cloud_response_headers_wait_ms": 365.36945500120055,
+      "cloud_response_download_ms": 54.20677800429985,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2164,
+      "cloud_prefill_ms": 22.3693,
+      "cloud_codec_ms": 0.1034,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r35",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 242.96580500958953,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 34.459381000488065,
+          "x_cloud_compute_ms": 33.395,
+          "request_ms": 277.4897630006308
+        }
+      },
+      "started_perf": 93929.101099728,
+      "started_utc": "2026-10-29T11:13:12.779343+00:00",
+      "cloud_observation_pack_ms": 0.5302130011841655,
+      "cloud_response_unpack_ms": 0.4050920106237754,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2984,
+        "prefill": 22.9847,
+        "codec": 0.1116
+      },
+      "cloud_compute_ms": 33.395,
+      "cloud_header": {
+        "replan_id": "r35",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2984,
+          "prefill": 22.9847,
+          "codec": 0.1116
+        },
+        "cloud_compute_ms": 33.39468751847744,
+        "recv_start_perf": 2560382.169979975,
+        "recv_start_wall": 1793272393.0243108
+      },
+      "cloud_ready_perf": 93929.379635805,
+      "completed_perf": 93929.37967667,
+      "round_trip_ms": 278.5769420006545,
+      "cloud_request_ms": 277.4897630006308,
+      "cloud_response_headers_wait_ms": 242.96580500958953,
+      "cloud_response_download_ms": 34.459381000488065,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2984,
+      "cloud_prefill_ms": 22.9847,
+      "cloud_codec_ms": 0.1116,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r36",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 290.46607299824245,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 45.45766599767376,
+          "x_cloud_compute_ms": 32.688,
+          "request_ms": 335.9891160071129
+        }
+      },
+      "started_perf": 93929.379744286,
+      "started_utc": "2026-10-29T11:13:13.057987+00:00",
+      "cloud_observation_pack_ms": 0.5768700066255406,
+      "cloud_response_unpack_ms": 0.3979879984399304,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2195,
+        "prefill": 22.3642,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.688,
+      "cloud_header": {
+        "replan_id": "r36",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2195,
+          "prefill": 22.3642,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.688128150999546,
+        "recv_start_perf": 2560382.502125878,
+        "recv_start_wall": 1793272393.355227
+      },
+      "cloud_ready_perf": 93929.716816037,
+      "completed_perf": 93929.716855397,
+      "round_trip_ms": 337.1111110027414,
+      "cloud_request_ms": 335.9891160071129,
+      "cloud_response_headers_wait_ms": 290.46607299824245,
+      "cloud_response_download_ms": 45.45766599767376,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2195,
+      "cloud_prefill_ms": 22.3642,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r37",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 267.76684100332204,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 26.100513990968466,
+          "x_cloud_compute_ms": 32.684,
+          "request_ms": 293.93180400074925
+        }
+      },
+      "started_perf": 93929.71692231,
+      "started_utc": "2026-10-29T11:13:13.395164+00:00",
+      "cloud_observation_pack_ms": 0.5091570055810735,
+      "cloud_response_unpack_ms": 0.4018280014861375,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2286,
+        "prefill": 22.3506,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.684,
+      "cloud_header": {
+        "replan_id": "r37",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2286,
+          "prefill": 22.3506,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.68361536413431,
+        "recv_start_perf": 2560382.818719194,
+        "recv_start_wall": 1793272393.6718261
+      },
+      "cloud_ready_perf": 93930.01186782,
+      "completed_perf": 93930.01190894,
+      "round_trip_ms": 294.98662998958025,
+      "cloud_request_ms": 293.93180400074925,
+      "cloud_response_headers_wait_ms": 267.76684100332204,
+      "cloud_response_download_ms": 26.100513990968466,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2286,
+      "cloud_prefill_ms": 22.3506,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r38",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 182.6455190021079,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 33.2466010004282,
+          "x_cloud_compute_ms": 32.718,
+          "request_ms": 215.9605370106874
+        }
+      },
+      "started_perf": 93930.011975949,
+      "started_utc": "2026-10-29T11:13:13.690218+00:00",
+      "cloud_observation_pack_ms": 0.5305330123519525,
+      "cloud_response_unpack_ms": 0.41878799675032496,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2276,
+        "prefill": 22.3846,
+        "codec": 0.1056
+      },
+      "cloud_compute_ms": 32.718,
+      "cloud_header": {
+        "replan_id": "r38",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2276,
+          "prefill": 22.3846,
+          "codec": 0.1056
+        },
+        "cloud_compute_ms": 32.717855520546436,
+        "recv_start_perf": 2560383.03021023,
+        "recv_start_wall": 1793272393.8833246
+      },
+      "cloud_ready_perf": 93930.229042608,
+      "completed_perf": 93930.229085873,
+      "round_trip_ms": 217.1099239931209,
+      "cloud_request_ms": 215.9605370106874,
+      "cloud_response_headers_wait_ms": 182.6455190021079,
+      "cloud_response_download_ms": 33.2466010004282,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2276,
+      "cloud_prefill_ms": 22.3846,
+      "cloud_codec_ms": 0.1056,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r39",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 177.30063099588733,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 26.51094899920281,
+          "x_cloud_compute_ms": 32.678,
+          "request_ms": 203.87919699714985
+        }
+      },
+      "started_perf": 93930.22915589,
+      "started_utc": "2026-10-29T11:13:13.907398+00:00",
+      "cloud_observation_pack_ms": 0.5284849903546274,
+      "cloud_response_unpack_ms": 0.4002279893029481,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1889,
+        "prefill": 22.3835,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.678,
+      "cloud_header": {
+        "replan_id": "r39",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1889,
+          "prefill": 22.3835,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.67788830399513,
+        "recv_start_perf": 2560383.24148822,
+        "recv_start_wall": 1793272394.0946007
+      },
+      "cloud_ready_perf": 93930.43407628,
+      "completed_perf": 93930.434116793,
+      "round_trip_ms": 204.96090299275238,
+      "cloud_request_ms": 203.87919699714985,
+      "cloud_response_headers_wait_ms": 177.30063099588733,
+      "cloud_response_download_ms": 26.51094899920281,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344397,
+      "cloud_vae_ms": 10.1889,
+      "cloud_prefill_ms": 22.3835,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r40",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 218.5113680025097,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 42.952551011694595,
+          "x_cloud_compute_ms": 32.713,
+          "request_ms": 261.5304480132181
+        }
+      },
+      "started_perf": 93930.434343611,
+      "started_utc": "2026-10-29T11:13:14.112586+00:00",
+      "cloud_observation_pack_ms": 0.5321339995134622,
+      "cloud_response_unpack_ms": 0.3919080045307055,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2482,
+        "prefill": 22.3608,
+        "codec": 0.1044
+      },
+      "cloud_compute_ms": 32.713,
+      "cloud_header": {
+        "replan_id": "r40",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2482,
+          "prefill": 22.3608,
+          "codec": 0.1044
+        },
+        "cloud_compute_ms": 32.71347204595804,
+        "recv_start_perf": 2560383.488790657,
+        "recv_start_wall": 1793272394.3422143
+      },
+      "cloud_ready_perf": 93930.696902325,
+      "completed_perf": 93930.696941878,
+      "round_trip_ms": 262.5982669997029,
+      "cloud_request_ms": 261.5304480132181,
+      "cloud_response_headers_wait_ms": 218.5113680025097,
+      "cloud_response_download_ms": 42.952551011694595,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2482,
+      "cloud_prefill_ms": 22.3608,
+      "cloud_codec_ms": 0.1044,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r41",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 158.2495269976789,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 35.80124799918849,
+          "x_cloud_compute_ms": 32.637,
+          "request_ms": 194.11698399926536
+        }
+      },
+      "started_perf": 93930.697008342,
+      "started_utc": "2026-10-29T11:13:14.375250+00:00",
+      "cloud_observation_pack_ms": 0.5204850021982566,
+      "cloud_response_unpack_ms": 0.4460199997993186,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.197,
+        "prefill": 22.3345,
+        "codec": 0.1054
+      },
+      "cloud_compute_ms": 32.637,
+      "cloud_header": {
+        "replan_id": "r41",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.197,
+          "prefill": 22.3345,
+          "codec": 0.1054
+        },
+        "cloud_compute_ms": 32.636927887797356,
+        "recv_start_perf": 2560383.691713093,
+        "recv_start_wall": 1793272394.5446014
+      },
+      "cloud_ready_perf": 93930.892209977,
+      "completed_perf": 93930.892252953,
+      "round_trip_ms": 195.24461099354085,
+      "cloud_request_ms": 194.11698399926536,
+      "cloud_response_headers_wait_ms": 158.2495269976789,
+      "cloud_response_download_ms": 35.80124799918849,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.197,
+      "cloud_prefill_ms": 22.3345,
+      "cloud_codec_ms": 0.1054,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r42",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 170.17831599514466,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 37.523121005506255,
+          "x_cloud_compute_ms": 32.409,
+          "request_ms": 207.76483000372536
+        }
+      },
+      "started_perf": 93930.892319162,
+      "started_utc": "2026-10-29T11:13:14.570561+00:00",
+      "cloud_observation_pack_ms": 0.5080690025351942,
+      "cloud_response_unpack_ms": 0.38963599945418537,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 9.9542,
+        "prefill": 22.3496,
+        "codec": 0.1047
+      },
+      "cloud_compute_ms": 32.409,
+      "cloud_header": {
+        "replan_id": "r42",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 9.9542,
+          "prefill": 22.3496,
+          "codec": 0.1047
+        },
+        "cloud_compute_ms": 32.40851263701916,
+        "recv_start_perf": 2560383.89848872,
+        "recv_start_wall": 1793272394.7509563
+      },
+      "cloud_ready_perf": 93931.101089954,
+      "completed_perf": 93931.101128579,
+      "round_trip_ms": 208.8094170030672,
+      "cloud_request_ms": 207.76483000372536,
+      "cloud_response_headers_wait_ms": 170.17831599514466,
+      "cloud_response_download_ms": 37.523121005506255,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344396,
+      "cloud_vae_ms": 9.9542,
+      "cloud_prefill_ms": 22.3496,
+      "cloud_codec_ms": 0.1047,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r43",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 141.40395300637465,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 34.75423000054434,
+          "x_cloud_compute_ms": 32.399,
+          "request_ms": 176.21792800491676
+        }
+      },
+      "started_perf": 93931.101193443,
+      "started_utc": "2026-10-29T11:13:14.779435+00:00",
+      "cloud_observation_pack_ms": 0.5245810025371611,
+      "cloud_response_unpack_ms": 0.38051600859034806,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 9.9389,
+        "prefill": 22.3549,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.399,
+      "cloud_header": {
+        "replan_id": "r43",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 9.9389,
+          "prefill": 22.3549,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.399360090494156,
+        "recv_start_perf": 2560384.074528598,
+        "recv_start_wall": 1793272394.9270077
+      },
+      "cloud_ready_perf": 93931.278423573,
+      "completed_perf": 93931.278461174,
+      "round_trip_ms": 177.26773100730497,
+      "cloud_request_ms": 176.21792800491676,
+      "cloud_response_headers_wait_ms": 141.40395300637465,
+      "cloud_response_download_ms": 34.75423000054434,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 9.9389,
+      "cloud_prefill_ms": 22.3549,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r44",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 242.64593300176784,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 34.35675299260765,
+          "x_cloud_compute_ms": 32.516,
+          "request_ms": 277.0690549950814
+        }
+      },
+      "started_perf": 93931.27852399,
+      "started_utc": "2026-10-29T11:13:14.956766+00:00",
+      "cloud_observation_pack_ms": 0.49395700625609607,
+      "cloud_response_unpack_ms": 0.3929639933630824,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0548,
+        "prefill": 22.3568,
+        "codec": 0.1048
+      },
+      "cloud_compute_ms": 32.516,
+      "cloud_header": {
+        "replan_id": "r44",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0548,
+          "prefill": 22.3568,
+          "codec": 0.1048
+        },
+        "cloud_compute_ms": 32.51644779741764,
+        "recv_start_perf": 2560384.356859494,
+        "recv_start_wall": 1793272395.2097023
+      },
+      "cloud_ready_perf": 93931.556590271,
+      "completed_perf": 93931.556631392,
+      "round_trip_ms": 278.1074020022061,
+      "cloud_request_ms": 277.0690549950814,
+      "cloud_response_headers_wait_ms": 242.64593300176784,
+      "cloud_response_download_ms": 34.35675299260765,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.0548,
+      "cloud_prefill_ms": 22.3568,
+      "cloud_codec_ms": 0.1048,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r45",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 259.86363599076867,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 60.56014601199422,
+          "x_cloud_compute_ms": 32.706,
+          "request_ms": 320.49047100008465
+        }
+      },
+      "started_perf": 93931.55669904,
+      "started_utc": "2026-10-29T11:13:15.234941+00:00",
+      "cloud_observation_pack_ms": 0.5143729940755293,
+      "cloud_response_unpack_ms": 0.4044520028401166,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2368,
+        "prefill": 22.3642,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.706,
+      "cloud_header": {
+        "replan_id": "r45",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2368,
+          "prefill": 22.3642,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.70643272995949,
+        "recv_start_perf": 2560384.651377294,
+        "recv_start_wall": 1793272395.5046487
+      },
+      "cloud_ready_perf": 93931.878219281,
+      "completed_perf": 93931.878261714,
+      "round_trip_ms": 321.56267399841454,
+      "cloud_request_ms": 320.49047100008465,
+      "cloud_response_headers_wait_ms": 259.86363599076867,
+      "cloud_response_download_ms": 60.56014601199422,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2368,
+      "cloud_prefill_ms": 22.3642,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r46",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 182.16127500636503,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 36.9418019981822,
+          "x_cloud_compute_ms": 32.647,
+          "request_ms": 219.1665330028627
+        }
+      },
+      "started_perf": 93931.878327283,
+      "started_utc": "2026-10-29T11:13:15.556569+00:00",
+      "cloud_observation_pack_ms": 0.5032049957662821,
+      "cloud_response_unpack_ms": 0.3897949936799705,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1523,
+        "prefill": 22.3894,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.647,
+      "cloud_header": {
+        "replan_id": "r46",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1523,
+          "prefill": 22.3894,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.64716759324074,
+        "recv_start_perf": 2560384.892484588,
+        "recv_start_wall": 1793272395.7453394
+      },
+      "cloud_ready_perf": 93932.098497826,
+      "completed_perf": 93932.098539906,
+      "round_trip_ms": 220.2126229967689,
+      "cloud_request_ms": 219.1665330028627,
+      "cloud_response_headers_wait_ms": 182.16127500636503,
+      "cloud_response_download_ms": 36.9418019981822,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.1523,
+      "cloud_prefill_ms": 22.3894,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r47",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 161.76709000137635,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 29.320736008230597,
+          "x_cloud_compute_ms": 32.715,
+          "request_ms": 191.14865800656844
+        }
+      },
+      "started_perf": 93932.098607683,
+      "started_utc": "2026-10-29T11:13:15.776849+00:00",
+      "cloud_observation_pack_ms": 0.5264369974611327,
+      "cloud_response_unpack_ms": 0.3879080031765625,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2709,
+        "prefill": 22.3394,
+        "codec": 0.1046
+      },
+      "cloud_compute_ms": 32.715,
+      "cloud_header": {
+        "replan_id": "r47",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2709,
+          "prefill": 22.3394,
+          "codec": 0.1046
+        },
+        "cloud_compute_ms": 32.71494387835264,
+        "recv_start_perf": 2560385.096402999,
+        "recv_start_wall": 1793272395.9495373
+      },
+      "cloud_ready_perf": 93932.290773183,
+      "completed_perf": 93932.290812096,
+      "round_trip_ms": 192.20441300421953,
+      "cloud_request_ms": 191.14865800656844,
+      "cloud_response_headers_wait_ms": 161.76709000137635,
+      "cloud_response_download_ms": 29.320736008230597,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2709,
+      "cloud_prefill_ms": 22.3394,
+      "cloud_codec_ms": 0.1046,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r48",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 162.83314301108476,
+          "status_code": 200,
+          "response_body_bytes": 344399,
+          "response_download_ms": 27.99556999525521,
+          "x_cloud_compute_ms": 32.529,
+          "request_ms": 190.8909850026248
+        }
+      },
+      "started_perf": 93932.290873984,
+      "started_utc": "2026-10-29T11:13:15.969115+00:00",
+      "cloud_observation_pack_ms": 0.4908849950879812,
+      "cloud_response_unpack_ms": 0.38857999606989324,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.0956,
+        "prefill": 22.3283,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.529,
+      "cloud_header": {
+        "replan_id": "r48",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.0956,
+          "prefill": 22.3283,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.529407888650894,
+        "recv_start_perf": 2560385.288656732,
+        "recv_start_wall": 1793272396.1415832
+      },
+      "cloud_ready_perf": 93932.482744883,
+      "completed_perf": 93932.482784244,
+      "round_trip_ms": 191.9102599931648,
+      "cloud_request_ms": 190.8909850026248,
+      "cloud_response_headers_wait_ms": 162.83314301108476,
+      "cloud_response_download_ms": 27.99556999525521,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344399,
+      "cloud_vae_ms": 10.0956,
+      "cloud_prefill_ms": 22.3283,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r49",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301362,
+          "ok": true,
+          "response_headers_wait_ms": 145.78750400687568,
+          "status_code": 200,
+          "response_body_bytes": 344398,
+          "response_download_ms": 34.727378995739855,
+          "x_cloud_compute_ms": 32.68,
+          "request_ms": 180.59181200806051
+        }
+      },
+      "started_perf": 93932.482852661,
+      "started_utc": "2026-10-29T11:13:16.161094+00:00",
+      "cloud_observation_pack_ms": 0.5218290025368333,
+      "cloud_response_unpack_ms": 0.381538993678987,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.2093,
+        "prefill": 22.3652,
+        "codec": 0.1055
+      },
+      "cloud_compute_ms": 32.68,
+      "cloud_header": {
+        "replan_id": "r49",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.2093,
+          "prefill": 22.3652,
+          "codec": 0.1055
+        },
+        "cloud_compute_ms": 32.67993679642677,
+        "recv_start_perf": 2560385.453232525,
+        "recv_start_wall": 1793272396.3062828
+      },
+      "cloud_ready_perf": 93932.664456066,
+      "completed_perf": 93932.664495234,
+      "round_trip_ms": 181.64257299213205,
+      "cloud_request_ms": 180.59181200806051,
+      "cloud_response_headers_wait_ms": 145.78750400687568,
+      "cloud_response_download_ms": 34.727378995739855,
+      "cloud_request_body_bytes": 301362,
+      "cloud_response_body_bytes": 344398,
+      "cloud_vae_ms": 10.2093,
+      "cloud_prefill_ms": 22.3652,
+      "cloud_codec_ms": 0.1055,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    }
+  ],
+  "status": "ok",
+  "legs": {
+    "cloud_codec_ms": {
+      "n": 50,
+      "mean": 0.1053,
+      "p50": 0.10525000000000001,
+      "p95": 0.10604
+    },
+    "cloud_compute_ms": {
+      "n": 50,
+      "mean": 32.6556,
+      "p50": 32.677,
+      "p95": 32.757099999999994
+    },
+    "cloud_observation_pack_ms": {
+      "n": 50,
+      "mean": 0.5070067194174044,
+      "p50": 0.5190289957681671,
+      "p95": 0.5795628021587618
+    },
+    "cloud_prefill_ms": {
+      "n": 50,
+      "mean": 22.377529999999997,
+      "p50": 22.3642,
+      "p95": 22.38962
+    },
+    "cloud_request_ms": {
+      "n": 50,
+      "mean": 280.3409089805791,
+      "p50": 275.54068149765953,
+      "p95": 440.7108755920489
+    },
+    "cloud_response_download_ms": {
+      "n": 50,
+      "mean": 34.66685892053647,
+      "p50": 33.552385997609235,
+      "p95": 48.36330205071134
+    },
+    "cloud_response_headers_wait_ms": {
+      "n": 50,
+      "mean": 245.6104353009141,
+      "p50": 242.8058690056787,
+      "p95": 408.7786028016126
+    },
+    "cloud_response_unpack_ms": {
+      "n": 50,
+      "mean": 0.3950790991075337,
+      "p50": 0.39785999251762405,
+      "p95": 0.44322639660094865
+    },
+    "cloud_vae_ms": {
+      "n": 50,
+      "mean": 10.172797999999998,
+      "p50": 10.201699999999999,
+      "p95": 10.286025
+    },
+    "round_trip_ms": {
+      "n": 50,
+      "mean": 281.39320883958135,
+      "p50": 276.4513625006657,
+      "p95": 441.8008882006688
+    },
+    "cloud_uplink_ms": null,
+    "edge_uplink_ms": null,
+    "z_transfer_ms": null
+  },
+  "throughput": {
+    "measured_elapsed_s": 14.073724676010897,
+    "attempted": 50,
+    "successful": 50,
+    "failed": 0,
+    "completed_operations_per_s": 3.552719777531712,
+    "successful_http_requests_per_s": 3.552719777531712,
+    "completed_replans_per_s": null,
+    "action_chunks_per_s": null,
+    "generated_action_vectors_per_s": null,
+    "declared_consumed_action_vectors_per_s": null,
+    "stage": "cloud",
+    "schedule": "serial"
+  },
+  "payload_bytes": 344064,
+  "cloud_health": {
+    "status": "ok",
+    "stage": "cloud",
+    "gpu": "NVIDIA GeForce RTX 4090 D",
+    "payload_tokens": 56,
+    "payload_bytes": 344064,
+    "ckpt": "/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt",
+    "performance_only": true
+  },
+  "edge_health": null,
+  "rtt": {
+    "cloud": {
+      "request_ms": {
+        "n": 10,
+        "mean": 12.428312201518565,
+        "p50": 11.107556005299557,
+        "p95": 19.196989447664237
+      },
+      "request_body_bytes": 1024,
+      "records": [
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 16.19690499501303,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1890580024337396,
+          "request_ms": 16.42542000627145
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 11.195540995686315,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.181634008185938,
+          "request_ms": 11.413207001169212
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 7.9251380084315315,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.18012999498751014,
+          "request_ms": 8.14091699430719
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 10.802352990140207,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.17673800175543875,
+          "request_ms": 11.013971001375467
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 10.970770003041252,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19388999498914927,
+          "request_ms": 11.201141009223647
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 18.816996991517954,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1903060037875548,
+          "request_ms": 19.04451899463311
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 8.87452501046937,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.18713799363467842,
+          "request_ms": 9.09839900850784
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 10.598959008348174,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.18521799938753247,
+          "request_ms": 10.820369003340602
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 7.5813909934367985,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.18573000852484256,
+          "request_ms": 7.803440996212885
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 19.106984007521532,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.17917000513989478,
+          "request_ms": 19.32173800014425
+        }
+      ]
+    }
+  },
+  "setup_requests": {
+    "encode_prompt": {
+      "url": "http://10.7.140.45:8600/encode_prompt",
+      "request_body_bytes": 201,
+      "ok": true,
+      "response_headers_wait_ms": 12.560258997837082,
+      "status_code": 200,
+      "response_body_bytes": 1048996,
+      "response_download_ms": 117.49985000642482,
+      "request_ms": 130.11671700223815
+    }
+  },
+  "failure_count": 0
+}

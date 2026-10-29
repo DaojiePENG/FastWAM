@@ -1,0 +1,31 @@
+{
+  "captured_at": "2026-10-29T18:17:27+0800",
+  "hostname": "jetson",
+  "architecture": "aarch64",
+  "kernel": "5.15.148-tegra",
+  "model": "NVIDIA Jetson AGX Orin Developer Kit",
+  "l4t_release": "# R36 (release), REVISION: 4.7, GCID: 42132812, BOARD: generic, EABI: aarch64, DATE: Thu Sep 18 22:54:44 UTC 2025\n# KERNEL_VARIANT: oot\nTARGET_USERSPACE_LIB_DIR=nvidia\nTARGET_USERSPACE_LIB_DIR_PATH=usr/lib/aarch64-linux-gnu/nvidia",
+  "python": "3.10.19",
+  "runtime_python": "/home/daojie/anaconda3/envs/robot/bin/python",
+  "torch": "2.8.0",
+  "torchvision": "0.23.0",
+  "cuda": "12.6",
+  "cuda_available": true,
+  "gpu": "Orin",
+  "capability": [
+    8,
+    7
+  ],
+  "bf16_supported": true,
+  "memory_info": "total        used        free      shared  buff/cache   available\nMem:     32187990016  6519119872 12249870336   118181888 13418999808 25129906176\nSwap:    16093937664           0 16093937664",
+  "disk_info": "Filesystem             1B-blocks           Used     Available Use% Mounted on\n//10.7.19.29/data 21912348590080 14382152462336 7530196127744  66% /data_pdj",
+  "mount": "TARGET    FSTYPE OPTIONS\n/data_pdj cifs   rw,relatime,vers=3.1.1,cache=strict,username=daojie,uid=1000,noforceuid,gid=1000,noforcegid,addr=10.7.19.29,file_mode=0644,dir_mode=0755,soft,nounix,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1",
+  "ntp": "NTPSynchronized=yes",
+  "power_mode": "NV Power Mode: MODE_50W\n3",
+  "cpu_governor": "schedutil",
+  "network_routes": {
+    "10.7.0.131": "10.7.0.131 via 10.7.139.254 dev wlP1p1s0 src 10.7.136.8 uid 1000 \n    cache",
+    "10.7.140.45": "10.7.140.45 via 10.7.139.254 dev wlP1p1s0 src 10.7.136.8 uid 1000 \n    cache"
+  },
+  "wifi": "Connected to 98:3f:60:1c:92:b2 (on wlP1p1s0)\n\tSSID: HKUSTGZ\n\tfreq: 5320\n\tRX: 2265451207 bytes (4692537 packets)\n\tTX: 218004415 bytes (442390 packets)\n\tsignal: -49 dBm\n\trx bitrate: 156.0 MBit/s VHT-MCS 8 VHT-NSS 2\n\ttx bitrate: 173.3 MBit/s VHT-MCS 8 short GI VHT-NSS 2"
+}

@@ -1,0 +1,104 @@
+{
+  "host": "aihub",
+  "timestamp_utc": "2026-10-29T10:21:47.108743+00:00",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "notes": "Read-only hardware snapshot before transport and inference runs; process/GPU state may change.",
+  "gpu_snapshot": {
+    "command": [
+      "nvidia-smi",
+      "--query-gpu=index,name,uuid,driver_version,memory.total,memory.used,utilization.gpu,power.draw,pstate,temperature.gpu",
+      "--format=csv,noheader,nounits"
+    ],
+    "returncode": 0,
+    "stdout": "0, NVIDIA GeForce RTX 4090 D, GPU-0f1031ab-c890-230c-d3f8-7ea1897d96c0, 580.178.04, 49140, 15286, 0, 18.59, P8, 35\n1, NVIDIA GeForce RTX 4090 D, GPU-6aeaa7e5-cf36-d53d-e5a3-6670db24b143, 580.178.04, 49140, 17254, 0, 21.58, P8, 31\n",
+    "stderr": ""
+  },
+  "gpu_processes": {
+    "command": [
+      "nvidia-smi",
+      "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+      "--format=csv,noheader,nounits"
+    ],
+    "returncode": 0,
+    "stdout": "GPU-0f1031ab-c890-230c-d3f8-7ea1897d96c0, 3137546, /home/aihub/.local/share/lan-comfyui/runtime/venv/bin/python, 14684\nGPU-6aeaa7e5-cf36-d53d-e5a3-6670db24b143, 3137546, /home/aihub/.local/share/lan-comfyui/runtime/venv/bin/python, 17204\n",
+    "stderr": ""
+  },
+  "nvidia_smi": {
+    "command": [
+      "nvidia-smi"
+    ],
+    "returncode": 0,
+    "stdout": "Thu Oct 29 18:21:47 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 580.178.04             Driver Version: 580.178.04     CUDA Version: 13.0     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GeForce RTX 4090 D      Off |   00000000:01:00.0 Off |                  Off |\n| 30%   35C    P8             18W /  350W |   15286MiB /  49140MiB |      0%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n|   1  NVIDIA GeForce RTX 4090 D      Off |   00000000:11:00.0 Off |                  Off |\n| 30%   31C    P8             21W /  425W |   17254MiB /  49140MiB |      0%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A         1260878      G   /usr/lib/xorg/Xorg                      334MiB |\n|    0   N/A  N/A         1261236      G   /usr/bin/gnome-shell                     11MiB |\n|    0   N/A  N/A         1264441      G   /usr/share/code/code                    139MiB |\n|    0   N/A  N/A         1283382      G   /usr/bin/nautilus                        17MiB |\n|    0   N/A  N/A         3137546      C   ...mfyui/runtime/venv/bin/python      14684MiB |\n|    0   N/A  N/A         3255881      G   ...rack-uuid=3190708988185955192         35MiB |\n|    1   N/A  N/A         1260878      G   /usr/lib/xorg/Xorg                       22MiB |\n|    1   N/A  N/A         3137546      C   ...mfyui/runtime/venv/bin/python      17204MiB |\n+-----------------------------------------------------------------------------------------+\n",
+    "stderr": ""
+  },
+  "cpu": {
+    "command": [
+      "lscpu"
+    ],
+    "returncode": 0,
+    "stdout": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  32\nOn-line CPU(s) list:                     0-31\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 9 9950X 16-Core Processor\nCPU family:                              26\nModel:                                   68\nThread(s) per core:                      2\nCore(s) per socket:                      16\nSocket(s):                               1\nStepping:                                0\nFrequency boost:                         enabled\nCPU(s) scaling MHz:                      44%\nCPU max MHz:                             5756.4521\nCPU min MHz:                             624.1940\nBogoMIPS:                                8599.98\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d amd_lbr_pmc_freeze\nVirtualization:                          AMD-V\nL1d cache:                               768 KiB (16 instances)\nL1i cache:                               512 KiB (16 instances)\nL2 cache:                                16 MiB (16 instances)\nL3 cache:                                64 MiB (2 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-31\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Mitigation; IBPB on VMEXIT only\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB on VMEXIT\n",
+    "stderr": ""
+  },
+  "memory": {
+    "command": [
+      "free",
+      "-b"
+    ],
+    "returncode": 0,
+    "stdout": "               total        used        free      shared  buff/cache   available\nMem:     132472283136 30201708544  5617397760   199557120 98085400576 102270574592\nSwap:     8589930496  8360091648   229838848\n",
+    "stderr": ""
+  },
+  "network_interfaces": {
+    "command": [
+      "ip",
+      "-j",
+      "address"
+    ],
+    "returncode": 0,
+    "stdout": "[{\"ifindex\":1,\"ifname\":\"lo\",\"flags\":[\"LOOPBACK\",\"UP\",\"LOWER_UP\"],\"mtu\":65536,\"qdisc\":\"noqueue\",\"operstate\":\"UNKNOWN\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"loopback\",\"address\":\"00:00:00:00:00:00\",\"broadcast\":\"00:00:00:00:00:00\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"127.0.0.1\",\"prefixlen\":8,\"scope\":\"host\",\"label\":\"lo\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295},{\"family\":\"inet6\",\"local\":\"::1\",\"prefixlen\":128,\"scope\":\"host\",\"noprefixroute\":true,\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":2,\"ifname\":\"enp14s0\",\"flags\":[\"NO-CARRIER\",\"BROADCAST\",\"MULTICAST\",\"UP\"],\"mtu\":1500,\"qdisc\":\"fq_codel\",\"operstate\":\"DOWN\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"34:5a:60:cc:bf:95\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"addr_info\":[]},{\"ifindex\":3,\"ifname\":\"wlp15s0\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"operstate\":\"UP\",\"group\":\"default\",\"txqlen\":1000,\"link_type\":\"ether\",\"address\":\"dc:56:7b:a8:fe:03\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"10.7.140.45\",\"prefixlen\":22,\"broadcast\":\"10.7.143.255\",\"scope\":\"global\",\"dynamic\":true,\"noprefixroute\":true,\"label\":\"wlp15s0\",\"valid_life_time\":6136,\"preferred_life_time\":6136},{\"family\":\"inet6\",\"local\":\"240e:6b0:3001:84:a208:db1f:35da:b4d1\",\"prefixlen\":64,\"scope\":\"global\",\"temporary\":true,\"dynamic\":true,\"valid_life_time\":110103,\"preferred_life_time\":23327},{\"family\":\"inet6\",\"local\":\"240e:6b0:3001:84:80cd:2626:80d4:4ed9\",\"prefixlen\":64,\"scope\":\"global\",\"temporary\":true,\"deprecated\":true,\"dynamic\":true,\"valid_life_time\":24084,\"preferred_life_time\":0},{\"family\":\"inet6\",\"local\":\"240e:6b0:3001:84::12\",\"prefixlen\":128,\"scope\":\"global\",\"dynamic\":true,\"noprefixroute\":true,\"valid_life_time\":22848,\"preferred_life_time\":22848},{\"family\":\"inet6\",\"local\":\"240e:6b0:3001:84:77fa:21ad:b2c3:7520\",\"prefixlen\":64,\"scope\":\"global\",\"dynamic\":true,\"mngtmpaddr\":true,\"noprefixroute\":true,\"valid_life_time\":2591998,\"preferred_life_time\":604798},{\"family\":\"inet6\",\"local\":\"fe80::7cfc:ca71:807e:9967\",\"prefixlen\":64,\"scope\":\"link\",\"noprefixroute\":true,\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":5,\"ifname\":\"br-8a30ce53b9ec\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"operstate\":\"UP\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"ce:1e:29:8b:f6:ac\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"172.18.0.1\",\"prefixlen\":16,\"broadcast\":\"172.18.255.255\",\"scope\":\"global\",\"label\":\"br-8a30ce53b9ec\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295},{\"family\":\"inet6\",\"local\":\"fe80::cc1e:29ff:fe8b:f6ac\",\"prefixlen\":64,\"scope\":\"link\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":6,\"ifname\":\"docker0\",\"flags\":[\"NO-CARRIER\",\"BROADCAST\",\"MULTICAST\",\"UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"operstate\":\"DOWN\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"e2:ff:45:96:9a:c3\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"172.17.0.1\",\"prefixlen\":16,\"broadcast\":\"172.17.255.255\",\"scope\":\"global\",\"label\":\"docker0\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295},{\"family\":\"inet6\",\"local\":\"fe80::e0ff:45ff:fe96:9ac3\",\"prefixlen\":64,\"scope\":\"link\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":7,\"ifname\":\"br-b13e1fc063c4\",\"flags\":[\"NO-CARRIER\",\"BROADCAST\",\"MULTICAST\",\"UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"operstate\":\"DOWN\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"ea:06:11:1d:91:af\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"172.19.0.1\",\"prefixlen\":16,\"broadcast\":\"172.19.255.255\",\"scope\":\"global\",\"label\":\"br-b13e1fc063c4\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":8,\"link_index\":2,\"ifname\":\"vethf07b375\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"br-8a30ce53b9ec\",\"operstate\":\"UP\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"32:d3:97:70:90:1e\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"link_netnsid\":0,\"addr_info\":[{\"family\":\"inet6\",\"local\":\"fe80::30d3:97ff:fe70:901e\",\"prefixlen\":64,\"scope\":\"link\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":10,\"link_index\":2,\"ifname\":\"veth56265ac\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"br-8a30ce53b9ec\",\"operstate\":\"UP\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"ea:d4:62:b3:87:d0\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"link_netnsid\":2,\"addr_info\":[{\"family\":\"inet6\",\"local\":\"fe80::e8d4:62ff:feb3:87d0\",\"prefixlen\":64,\"scope\":\"link\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":530,\"ifname\":\"tailscale0\",\"flags\":[\"POINTOPOINT\",\"MULTICAST\",\"NOARP\",\"UP\",\"LOWER_UP\"],\"mtu\":1280,\"qdisc\":\"fq_codel\",\"operstate\":\"UNKNOWN\",\"group\":\"default\",\"txqlen\":500,\"link_type\":\"none\",\"addr_info\":[{\"family\":\"inet\",\"local\":\"100.64.230.43\",\"prefixlen\":32,\"scope\":\"global\",\"label\":\"tailscale0\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295},{\"family\":\"inet6\",\"local\":\"fd7a:115c:a1e0::1832:e62c\",\"prefixlen\":128,\"scope\":\"global\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295},{\"family\":\"inet6\",\"local\":\"fe80::1f61:6faf:e266:d74d\",\"prefixlen\":64,\"scope\":\"link\",\"stable-privacy\":true,\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]},{\"ifindex\":582,\"link_index\":2,\"ifname\":\"vethd41233e\",\"flags\":[\"BROADCAST\",\"MULTICAST\",\"UP\",\"LOWER_UP\"],\"mtu\":1500,\"qdisc\":\"noqueue\",\"master\":\"br-8a30ce53b9ec\",\"operstate\":\"UP\",\"group\":\"default\",\"link_type\":\"ether\",\"address\":\"2e:20:74:75:07:89\",\"broadcast\":\"ff:ff:ff:ff:ff:ff\",\"link_netnsid\":3,\"addr_info\":[{\"family\":\"inet6\",\"local\":\"fe80::2c20:74ff:fe75:789\",\"prefixlen\":64,\"scope\":\"link\",\"valid_life_time\":4294967295,\"preferred_life_time\":4294967295}]}]\n",
+    "stderr": ""
+  },
+  "network_routes": {
+    "command": [
+      "ip",
+      "-j",
+      "route"
+    ],
+    "returncode": 0,
+    "stdout": "[{\"dst\":\"default\",\"gateway\":\"10.7.143.254\",\"dev\":\"wlp15s0\",\"protocol\":\"dhcp\",\"prefsrc\":\"10.7.140.45\",\"metric\":600,\"flags\":[]},{\"dst\":\"10.7.140.0/22\",\"dev\":\"wlp15s0\",\"protocol\":\"kernel\",\"scope\":\"link\",\"prefsrc\":\"10.7.140.45\",\"metric\":600,\"flags\":[]},{\"dst\":\"172.17.0.0/16\",\"dev\":\"docker0\",\"protocol\":\"kernel\",\"scope\":\"link\",\"prefsrc\":\"172.17.0.1\",\"flags\":[\"linkdown\"]},{\"dst\":\"172.18.0.0/16\",\"dev\":\"br-8a30ce53b9ec\",\"protocol\":\"kernel\",\"scope\":\"link\",\"prefsrc\":\"172.18.0.1\",\"flags\":[]},{\"dst\":\"172.19.0.0/16\",\"dev\":\"br-b13e1fc063c4\",\"protocol\":\"kernel\",\"scope\":\"link\",\"prefsrc\":\"172.19.0.1\",\"flags\":[\"linkdown\"]}]\n",
+    "stderr": ""
+  },
+  "mount": {
+    "command": [
+      "findmnt",
+      "-T",
+      "/data/daojie/codes/LeapBot_ws",
+      "-J"
+    ],
+    "returncode": 0,
+    "stdout": "{\n   \"filesystems\": [\n      {\n         \"target\": \"/data\",\n         \"source\": \"//10.7.19.29/data\",\n         \"fstype\": \"cifs\",\n         \"options\": \"rw,relatime,vers=3.1.1,cache=strict,upcall_target=app,username=daojie,uid=1000,forceuid,gid=1000,forcegid,addr=10.7.19.29,file_mode=0644,dir_mode=0755,soft,nounix,mapposix,reparse=nfs,nativesocket,symlink=native,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1\"\n      }\n   ]\n}\n",
+    "stderr": ""
+  },
+  "jetson_route": {
+    "command": [
+      "ip",
+      "route",
+      "get",
+      "10.7.136.8"
+    ],
+    "returncode": 0,
+    "stdout": "10.7.136.8 via 10.7.143.254 dev wlp15s0 src 10.7.140.45 uid 1000 \n    cache \n",
+    "stderr": ""
+  },
+  "wifi_link": {
+    "command": [
+      "iw",
+      "dev",
+      "wlp15s0",
+      "link"
+    ],
+    "error": "[Errno 2] No such file or directory: 'iw'"
+  }
+}

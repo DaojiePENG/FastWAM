@@ -1,0 +1,103 @@
+{
+  "source_video": {
+    "provided_path": "/data/daojie/codes/LeapBot_ws/l515_0_only.mp4",
+    "sha256": "89f2435652d2d13bb341a8a39197b62a19fa9a615b1f4f56e87104932d760d41",
+    "bytes": 8474784,
+    "codec": "mpeg4",
+    "dimensions_px": [
+      960,
+      540
+    ],
+    "average_fps_fraction": "999/100",
+    "time_base": "1/15984",
+    "frames": 205,
+    "duration_s": 20.520521
+  },
+  "network_condition": {
+    "additional_delay_range_ms": [
+      0,
+      400
+    ],
+    "delay_mode": "random",
+    "distribution": "not specified",
+    "source": "User clarification on 2026-10-29: random delay within 0–400 ms",
+    "one_way_or_round_trip": "not specified"
+  },
+  "selection": {
+    "total_source_frames": 205,
+    "selected": 5,
+    "reason": "One full workspace view and four chronological action milestones from the same provided demonstration; not a trial sample for estimating success rate."
+  },
+  "image_processing": {
+    "stored_assets": "Full decoded RGB frames, lossless PNG",
+    "display": "Uniform rectangular crop on all rollout frames; no brightness, contrast, gamma, object, or background editing; proportional display resizing only",
+    "color_space": "decoded RGB"
+  },
+  "frames": [
+    {
+      "file": "frame_000.png",
+      "frame_index_zero_based": 0,
+      "role": "Workspace",
+      "elapsed_video_s": 0.0,
+      "sha256": "7511ac541f20b3bbc91b79b4fb4321a51f7ac48029d8201b32f9401d6805a363",
+      "crop_xyxy": [
+        0,
+        0,
+        960,
+        540
+      ]
+    },
+    {
+      "file": "frame_070.png",
+      "frame_index_zero_based": 70,
+      "role": "Approach",
+      "elapsed_video_s": 7.007007007007007,
+      "sha256": "736288622c91540c92b1879998b0148535eccc7912a9e48a85bb22907acba6dd",
+      "crop_xyxy": [
+        280,
+        80,
+        880,
+        540
+      ]
+    },
+    {
+      "file": "frame_090.png",
+      "frame_index_zero_based": 90,
+      "role": "Grasp",
+      "elapsed_video_s": 9.00900900900901,
+      "sha256": "7510960f09a7353be86fdf890193de31eedc826e17b0e329a7eab1cf48639f21",
+      "crop_xyxy": [
+        280,
+        80,
+        880,
+        540
+      ]
+    },
+    {
+      "file": "frame_110.png",
+      "frame_index_zero_based": 110,
+      "role": "Lift",
+      "elapsed_video_s": 11.01101101101101,
+      "sha256": "b15b291e335f7502729f71ea351a3098522ae9f42f78d9dfe0a7f8ec5fceb982",
+      "crop_xyxy": [
+        280,
+        80,
+        880,
+        540
+      ]
+    },
+    {
+      "file": "frame_204.png",
+      "frame_index_zero_based": 204,
+      "role": "Place",
+      "elapsed_video_s": 20.42042042042042,
+      "sha256": "273a880e416edfb93804bb2a21d4c51d68fd804f1966c348e1f6047f5fe4472b",
+      "crop_xyxy": [
+        280,
+        80,
+        880,
+        540
+      ]
+    }
+  ]
+}

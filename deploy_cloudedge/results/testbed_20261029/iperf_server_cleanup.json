@@ -1,0 +1,7 @@
+{
+  "stopped_Asia_Shanghai": "2026-10-29T19:26:38.129897+08:00",
+  "pid": 3440582,
+  "action": "SIGTERM to this experiment iperf3 server only",
+  "verified_command_contains": "/data/daojie/envs/leapbotce/x86_64/iperf3/usr/bin/iperf3 -s -p 18609",
+  "scope": "No existing services modified"
+}

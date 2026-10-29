@@ -1,0 +1,10 @@
+file,mode,schedule,attempted,failed,elapsed_s,completed_replans_per_s
+hardware_codec_serial_r1.json,codec,serial,50,0,120.13450109199039,0.4162001718533262
+hardware_codec_serial_r2.json,codec,serial,50,0,118.57569655100815,0.4216715689162434
+hardware_codec_serial_r3.json,codec,serial,50,0,116.16163720900659,0.43043470461798256
+hardware_codec_pipeline_r1.json,codec,pipeline,50,0,103.26248328899965,0.48420295936584745
+hardware_codec_pipeline_r2.json,codec,pipeline,50,0,102.08737927499169,0.4897765067052562
+hardware_codec_pipeline_r3.json,codec,pipeline,50,0,101.63577366099344,0.4919527662255538
+hardware_raw_serial_r1.json,raw,serial,20,0,118.71559620500193,0.16846986107422107
+hardware_raw_serial_r2.json,raw,serial,20,0,116.37107727100374,0.17186401010471192
+hardware_raw_serial_r3.json,raw,serial,20,0,117.58629743900383,0.17008784557039655

@@ -1,0 +1,11 @@
+jupytext 1.19.5 requires mdit-py-plugins, which is not installed.
+robomimic 0.2.0 requires egl-probe, which is not installed.
+tensorboard 2.21.0 requires grpcio, which is not installed.
+tensorboard 2.21.0 requires markdown, which is not installed.
+tensorboard 2.21.0 requires tensorboard-data-server, which is not installed.
+fastwam 0.1.0 has requirement huggingface-hub==0.29.2, but you have huggingface-hub 1.27.0.
+fastwam 0.1.0 has requirement packaging==25.0, but you have packaging 26.3.
+fastwam 0.1.0 has requirement transformers==4.49.0, but you have transformers 5.0.0rc0.
+fastwam 0.1.0 has requirement typing-extensions==4.15.0, but you have typing-extensions 4.16.0.
+moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.0.0.
+torchaudio 2.5.1+cu121 has requirement torch==2.5.1, but you have torch 2.7.1+cu128.

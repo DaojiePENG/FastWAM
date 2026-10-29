@@ -1,0 +1,1571 @@
+{
+  "schema_version": 2,
+  "tag": "hardware_codec_edge_r1",
+  "mode": "codec",
+  "ts": "2026-10-29T11:04:32.623496+00:00",
+  "host": "jetson",
+  "cloud_url": "http://10.7.140.45:8600",
+  "edge_url": "http://127.0.0.1:8601",
+  "session_id": "bench-8815f244ce214ea7b86af90c0d304533",
+  "n": 20,
+  "warmup": 5,
+  "stage": "edge",
+  "schedule": "serial",
+  "instruction": "put the bowl on the stove",
+  "prompt": "A video recorded from a robot's point of view executing the following instruction: put the bowl on the stove",
+  "seed": 0,
+  "action_horizon": 32,
+  "executed_steps_per_replan": 10,
+  "num_inference_steps": 10,
+  "http_connection": "keep-alive",
+  "client_software": {
+    "python": "3.10.19 (main, Oct 21 2025, 16:38:01) [GCC 11.2.0]",
+    "platform": "Linux-5.15.148-tegra-aarch64-with-glibc2.35",
+    "machine": "aarch64",
+    "torch": "2.8.0",
+    "torch_cuda_build": "12.6",
+    "numpy": "1.26.1",
+    "requests": "2.32.5",
+    "torch_num_threads": 8,
+    "torch_num_interop_threads": 12,
+    "thread_environment": {
+      "OMP_NUM_THREADS": "8",
+      "OPENBLAS_NUM_THREADS": "8",
+      "MKL_NUM_THREADS": "8",
+      "TOKENIZERS_PARALLELISM": "false"
+    },
+    "bench_client_sha256": "6b09317d159ce0f639d72b8d26a6121b9155da4654de57852012d70d0f80d244",
+    "protocol_sha256": "10c779233e98accbf12ac05de9bf64ded405c66af8cd0d3f4ea7c14d5aa90b0b"
+  },
+  "input": {
+    "primary": "/tmp/leapbotce_20261029/frames/primary_224.png",
+    "wrist": "/tmp/leapbotce_20261029/frames/wrist_224.png",
+    "primary_rgb_sha256": "3f048c75c58e9bff7496664f6bd449e77ea52645a20551c84d0984b051bb3268",
+    "wrist_rgb_sha256": "9d9f7d5cf6d72a0abebc5233a9118e5d895c55c8aab30e5de6f2c58b5cbce5bd",
+    "primary_shape": [
+      224,
+      224,
+      3
+    ],
+    "wrist_shape": [
+      224,
+      224,
+      3
+    ],
+    "observations": "fixed replay; no physical robot actuation"
+  },
+  "measurement_notes": {
+    "clock": "All request and replan durations use this client's perf_counter only.",
+    "topology": "cloud -> client -> edge relay; payload crosses two HTTP legs.",
+    "request_ms": "From dispatch until complete response body; includes upload, HTTP, server queue/host/GPU work and response download.",
+    "response_headers_wait_ms": "Dispatch until response headers; not upload-only or TTFB.",
+    "response_download_ms": "Time reading response body after headers were exposed to requests; buffered/previously arrived bytes are included. Not pure network time or a one-way latency.",
+    "payload_server_install_ms": "Edge X-Recv-Done minus X-Recv-Start (same server clock): queue, unpack, H2D and installation; starts after body reception.",
+    "payload_request_residual_ms": "Payload request duration minus server install interval; includes bidirectional network and other HTTP/server overhead. Not a one-way network latency.",
+    "body_bytes": "Application HTTP body only, including LBC1 framing; excludes HTTP/TCP/IP headers.",
+    "gpu_compute_ms": "Server CUDA-event substeps; excludes other host/server work.",
+    "capacity": "Successful chunks / measured batch elapsed, including failed attempt time; warmup and one-time prompt/session/cache preparation excluded.",
+    "actions": "Each step generates 32 actions by default; deployment consumes 10 before replanning. Neither action rate is measured robot control frequency.",
+    "warmup": "Warmup batch uses the selected schedule, drains fully, then measured batch starts.",
+    "stages": "full=cloud+payload+step; cloud=encode only; payload=repeated install of fixed precomputed payload; edge=step only with fixed preinstalled cache.",
+    "concurrency": "One stream; pipeline has one cloud lookahead and serial edge calls. Not multi-session or open-loop saturation capacity."
+  },
+  "deprecated_metrics": {
+    "cloud_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "edge_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "z_transfer_ms": "Old payload HTTP duration minus pooled RTT included installation and omitted the cloud response leg. No one-way transfer is measured.",
+    "rtt_baseline_ms": "Pooled cloud/edge RTT replaced by per-endpoint RTT samples."
+  },
+  "rtt_baseline_ms": null,
+  "records": [
+    {
+      "replan_id": "w0",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2067.7321609982755,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.26145200536120683,
+          "x_edge_compute_ms": 2050.578,
+          "request_ms": 2068.0487520003226
+        }
+      },
+      "started_perf": 93410.003149273,
+      "started_utc": "2026-10-29T11:04:33.681390+00:00",
+      "step_observation_pack_ms": 0.6059809966245666,
+      "step_response_unpack_ms": 0.3276960051152855,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 42.6946,
+        "denoise": 2007.8832
+      },
+      "edge_compute_ms": 2050.578,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93412.072541738,
+      "round_trip_ms": 2069.392464996781,
+      "step_request_ms": 2068.0487520003226,
+      "step_response_headers_wait_ms": 2067.7321609982755,
+      "step_response_download_ms": 0.26145200536120683,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 42.6946,
+      "edge_denoise_ms": 2007.8832,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w1",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2033.8968360010767,
+          "status_code": 200,
+          "response_body_bytes": 1151,
+          "response_download_ms": 0.25700499827507883,
+          "x_edge_compute_ms": 2021.125,
+          "request_ms": 2034.2115070088767
+        }
+      },
+      "started_perf": 93412.072589805,
+      "started_utc": "2026-10-29T11:04:35.750832+00:00",
+      "step_observation_pack_ms": 0.5065849982202053,
+      "step_response_unpack_ms": 0.28708500030916184,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.6223,
+        "denoise": 1992.5024
+      },
+      "edge_compute_ms": 2021.125,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93414.1080407,
+      "round_trip_ms": 2035.4508949967567,
+      "step_request_ms": 2034.2115070088767,
+      "step_response_headers_wait_ms": 2033.8968360010767,
+      "step_response_download_ms": 0.25700499827507883,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1151,
+      "edge_siglip_ms": 28.6223,
+      "edge_denoise_ms": 1992.5024,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w2",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2033.7102270132164,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.3920499875675887,
+          "x_edge_compute_ms": 2021.24,
+          "request_ms": 2034.1593360062689
+        }
+      },
+      "started_perf": 93414.108090175,
+      "started_utc": "2026-10-29T11:04:37.786332+00:00",
+      "step_observation_pack_ms": 0.5086960009066388,
+      "step_response_unpack_ms": 0.2979990094900131,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.3133,
+        "denoise": 1992.9269
+      },
+      "edge_compute_ms": 2021.24,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93416.143460898,
+      "round_trip_ms": 2035.3707230096916,
+      "step_request_ms": 2034.1593360062689,
+      "step_response_headers_wait_ms": 2033.7102270132164,
+      "step_response_download_ms": 0.3920499875675887,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.3133,
+      "edge_denoise_ms": 1992.9269,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w3",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2036.1842580023222,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.3715700004249811,
+          "x_edge_compute_ms": 2023.744,
+          "request_ms": 2036.6152549977414
+        }
+      },
+      "started_perf": 93416.143505988,
+      "started_utc": "2026-10-29T11:04:39.821747+00:00",
+      "step_observation_pack_ms": 0.5549709894694388,
+      "step_response_unpack_ms": 0.2881419932236895,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0018,
+        "denoise": 1995.7422
+      },
+      "edge_compute_ms": 2023.744,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93418.181367831,
+      "round_trip_ms": 2037.86184299679,
+      "step_request_ms": 2036.6152549977414,
+      "step_response_headers_wait_ms": 2036.1842580023222,
+      "step_response_download_ms": 0.3715700004249811,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.0018,
+      "edge_denoise_ms": 1995.7422,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "w4",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2033.9541629946325,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.29835000168532133,
+          "x_edge_compute_ms": 2021.301,
+          "request_ms": 2034.3094119889429
+        }
+      },
+      "started_perf": 93418.181412697,
+      "started_utc": "2026-10-29T11:04:41.859654+00:00",
+      "step_observation_pack_ms": 0.48639099986758083,
+      "step_response_unpack_ms": 0.29860599897801876,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.2615,
+        "denoise": 1993.0398
+      },
+      "edge_compute_ms": 2021.301,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93420.21691887,
+      "round_trip_ms": 2035.5061730078887,
+      "step_request_ms": 2034.3094119889429,
+      "step_response_headers_wait_ms": 2033.9541629946325,
+      "step_response_download_ms": 0.29835000168532133,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.2615,
+      "edge_denoise_ms": 1993.0398,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r0",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2032.4378320074175,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.36088099295739084,
+          "x_edge_compute_ms": 2020.041,
+          "request_ms": 2032.8560920024756
+        }
+      },
+      "started_perf": 93420.216988441,
+      "started_utc": "2026-10-29T11:04:43.895230+00:00",
+      "step_observation_pack_ms": 0.5046959995524958,
+      "step_response_unpack_ms": 0.28650999593082815,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 27.9762,
+        "denoise": 1992.0643
+      },
+      "edge_compute_ms": 2020.041,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93422.251037421,
+      "round_trip_ms": 2034.0489800000796,
+      "step_request_ms": 2032.8560920024756,
+      "step_response_headers_wait_ms": 2032.4378320074175,
+      "step_response_download_ms": 0.36088099295739084,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 27.9762,
+      "edge_denoise_ms": 1992.0643,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r1",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2031.721830004244,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.37262600380927324,
+          "x_edge_compute_ms": 2019.179,
+          "request_ms": 2032.1531780064106
+        }
+      },
+      "started_perf": 93422.251080592,
+      "started_utc": "2026-10-29T11:04:45.929322+00:00",
+      "step_observation_pack_ms": 0.48981500731315464,
+      "step_response_unpack_ms": 0.3325589932501316,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 27.9671,
+        "denoise": 1991.212
+      },
+      "edge_compute_ms": 2019.179,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93424.284459236,
+      "round_trip_ms": 2033.3786440023687,
+      "step_request_ms": 2032.1531780064106,
+      "step_response_headers_wait_ms": 2031.721830004244,
+      "step_response_download_ms": 0.37262600380927324,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 27.9671,
+      "edge_denoise_ms": 1991.212,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r2",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2029.906067007687,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.3759219980565831,
+          "x_edge_compute_ms": 2018.177,
+          "request_ms": 2030.3413509973325
+        }
+      },
+      "started_perf": 93424.284501094,
+      "started_utc": "2026-10-29T11:04:47.962743+00:00",
+      "step_observation_pack_ms": 0.48459800018463284,
+      "step_response_unpack_ms": 0.2905089932028204,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0053,
+        "denoise": 1990.1721
+      },
+      "edge_compute_ms": 2018.177,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93426.316065159,
+      "round_trip_ms": 2031.5640650078421,
+      "step_request_ms": 2030.3413509973325,
+      "step_response_headers_wait_ms": 2029.906067007687,
+      "step_response_download_ms": 0.3759219980565831,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.0053,
+      "edge_denoise_ms": 1990.1721,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r3",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2034.359716999461,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.2593079989310354,
+          "x_edge_compute_ms": 2021.736,
+          "request_ms": 2034.675283008255
+        }
+      },
+      "started_perf": 93426.316114057,
+      "started_utc": "2026-10-29T11:04:49.994356+00:00",
+      "step_observation_pack_ms": 0.5061989941168576,
+      "step_response_unpack_ms": 0.29166199965402484,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0245,
+        "denoise": 1993.7113
+      },
+      "edge_compute_ms": 2021.736,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93428.351996629,
+      "round_trip_ms": 2035.8825720031746,
+      "step_request_ms": 2034.675283008255,
+      "step_response_headers_wait_ms": 2034.359716999461,
+      "step_response_download_ms": 0.2593079989310354,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.0245,
+      "edge_denoise_ms": 1993.7113,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r4",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2031.4737299922854,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.26068500301335007,
+          "x_edge_compute_ms": 2018.855,
+          "request_ms": 2031.7894890031312
+        }
+      },
+      "started_perf": 93428.352089625,
+      "started_utc": "2026-10-29T11:04:52.030331+00:00",
+      "step_observation_pack_ms": 0.5092710052849725,
+      "step_response_unpack_ms": 0.2894219942390919,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0194,
+        "denoise": 1990.8359
+      },
+      "edge_compute_ms": 2018.855,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93430.385079394,
+      "round_trip_ms": 2032.9897689953214,
+      "step_request_ms": 2031.7894890031312,
+      "step_response_headers_wait_ms": 2031.4737299922854,
+      "step_response_download_ms": 0.26068500301335007,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.0194,
+      "edge_denoise_ms": 1990.8359,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r5",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2033.6228929954814,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.2608760114526376,
+          "x_edge_compute_ms": 2021.347,
+          "request_ms": 2033.9384920080192
+        }
+      },
+      "started_perf": 93430.385125924,
+      "started_utc": "2026-10-29T11:04:54.063368+00:00",
+      "step_observation_pack_ms": 0.4916379984933883,
+      "step_response_unpack_ms": 0.28750099590979517,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 27.9283,
+        "denoise": 1993.4183
+      },
+      "edge_compute_ms": 2021.347,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93432.420287929,
+      "round_trip_ms": 2035.1620049914345,
+      "step_request_ms": 2033.9384920080192,
+      "step_response_headers_wait_ms": 2033.6228929954814,
+      "step_response_download_ms": 0.2608760114526376,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 27.9283,
+      "edge_denoise_ms": 1993.4183,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r6",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2034.1590869938955,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.25908400129992515,
+          "x_edge_compute_ms": 2021.937,
+          "request_ms": 2034.4739489955828
+        }
+      },
+      "started_perf": 93432.420334427,
+      "started_utc": "2026-10-29T11:04:56.098575+00:00",
+      "step_observation_pack_ms": 0.48773500020615757,
+      "step_response_unpack_ms": 0.2863489935407415,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 27.9479,
+        "denoise": 1993.9891
+      },
+      "edge_compute_ms": 2021.937,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93434.455982414,
+      "round_trip_ms": 2035.6479869951727,
+      "step_request_ms": 2034.4739489955828,
+      "step_response_headers_wait_ms": 2034.1590869938955,
+      "step_response_download_ms": 0.25908400129992515,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 27.9479,
+      "edge_denoise_ms": 1993.9891,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r7",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2036.0934579948662,
+          "status_code": 200,
+          "response_body_bytes": 1151,
+          "response_download_ms": 0.2641400060383603,
+          "x_edge_compute_ms": 2023.312,
+          "request_ms": 2036.41430499556
+        }
+      },
+      "started_perf": 93434.456060785,
+      "started_utc": "2026-10-29T11:04:58.134303+00:00",
+      "step_observation_pack_ms": 0.4974950134055689,
+      "step_response_unpack_ms": 0.2891329932026565,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.2644,
+        "denoise": 1995.0479
+      },
+      "edge_compute_ms": 2023.312,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93436.493667432,
+      "round_trip_ms": 2037.6066470053047,
+      "step_request_ms": 2036.41430499556,
+      "step_response_headers_wait_ms": 2036.0934579948662,
+      "step_response_download_ms": 0.2641400060383603,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1151,
+      "edge_siglip_ms": 28.2644,
+      "edge_denoise_ms": 1995.0479,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r8",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2029.7825259913225,
+          "status_code": 200,
+          "response_body_bytes": 1150,
+          "response_download_ms": 0.26894100301433355,
+          "x_edge_compute_ms": 2017.197,
+          "request_ms": 2030.1067010004772
+        }
+      },
+      "started_perf": 93436.493710922,
+      "started_utc": "2026-10-29T11:05:00.171952+00:00",
+      "step_observation_pack_ms": 0.5037349910708144,
+      "step_response_unpack_ms": 0.29303799965418875,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.2866,
+        "denoise": 1988.91
+      },
+      "edge_compute_ms": 2017.197,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93438.525016238,
+      "round_trip_ms": 2031.3053159916308,
+      "step_request_ms": 2030.1067010004772,
+      "step_response_headers_wait_ms": 2029.7825259913225,
+      "step_response_download_ms": 0.26894100301433355,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1150,
+      "edge_siglip_ms": 28.2866,
+      "edge_denoise_ms": 1988.91,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r9",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2023.2751120056491,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.3766250010812655,
+          "x_edge_compute_ms": 2011.17,
+          "request_ms": 2023.7113559996942
+        }
+      },
+      "started_perf": 93438.525063472,
+      "started_utc": "2026-10-29T11:05:02.203305+00:00",
+      "step_observation_pack_ms": 0.5036390066379681,
+      "step_response_unpack_ms": 0.2917889942182228,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0622,
+        "denoise": 1983.1083
+      },
+      "edge_compute_ms": 2011.17,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93440.549972098,
+      "round_trip_ms": 2024.908626000979,
+      "step_request_ms": 2023.7113559996942,
+      "step_response_headers_wait_ms": 2023.2751120056491,
+      "step_response_download_ms": 0.3766250010812655,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.0622,
+      "edge_denoise_ms": 1983.1083,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r10",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2025.5017620074796,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.39518499397672713,
+          "x_edge_compute_ms": 2012.827,
+          "request_ms": 2025.9590299974661
+        }
+      },
+      "started_perf": 93440.550223405,
+      "started_utc": "2026-10-29T11:05:04.228466+00:00",
+      "step_observation_pack_ms": 0.5045989964855835,
+      "step_response_unpack_ms": 0.3048459911951795,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.5433,
+        "denoise": 1984.2841
+      },
+      "edge_compute_ms": 2012.827,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93442.57740569,
+      "round_trip_ms": 2027.1822849899763,
+      "step_request_ms": 2025.9590299974661,
+      "step_response_headers_wait_ms": 2025.5017620074796,
+      "step_response_download_ms": 0.39518499397672713,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.5433,
+      "edge_denoise_ms": 1984.2841,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r11",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2029.786550992867,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.45077200047671795,
+          "x_edge_compute_ms": 2016.366,
+          "request_ms": 2030.2972609933931
+        }
+      },
+      "started_perf": 93442.577450172,
+      "started_utc": "2026-10-29T11:05:06.255692+00:00",
+      "step_observation_pack_ms": 0.5157670093467459,
+      "step_response_unpack_ms": 0.30247701215557754,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.4558,
+        "denoise": 1987.9098
+      },
+      "edge_compute_ms": 2016.366,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93444.608981761,
+      "round_trip_ms": 2031.5315890038619,
+      "step_request_ms": 2030.2972609933931,
+      "step_response_headers_wait_ms": 2029.786550992867,
+      "step_response_download_ms": 0.45077200047671795,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.4558,
+      "edge_denoise_ms": 1987.9098,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r12",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2029.1361440031324,
+          "status_code": 200,
+          "response_body_bytes": 1151,
+          "response_download_ms": 0.3735530044650659,
+          "x_edge_compute_ms": 2016.834,
+          "request_ms": 2029.5676509995246
+        }
+      },
+      "started_perf": 93444.609025187,
+      "started_utc": "2026-10-29T11:05:08.287267+00:00",
+      "step_observation_pack_ms": 0.511478996486403,
+      "step_response_unpack_ms": 0.2905729925259948,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.128,
+        "denoise": 1988.7062
+      },
+      "edge_compute_ms": 2016.834,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93446.63979638,
+      "round_trip_ms": 2030.7711929926882,
+      "step_request_ms": 2029.5676509995246,
+      "step_response_headers_wait_ms": 2029.1361440031324,
+      "step_response_download_ms": 0.3735530044650659,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1151,
+      "edge_siglip_ms": 28.128,
+      "edge_denoise_ms": 1988.7062,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r13",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2031.8643520004116,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.39371399907395244,
+          "x_edge_compute_ms": 2019.953,
+          "request_ms": 2032.3153159988578
+        }
+      },
+      "started_perf": 93446.639838686,
+      "started_utc": "2026-10-29T11:05:10.318080+00:00",
+      "step_observation_pack_ms": 0.5630329978885129,
+      "step_response_unpack_ms": 0.296366008115001,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.3003,
+        "denoise": 1991.6527
+      },
+      "edge_compute_ms": 2019.953,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93448.673431819,
+      "round_trip_ms": 2033.593133004615,
+      "step_request_ms": 2032.3153159988578,
+      "step_response_headers_wait_ms": 2031.8643520004116,
+      "step_response_download_ms": 0.39371399907395244,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.3003,
+      "edge_denoise_ms": 1991.6527,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r14",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2025.0748290127376,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.3670559963211417,
+          "x_edge_compute_ms": 2012.865,
+          "request_ms": 2025.4995840077754
+        }
+      },
+      "started_perf": 93448.673476141,
+      "started_utc": "2026-10-29T11:05:12.351718+00:00",
+      "step_observation_pack_ms": 0.4913500015391037,
+      "step_response_unpack_ms": 0.307533991872333,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0715,
+        "denoise": 1984.7936
+      },
+      "edge_compute_ms": 2012.865,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93450.700228612,
+      "round_trip_ms": 2026.7524709925056,
+      "step_request_ms": 2025.4995840077754,
+      "step_response_headers_wait_ms": 2025.0748290127376,
+      "step_response_download_ms": 0.3670559963211417,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.0715,
+      "edge_denoise_ms": 1984.7936,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r15",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2025.6757169991033,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.3914729895768687,
+          "x_edge_compute_ms": 2013.316,
+          "request_ms": 2026.1259449907811
+        }
+      },
+      "started_perf": 93450.70027463,
+      "started_utc": "2026-10-29T11:05:14.378516+00:00",
+      "step_observation_pack_ms": 0.5031899927416816,
+      "step_response_unpack_ms": 0.29358098981902003,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0375,
+        "denoise": 1985.2784
+      },
+      "edge_compute_ms": 2013.316,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93452.727633717,
+      "round_trip_ms": 2027.3590870056069,
+      "step_request_ms": 2026.1259449907811,
+      "step_response_headers_wait_ms": 2025.6757169991033,
+      "step_response_download_ms": 0.3914729895768687,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.0375,
+      "edge_denoise_ms": 1985.2784,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r16",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2024.3385690118885,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.36868799361400306,
+          "x_edge_compute_ms": 2011.672,
+          "request_ms": 2024.7661720059114
+        }
+      },
+      "started_perf": 93452.727676631,
+      "started_utc": "2026-10-29T11:05:16.405918+00:00",
+      "step_observation_pack_ms": 0.5593529931502417,
+      "step_response_unpack_ms": 0.2904129942180589,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.5631,
+        "denoise": 1983.1091
+      },
+      "edge_compute_ms": 2011.672,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93454.753697417,
+      "round_trip_ms": 2026.0207860119408,
+      "step_request_ms": 2024.7661720059114,
+      "step_response_headers_wait_ms": 2024.3385690118885,
+      "step_response_download_ms": 0.36868799361400306,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.5631,
+      "edge_denoise_ms": 1983.1091,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r17",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2026.9125699996948,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.40027299837674946,
+          "x_edge_compute_ms": 2014.88,
+          "request_ms": 2027.3721419944195
+        }
+      },
+      "started_perf": 93454.753744939,
+      "started_utc": "2026-10-29T11:05:18.431987+00:00",
+      "step_observation_pack_ms": 0.5065180012024939,
+      "step_response_unpack_ms": 0.29652500234078616,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.154,
+        "denoise": 1986.7257
+      },
+      "edge_compute_ms": 2014.88,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93456.782327469,
+      "round_trip_ms": 2028.5825300088618,
+      "step_request_ms": 2027.3721419944195,
+      "step_response_headers_wait_ms": 2026.9125699996948,
+      "step_response_download_ms": 0.40027299837674946,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.154,
+      "edge_denoise_ms": 1986.7257,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r18",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2025.731175992405,
+          "status_code": 200,
+          "response_body_bytes": 1153,
+          "response_download_ms": 0.26602800062391907,
+          "x_edge_compute_ms": 2013.469,
+          "request_ms": 2026.0526299971389
+        }
+      },
+      "started_perf": 93456.782372943,
+      "started_utc": "2026-10-29T11:05:20.460614+00:00",
+      "step_observation_pack_ms": 0.48590899677947164,
+      "step_response_unpack_ms": 0.29111700132489204,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.0822,
+        "denoise": 1985.3871
+      },
+      "edge_compute_ms": 2013.469,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93458.809603736,
+      "round_trip_ms": 2027.2307929990347,
+      "step_request_ms": 2026.0526299971389,
+      "step_response_headers_wait_ms": 2025.731175992405,
+      "step_response_download_ms": 0.26602800062391907,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1153,
+      "edge_siglip_ms": 28.0822,
+      "edge_denoise_ms": 1985.3871,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r19",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301377,
+          "ok": true,
+          "response_headers_wait_ms": 2027.6287969900295,
+          "status_code": 200,
+          "response_body_bytes": 1152,
+          "response_download_ms": 0.37694400816690177,
+          "x_edge_compute_ms": 2015.304,
+          "request_ms": 2028.0649759952212
+        }
+      },
+      "started_perf": 93458.809648634,
+      "started_utc": "2026-10-29T11:05:22.487890+00:00",
+      "step_observation_pack_ms": 0.4807880031876266,
+      "step_response_unpack_ms": 0.2907010057242587,
+      "returned_replan_id": "fixed-cache",
+      "edge_timings": {
+        "siglip": 28.2155,
+        "denoise": 1987.0886
+      },
+      "edge_compute_ms": 2015.304,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 93460.838892701,
+      "round_trip_ms": 2029.244067001855,
+      "step_request_ms": 2028.0649759952212,
+      "step_response_headers_wait_ms": 2027.6287969900295,
+      "step_response_download_ms": 0.37694400816690177,
+      "step_request_body_bytes": 301377,
+      "step_response_body_bytes": 1152,
+      "edge_siglip_ms": 28.2155,
+      "edge_denoise_ms": 1987.0886,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    }
+  ],
+  "status": "ok",
+  "legs": {
+    "edge_compute_ms": {
+      "n": 20,
+      "mean": 2017.0218499999996,
+      "p50": 2017.0155,
+      "p95": 2022.0057499999998
+    },
+    "edge_denoise_ms": {
+      "n": 20,
+      "mean": 1988.8702250000001,
+      "p50": 1988.8081000000002,
+      "p95": 1994.04204
+    },
+    "edge_siglip_ms": {
+      "n": 20,
+      "mean": 28.151655000000005,
+      "p50": 28.07685,
+      "p95": 28.54429
+    },
+    "round_trip_ms": {
+      "n": 20,
+      "mean": 2031.0381272502127,
+      "p50": 2031.4184524977463,
+      "p95": 2035.968775753281
+    },
+    "step_observation_pack_ms": {
+      "n": 20,
+      "mean": 0.5050403502536938,
+      "p50": 0.5036869988543913,
+      "p95": 0.5595369933871552
+    },
+    "step_request_ms": {
+      "n": 20,
+      "mean": 2029.8240451498714,
+      "p50": 2030.2019809969352,
+      "p95": 2034.7622341076203
+    },
+    "step_response_download_ms": {
+      "n": 20,
+      "mean": 0.3421387002163101,
+      "p50": 0.37065699871163815,
+      "p95": 0.40279794848174794
+    },
+    "step_response_headers_wait_ms": {
+      "n": 20,
+      "mean": 2029.424135950103,
+      "p50": 2029.7845384920947,
+      "p95": 2034.4464040492312
+    },
+    "step_response_unpack_ms": {
+      "n": 20,
+      "mean": 0.29513024710468017,
+      "p50": 0.29138950048945844,
+      "p95": 0.3087852419412229
+    },
+    "cloud_uplink_ms": null,
+    "edge_uplink_ms": null,
+    "z_transfer_ms": null
+  },
+  "throughput": {
+    "measured_elapsed_s": 40.62212334199285,
+    "attempted": 20,
+    "successful": 20,
+    "failed": 0,
+    "completed_operations_per_s": 0.4923425551053146,
+    "successful_http_requests_per_s": 0.4923425551053146,
+    "completed_replans_per_s": null,
+    "action_chunks_per_s": 0.4923425551053146,
+    "generated_action_vectors_per_s": 15.754961763370067,
+    "declared_consumed_action_vectors_per_s": 4.923425551053146,
+    "stage": "edge",
+    "schedule": "serial"
+  },
+  "payload_bytes": 344064,
+  "cloud_health": {
+    "status": "ok",
+    "stage": "cloud",
+    "gpu": "NVIDIA GeForce RTX 4090 D",
+    "payload_tokens": 56,
+    "payload_bytes": 344064,
+    "ckpt": "/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt",
+    "performance_only": true
+  },
+  "edge_health": {
+    "status": "ok",
+    "stage": "edge",
+    "gpu": "Orin",
+    "payload_tokens": 56,
+    "ckpt": "/tmp/leapbotce_20261029/edge_artifact.pt",
+    "performance_only": true
+  },
+  "rtt": {
+    "cloud": {
+      "request_ms": {
+        "n": 10,
+        "mean": 17.820803601352964,
+        "p50": 13.986267505970318,
+        "p95": 32.91239540412789
+      },
+      "request_body_bytes": 1024,
+      "records": [
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 14.888951001921669,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.2148909989045933,
+          "request_ms": 15.147779995459132
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 31.95151299587451,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.20340199989732355,
+          "request_ms": 32.193892999202944
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 9.28477400157135,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1986010029213503,
+          "request_ms": 9.52401700487826
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 14.033486004336737,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1963620015885681,
+          "request_ms": 14.268377010012046
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 9.284742001909763,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19652199989650398,
+          "request_ms": 9.52100899303332
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 30.243301996961236,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19856999278999865,
+          "request_ms": 30.482193993520923
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 9.336232003988698,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19588199211284518,
+          "request_ms": 9.572308001224883
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 13.468978999298997,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19479299953673035,
+          "request_ms": 13.70415800192859
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 33.2623930007685,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19847400835715234,
+          "request_ms": 33.500261008157395
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 10.06033101293724,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1940259971888736,
+          "request_ms": 10.294039006112143
+        }
+      ]
+    },
+    "edge": {
+      "request_ms": {
+        "n": 10,
+        "mean": 4.35251359740505,
+        "p50": 4.276320993085392,
+        "p95": 4.6082970016868785
+      },
+      "request_body_bytes": 1024,
+      "records": [
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 4.21367799572181,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.34558500919956714,
+          "request_ms": 4.603456996846944
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 4.275473009329289,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.2950859925476834,
+          "request_ms": 4.612257005646825
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 4.059974002302624,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.3363050054758787,
+          "request_ms": 4.439224998350255
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 4.030725001939572,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.2988619962707162,
+          "request_ms": 4.370612994534895
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.941025002859533,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.29335799627006054,
+          "request_ms": 4.275504994438961
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.9413449994754046,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.2949899935629219,
+          "request_ms": 4.2771369917318225
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.917694994015619,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.292591008474119,
+          "request_ms": 4.252336002537049
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.9045749872457236,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.28868600202258676,
+          "request_ms": 4.2347669950686395
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.9029429899528623,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.2915340010076761,
+          "request_ms": 4.2371039889985695
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.89103899942711,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.29086200811434537,
+          "request_ms": 4.2227350058965385
+        }
+      ]
+    }
+  },
+  "setup_requests": {
+    "encode_prompt": {
+      "url": "http://10.7.140.45:8600/encode_prompt",
+      "request_body_bytes": 201,
+      "ok": true,
+      "response_headers_wait_ms": 10.465086990734562,
+      "status_code": 200,
+      "response_body_bytes": 1048996,
+      "response_download_ms": 446.3927850010805,
+      "request_ms": 456.9243709993316
+    },
+    "session": {
+      "url": "http://127.0.0.1:8601/session",
+      "request_body_bytes": 1048989,
+      "ok": true,
+      "response_headers_wait_ms": 11.594901996431872,
+      "status_code": 200,
+      "response_body_bytes": 73,
+      "response_download_ms": 0.3531050024321303,
+      "request_ms": 11.99351299146656
+    }
+  },
+  "failure_count": 0
+}

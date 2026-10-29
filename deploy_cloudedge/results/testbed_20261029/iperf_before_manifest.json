@@ -1,0 +1,18 @@
+{
+  "group": "before",
+  "began_Asia_Shanghai": "2026-10-29T18:38:33.638539+08:00",
+  "coordination": "Original forward trial 1 began at 18:38:32+08, overlapped old shared-mount model reader PID3513318 confirmed alive around18:38:53; raw moved to iperf_setup_overlap2_forward_1.json. Replacement will run after this loop. Later trials retained; new CPU exporter reads local aihub NVMe, transport client waits, ARM setup/cache transfer completed. Original forward trial2 also excluded conservatively because it began before the first explicit observation of PID3513318 absence (18:39:16+08), leaving its overlap status uncertain.",
+  "server_ip": "10.7.140.45",
+  "server_port": 18609,
+  "client_ip": "10.7.136.8",
+  "seconds_per_trial": 30,
+  "trials_each_direction": 3,
+  "forward": "Jetson to aihub",
+  "reverse": "aihub to Jetson",
+  "protocol": "TCP iperf3, one stream, receiver throughput",
+  "power_mode": "Jetson MODE_50W, unchanged",
+  "wifi": "campus Wi-Fi",
+  "io_overlap_status": "clean_retained_trials; originals_forward_1_and_2_excluded_and_replaced",
+  "replacement_completed_Asia_Shanghai": "2026-10-29T18:44:43.072904+08:00",
+  "control_failures": "Initial reverse3 connection attempts had Bad file descriptor and no valid sample; raw JSON preserved as iperf_control_failed_reverse_*. Subsequent sequential subprocess attempts with 1-second gaps succeeded first try."
+}

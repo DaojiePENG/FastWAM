@@ -1,0 +1,57 @@
+{
+  "recorded_utc": "2026-10-29T11:31:06.366472+00:00",
+  "scope": "Post-run inspection of the unchanged runtime cache used by cloud service",
+  "python": "3.10.20 (main, Mar 11 2026, 17:46:40) [GCC 14.3.0]",
+  "modules": {
+    "torch": {
+      "version": "2.7.1+cu128",
+      "file": "/home/aihub/miniconda3/envs/fastwam/lib/python3.10/site-packages/torch/__init__.py"
+    },
+    "torchvision": {
+      "version": "0.22.1+cu128",
+      "file": "/home/aihub/miniconda3/envs/fastwam/lib/python3.10/site-packages/torchvision/__init__.py"
+    },
+    "hydra": {
+      "version": "1.3.2",
+      "file": "/tmp/leapbotce_20261029/site-packages/hydra/__init__.py"
+    },
+    "omegaconf": {
+      "version": "2.3.0",
+      "file": "/tmp/leapbotce_20261029/site-packages/omegaconf/__init__.py"
+    },
+    "timm": {
+      "version": "0.9.10",
+      "file": "/home/aihub/miniconda3/envs/fastwam/lib/python3.10/site-packages/timm/__init__.py"
+    },
+    "transformers": {
+      "version": "4.49.0",
+      "file": "/tmp/leapbotce_20261029/site-packages/transformers/__init__.py"
+    },
+    "fastapi": {
+      "version": "0.115.12",
+      "file": "/tmp/leapbotce_20261029/site-packages/fastapi/__init__.py"
+    },
+    "uvicorn": {
+      "version": "0.34.2",
+      "file": "/tmp/leapbotce_20261029/site-packages/uvicorn/__init__.py"
+    },
+    "requests": {
+      "version": "2.34.2",
+      "file": "/tmp/leapbotce_20261029/site-packages/requests/__init__.py"
+    },
+    "numpy": {
+      "version": "1.26.4",
+      "file": "/tmp/leapbotce_20261029/site-packages/numpy/__init__.py"
+    },
+    "typing_extensions": {
+      "version": "not_exposed",
+      "file": "/tmp/leapbotce_20261029/site-packages/typing_extensions.py"
+    },
+    "anyio": {
+      "version": "not_exposed",
+      "file": "/tmp/leapbotce_20261029/site-packages/anyio/__init__.py"
+    }
+  },
+  "overlay_freeze": "annotated-doc==0.0.5\nannotated-types==0.8.0\nantlr4-python3-runtime==4.9.3\nanyio==4.15.1\ncertifi==2026.10.23\ncharset-normalizer==3.5.2\nclick==8.5.0\nexceptiongroup==1.3.1\nfastapi==0.115.12\nfilelock==4.1.0\nfsspec==2026.9.0\nh11==0.16.0\nhuggingface-hub==0.29.2\nhydra-core==1.3.2\nidna==3.20\nnumpy==1.26.4\nomegaconf==2.3.0\nopentelemetry-api==1.45.1\npackaging==25.0\npydantic==2.14.1\npydantic_core==2.50.1\nPyYAML==6.0.3\nregex==2026.9.29\nrequests==2.32.3\nsafetensors==0.8.0\nstarlette==0.46.2\ntokenizers==0.21.4\ntqdm==4.70.1\ntransformers==4.49.0\ntyping-inspection==0.4.4\ntyping_extensions==4.16.0\nurllib3==2.8.0\nuvicorn==0.34.2\n",
+  "overlay_freeze_stderr": ""
+}

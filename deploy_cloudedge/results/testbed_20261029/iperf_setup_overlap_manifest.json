@@ -1,0 +1,12 @@
+{
+  "purpose": "initial connectivity and throughput pilot; excluded from clean before/after comparison",
+  "reason": "overlapped with initial conda cloning and ARM package downloads/CIFS file installation; artificial setup traffic may affect throughput",
+  "server_ip": "10.7.140.45",
+  "server_port": 18609,
+  "client_ip": "10.7.136.8",
+  "seconds_per_trial": 30,
+  "trials_each_direction": 3,
+  "forward": "Jetson to aihub",
+  "reverse": "aihub to Jetson",
+  "protocol": "TCP iperf3, one stream, receiver throughput"
+}

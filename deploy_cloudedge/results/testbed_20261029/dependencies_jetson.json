@@ -1,0 +1,111 @@
+{
+  "captured_at": "2026-10-29T18:21:56+0800",
+  "runtime_mode": "existing local robot interpreter plus shared ARM overlay",
+  "modules": {
+    "torch": {
+      "status": "ok",
+      "version": "2.8.0",
+      "file": "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages/torch/__init__.py"
+    },
+    "torchvision": {
+      "status": "ok",
+      "version": "0.23.0",
+      "file": "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages/torchvision/__init__.py"
+    },
+    "numpy": {
+      "status": "ok",
+      "version": "1.26.1",
+      "file": "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages/numpy/__init__.py"
+    },
+    "PIL": {
+      "status": "ok",
+      "version": "12.0.0",
+      "file": "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages/PIL/__init__.py"
+    },
+    "fastapi": {
+      "status": "ok",
+      "version": "0.128.0",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/fastapi/__init__.py"
+    },
+    "uvicorn": {
+      "status": "ok",
+      "version": "0.40.0",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/uvicorn/__init__.py"
+    },
+    "requests": {
+      "status": "ok",
+      "version": "2.32.5",
+      "file": "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages/requests/__init__.py"
+    },
+    "hydra": {
+      "status": "ok",
+      "version": "1.3.2",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/hydra/__init__.py"
+    },
+    "omegaconf": {
+      "status": "ok",
+      "version": "2.3.0",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/omegaconf/__init__.py"
+    },
+    "einops": {
+      "status": "ok",
+      "version": "0.8.1",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/einops/__init__.py"
+    },
+    "rich": {
+      "status": "ok",
+      "version": null,
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/rich/__init__.py"
+    },
+    "timm": {
+      "status": "ok",
+      "version": "0.9.10",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/timm/__init__.py"
+    },
+    "transformers": {
+      "status": "ok",
+      "version": "4.49.0",
+      "file": "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages/transformers/__init__.py"
+    },
+    "server_common": {
+      "status": "ok",
+      "version": null,
+      "file": "/data_pdj/daojie/codes/LeapBot_ws/FastWAM/deploy_cloudedge/server_common.py"
+    },
+    "edge_server": {
+      "status": "ok",
+      "version": null,
+      "file": "/data_pdj/daojie/codes/LeapBot_ws/FastWAM/deploy_cloudedge/edge_server.py"
+    }
+  },
+  "gpu_smoke": {
+    "bf16_matmul_finite": true,
+    "device": "Orin",
+    "allocated_bytes": 8536064,
+    "bf16_supported": true,
+    "siglip_patch_conv_bf16": {
+      "finite": true,
+      "shape": [
+        1,
+        32,
+        14,
+        14
+      ]
+    },
+    "action_sdpa_bf16": {
+      "finite": true,
+      "shape": [
+        1,
+        24,
+        32,
+        128
+      ]
+    }
+  },
+  "pip_check": {
+    "result": "No broken requirements found.",
+    "opencv": "4.11.0",
+    "numpy": "1.26.1",
+    "mode": "shared overlay plus local existing runtime"
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "group": "after",
+  "trials": [
+    {
+      "file": "iperf_after_forward_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:22:07+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.008786,
+      "receiver_Mbit_s": 13.452785460898017,
+      "sender_Mbit_s": 13.490256784101256,
+      "sender_retransmits": 1003
+    },
+    {
+      "file": "iperf_after_forward_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:22:38+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.007717,
+      "receiver_Mbit_s": 14.606401679941197,
+      "sender_Mbit_s": 15.035410307842213,
+      "sender_retransmits": 1062
+    },
+    {
+      "file": "iperf_after_forward_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:23:10+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.009303,
+      "receiver_Mbit_s": 12.26453596739651,
+      "sender_Mbit_s": 12.459270804344,
+      "sender_retransmits": 913
+    },
+    {
+      "file": "iperf_after_reverse_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:23:41+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000125,
+      "receiver_Mbit_s": 93.30487202969988,
+      "sender_Mbit_s": 94.19852972954385,
+      "sender_retransmits": 19
+    },
+    {
+      "file": "iperf_after_reverse_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:24:12+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000037,
+      "receiver_Mbit_s": 91.68361172354555,
+      "sender_Mbit_s": 92.75901850679456,
+      "sender_retransmits": 88
+    },
+    {
+      "file": "iperf_after_reverse_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T19:24:44+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000095,
+      "receiver_Mbit_s": 95.97055049325677,
+      "sender_Mbit_s": 96.95607149163055,
+      "sender_retransmits": 8
+    }
+  ],
+  "direction_summary": {
+    "jetson_to_aihub": {
+      "n": 3,
+      "mean_Mbit_s": 13.441241036078575,
+      "min_Mbit_s": 12.26453596739651,
+      "max_Mbit_s": 14.606401679941197,
+      "sample_sd_Mbit_s": 1.1709755374073436
+    },
+    "aihub_to_jetson": {
+      "n": 3,
+      "mean_Mbit_s": 93.65301141550073,
+      "min_Mbit_s": 91.68361172354555,
+      "max_Mbit_s": 95.97055049325677,
+      "sample_sd_Mbit_s": 2.1645696518644577
+    }
+  }
+}

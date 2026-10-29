@@ -1,0 +1,12 @@
+{
+  "kind": "tegra",
+  "pid": 800430,
+  "host": "jetson",
+  "started_utc": "2026-10-29T10:57:59.152888+00:00",
+  "period_ms": 1000,
+  "read_only": true,
+  "storage": "/tmp/leapbotce_20261029/formal_tegra",
+  "status": "stopped",
+  "tegrastats_pid": 800431,
+  "completed_utc": "2026-10-29T11:21:23.270529+00:00"
+}

@@ -50,7 +50,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
-from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+# Keep deployment independent of the training dataset/video decoder stack.
+DEFAULT_PROMPT = "A video recorded from a robot's point of view executing the following instruction: {task}"
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 
 logger = logging.getLogger(__name__)

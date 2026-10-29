@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-10-29T18:53:45.009770+08:00",
+  "files": [
+    {
+      "path": "deploy_cloudedge/edge_server.py",
+      "sha256": "34aa6e54e2d3f681f1ec3649816578edbb0c02ec84b885500ba1e1b9de9f656d"
+    },
+    {
+      "path": "deploy_cloudedge/server_common.py",
+      "sha256": "a4c3abc8a0efae0299a3f662839bbbcba51d36bb22514c3bf6ad8e8a76bcf013"
+    },
+    {
+      "path": "deploy_cloudedge/bench_client.py",
+      "sha256": "6b09317d159ce0f639d72b8d26a6121b9155da4654de57852012d70d0f80d244"
+    },
+    {
+      "path": "deploy_cloudedge/protocol.py",
+      "sha256": "10c779233e98accbf12ac05de9bf64ded405c66af8cd0d3f4ea7c14d5aa90b0b"
+    },
+    {
+      "path": "src/fastwam/models/wan22/fastwam.py",
+      "sha256": "43aab41234c6ca06154e753dcb7e7aa2dc56edff03e0c25e96b9035a9c2c0bed"
+    },
+    {
+      "path": "src/fastwam/runtime.py",
+      "sha256": "5968ee229b8edc223a8c2462c187889de75177f9782cd4d74902408e63a62abd"
+    },
+    {
+      "path": "experiments/robotwin/leapbotce_policy/deploy_policy.py",
+      "sha256": "e08f192f6665336db774ebf7aad41166946450e5ad92e0f75a9e55f443b599d1"
+    }
+  ]
+}

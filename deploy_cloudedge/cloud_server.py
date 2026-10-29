@@ -57,8 +57,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8600)
     parser.add_argument("--task", default="libero_all_leapbotce_codec_lora")
-    parser.add_argument("--ckpt", required=True)
-    parser.add_argument("--stats", required=True)
+    parser.add_argument("--ckpt")
+    parser.add_argument("--stats")
+    parser.add_argument("--cloud-artifact", help="Trusted local full-policy performance export")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--mot-pretrained",
@@ -66,6 +67,8 @@ def parse_args() -> argparse.Namespace:
         help="released FastWAM checkpoint the run trained against (frozen base)",
     )
     parser.add_argument("--skip-self-test", action="store_true")
+    parser.add_argument("--config-override", action="append", default=[],
+                        help="Hydra override for local model paths or hardware settings")
     return parser.parse_args()
 
 
@@ -75,8 +78,19 @@ def boot(args) -> dict:
         "model.load_text_encoder=true",
         "model.skip_dit_load_from_pretrain=false",
     ]
-    cfg = compose_deploy_cfg(args.task, overrides)
-    policy = load_policy(cfg, args.ckpt, args.stats, args.device)
+    if args.cloud_artifact:
+        artifact = torch.load(args.cloud_artifact, map_location="cpu", weights_only=False)
+        policy = artifact["policy"]
+        policy.model.to(args.device).eval()
+        policy.model.device = torch.device(args.device)
+        for wrapper in getattr(policy.model, "video_lora_wrappers", []):
+            wrapper.to(device=args.device, dtype=policy.model.torch_dtype)
+        args.ckpt = args.cloud_artifact
+    else:
+        if not args.ckpt or not args.stats:
+            raise ValueError("--ckpt and --stats are required without --cloud-artifact")
+        cfg = compose_deploy_cfg(args.task, overrides + args.config_override)
+        policy = load_policy(cfg, args.ckpt, args.stats, args.device)
     model = policy.model
     if model.cloud_kv_codec is None:
         raise RuntimeError("deployed checkpoint has no planning codec; nothing to transmit")
@@ -101,6 +115,7 @@ def boot(args) -> dict:
         "payload_bytes": payload_bytes,
         "num_layers": int(model.mot.num_layers),
         "ckpt": args.ckpt,
+        "performance_only": bool(args.cloud_artifact),
     }
 
 
@@ -141,6 +156,7 @@ def health():
         "payload_tokens": _STATE.get("num_tokens"),
         "payload_bytes": _STATE.get("payload_bytes"),
         "ckpt": _STATE.get("ckpt"),
+        "performance_only": _STATE.get("performance_only", False),
     }
 
 

@@ -1,0 +1,18 @@
+[bench] cloud: {'status': 'ok', 'stage': 'cloud', 'gpu': 'NVIDIA GeForce RTX 4090 D', 'payload_tokens': 56, 'payload_bytes': 344064, 'ckpt': '/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt', 'performance_only': True}
+[bench] measured 10/50
+[bench] measured 20/50
+[bench] measured 30/50
+[bench] measured 40/50
+[bench] measured 50/50
+[bench] cloud_codec_ms: p50=0.105 p95=0.106 ms
+[bench] cloud_compute_ms: p50=32.677 p95=32.757 ms
+[bench] cloud_observation_pack_ms: p50=0.519 p95=0.580 ms
+[bench] cloud_prefill_ms: p50=22.364 p95=22.390 ms
+[bench] cloud_request_ms: p50=275.541 p95=440.711 ms
+[bench] cloud_response_download_ms: p50=33.552 p95=48.363 ms
+[bench] cloud_response_headers_wait_ms: p50=242.806 p95=408.779 ms
+[bench] cloud_response_unpack_ms: p50=0.398 p95=0.443 ms
+[bench] cloud_vae_ms: p50=10.202 p95=10.286 ms
+[bench] round_trip_ms: p50=276.451 p95=441.801 ms
+[bench] throughput: {"measured_elapsed_s": 14.073724676010897, "attempted": 50, "successful": 50, "failed": 0, "completed_operations_per_s": 3.552719777531712, "successful_http_requests_per_s": 3.552719777531712, "completed_replans_per_s": null, "action_chunks_per_s": null, "generated_action_vectors_per_s": null, "declared_consumed_action_vectors_per_s": null, "stage": "cloud", "schedule": "serial"}
+[bench] wrote /tmp/leapbotce_20261029/formal_results/hardware_codec_cloud_r3.json

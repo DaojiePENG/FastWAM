@@ -247,3 +247,16 @@ manifest.json
 wandb/
 onelogger.err
 onelogger.log
+
+# Local performance-test model exports (provenance JSON is retained separately).
+deploy_cloudedge/artifacts/
+
+# Bounded evidence and publication assets for the 2026-10-29 hardware run.
+!deploy_cloudedge/results/
+deploy_cloudedge/results/*
+!deploy_cloudedge/results/testbed_20261029/
+!deploy_cloudedge/results/testbed_20261029/**
+!docs/assets/
+docs/assets/*
+!docs/assets/testbed_20261029/
+!docs/assets/testbed_20261029/**

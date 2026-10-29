@@ -1,0 +1,19 @@
+{
+  "group": "after",
+  "began_Asia_Shanghai": "2026-10-29T19:22:07.409154+08:00",
+  "coordination": "All 15 model runs completed statusok; monitoring stopped and small text logs already copied. No model client, transport client, installation, artifact copy or weight archival runs during this group. Root waits for completion before 4GB archival.",
+  "server_ip": "10.7.140.45",
+  "server_port": 18609,
+  "client_ip": "10.7.136.8",
+  "seconds_per_trial": 30,
+  "trials_each_direction": 3,
+  "forward": "Jetson to aihub",
+  "reverse": "aihub to Jetson",
+  "protocol": "TCP iperf3, one stream, receiver throughput",
+  "gap_s": 1,
+  "validation": "subprocess return code0 and end.sum_received required; failed attempts preserved separately",
+  "completed_Asia_Shanghai": "2026-10-29T19:25:50.691656+08:00",
+  "status": "ok",
+  "valid_trials": 6,
+  "failed_attempts": 0
+}

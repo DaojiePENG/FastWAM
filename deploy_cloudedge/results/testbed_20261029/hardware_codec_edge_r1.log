@@ -1,0 +1,15 @@
+[bench] cloud: {'status': 'ok', 'stage': 'cloud', 'gpu': 'NVIDIA GeForce RTX 4090 D', 'payload_tokens': 56, 'payload_bytes': 344064, 'ckpt': '/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt', 'performance_only': True}
+[bench] edge: {'status': 'ok', 'stage': 'edge', 'gpu': 'Orin', 'payload_tokens': 56, 'ckpt': '/tmp/leapbotce_20261029/edge_artifact.pt', 'performance_only': True}
+[bench] measured 10/20
+[bench] measured 20/20
+[bench] edge_compute_ms: p50=2017.015 p95=2022.006 ms
+[bench] edge_denoise_ms: p50=1988.808 p95=1994.042 ms
+[bench] edge_siglip_ms: p50=28.077 p95=28.544 ms
+[bench] round_trip_ms: p50=2031.418 p95=2035.969 ms
+[bench] step_observation_pack_ms: p50=0.504 p95=0.560 ms
+[bench] step_request_ms: p50=2030.202 p95=2034.762 ms
+[bench] step_response_download_ms: p50=0.371 p95=0.403 ms
+[bench] step_response_headers_wait_ms: p50=2029.785 p95=2034.446 ms
+[bench] step_response_unpack_ms: p50=0.291 p95=0.309 ms
+[bench] throughput: {"measured_elapsed_s": 40.62212334199285, "attempted": 20, "successful": 20, "failed": 0, "completed_operations_per_s": 0.4923425551053146, "successful_http_requests_per_s": 0.4923425551053146, "completed_replans_per_s": null, "action_chunks_per_s": 0.4923425551053146, "generated_action_vectors_per_s": 15.754961763370067, "declared_consumed_action_vectors_per_s": 4.923425551053146, "stage": "edge", "schedule": "serial"}
+[bench] wrote /tmp/leapbotce_20261029/formal_results/hardware_codec_edge_r1.json

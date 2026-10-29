@@ -1,0 +1,20 @@
+{
+  "recorded_utc": "2026-10-29T11:34:45.789376+00:00",
+  "repositories": [
+    {
+      "path": "/data/daojie/codes/LeapBot_ws/FastWAM",
+      "branch": "leapbot-ce",
+      "pull_command": "git pull --ff-only",
+      "result": "Already up to date.",
+      "committed": false
+    },
+    {
+      "path": "/data/daojie/codes/LeapBot_ws/LeapBotCEPaper",
+      "branch": "main",
+      "pull_command": "git -c credential.interactive=false pull --ff-only",
+      "result": "fatal: could not read Username for 'https://github.com': No such device or address",
+      "committed": false
+    }
+  ],
+  "decision": "Leave both repositories uncommitted until the paper remote can be synchronized."
+}

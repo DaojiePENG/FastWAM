@@ -1,0 +1,34 @@
+{
+  "timestamp_utc": "2026-10-29T11:26:44.979808+00:00",
+  "scope": "Only services started by this benchmark; prior processes untouched",
+  "results": [
+    {
+      "host": "aihub-wifi",
+      "processes": [
+        {
+          "pid": 3556335,
+          "command": "/home/aihub/miniconda3/envs/fastwam/bin/python -u deploy_cloudedge/cloud_server.py --cloud-artifact /tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt --device cuda --port 8600 ",
+          "status": "SIGTERM_sent",
+          "proc_exists_after": false
+        },
+        {
+          "pid": 3464914,
+          "command": "/usr/bin/python3 -S /data/daojie/codes/LeapBot_ws/FastWAM/deploy_cloudedge/transport_probe_server.py --port 8630 ",
+          "status": "SIGTERM_sent",
+          "proc_exists_after": false
+        }
+      ]
+    },
+    {
+      "host": "jetson",
+      "processes": [
+        {
+          "pid": 799983,
+          "command": "/home/daojie/anaconda3/envs/robot/bin/python /tmp/leapbotce_20261029/FastWAM/deploy_cloudedge/edge_server.py --edge-artifact /tmp/leapbotce_20261029/edge_artifact.pt --host 0.0.0.0 --port 8601 ",
+          "status": "SIGTERM_sent",
+          "proc_exists_after": false
+        }
+      ]
+    }
+  ]
+}

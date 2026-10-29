@@ -292,6 +292,11 @@ def strip_edge_weights(model) -> None:
             "edge_vision_projector" in model.mot._modules:
         del model.mot._modules["edge_vision_projector"]
     model.edge_vision = None
+    # The training registry aliases these modules; drop its references too.
+    if isinstance(model.dit, torch.nn.ModuleDict):
+        for name in ("action_expert", "edge_vision_projector"):
+            if name in model.dit:
+                del model.dit[name]
     model.mot.mixtures["video"]  # touch to fail loudly if the video expert is gone
     import gc
 
@@ -311,6 +316,13 @@ def strip_cloud_weights(model) -> None:
     model.text_encoder = None
     model.tokenizer = None
     model.cloud_kv_codec = None
+    if isinstance(model.dit, torch.nn.ModuleDict):
+        for name in ("video_lora", "cloud_kv_codec", "cloud_kv_adapter"):
+            if name in model.dit:
+                del model.dit[name]
+    # LoRA wrappers hold their frozen base projections as child modules.
+    if hasattr(model, "video_lora_wrappers"):
+        model.video_lora_wrappers = []
     import gc
 
     gc.collect()

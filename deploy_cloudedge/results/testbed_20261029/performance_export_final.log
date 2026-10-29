@@ -1,0 +1,9 @@
+Preparing local pretrained base with matching LIBERO I/O
+Prepared local base /tmp/leapbotce_20261029/artifacts/performance_base.pt
+Building performance-only model: pretrained base, untrained new modules
+[edge-train-factory] video LoRA injected: 120 wrappers, 11.80M trainable LoRA params (rank=16, targets=['q', 'k', 'v', 'o']); video-expert gradient checkpointing enabled post-init
+Model ready after 51.8s; exporting delta
+Delta exported: /tmp/leapbotce_20261029/artifacts/performance_a6shape_delta_seed0.pt
+Full CPU artifact exported: /tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt
+CPU edge artifact exported: /tmp/leapbotce_20261029/artifacts/performance_a6shape_edge_seed0.pt
+Finished in 89.6s; edge parameters 1,116,169,539

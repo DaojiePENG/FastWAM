@@ -1,0 +1,11 @@
+{
+  "kind": "gpu",
+  "pid": 3627853,
+  "host": "aihub",
+  "started_utc": "2026-10-29T10:57:59.036768+00:00",
+  "period_ms": 1000,
+  "read_only": true,
+  "storage": "/home/aihub/daojie/leapbotce_monitor_20261029/formal_gpu",
+  "status": "stopped",
+  "completed_utc": "2026-10-29T11:21:22.984470+00:00"
+}

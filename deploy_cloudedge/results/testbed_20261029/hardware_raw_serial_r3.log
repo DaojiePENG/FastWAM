@@ -1,0 +1,31 @@
+[bench] cloud: {'status': 'ok', 'stage': 'cloud', 'gpu': 'NVIDIA GeForce RTX 4090 D', 'payload_tokens': 56, 'payload_bytes': 344064, 'ckpt': '/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt', 'performance_only': True}
+[bench] edge: {'status': 'ok', 'stage': 'edge', 'gpu': 'Orin', 'payload_tokens': 56, 'ckpt': '/tmp/leapbotce_20261029/edge_artifact.pt', 'performance_only': True}
+[bench] measured 10/20
+[bench] measured 20/20
+[bench] cloud_compute_ms: p50=32.552 p95=32.631 ms
+[bench] cloud_observation_pack_ms: p50=0.495 p95=0.544 ms
+[bench] cloud_prefill_ms: p50=22.366 p95=22.380 ms
+[bench] cloud_request_ms: p50=3454.200 p95=4154.809 ms
+[bench] cloud_response_download_ms: p50=3278.529 p95=3784.383 ms
+[bench] cloud_response_headers_wait_ms: p50=149.834 p95=364.808 ms
+[bench] cloud_response_unpack_ms: p50=17.474 p95=20.355 ms
+[bench] cloud_vae_ms: p50=10.183 p95=10.269 ms
+[bench] edge_compute_ms: p50=2020.854 p95=2029.712 ms
+[bench] edge_denoise_ms: p50=1980.433 p95=1988.419 ms
+[bench] edge_queue_wait_ms: p50=0.770 p95=0.929 ms
+[bench] edge_siglip_ms: p50=40.239 p95=42.266 ms
+[bench] kv_reinit_ms: p50=130.176 p95=133.249 ms
+[bench] payload_pack_ms: p50=51.972 p95=54.975 ms
+[bench] payload_request_ms: p50=230.626 p95=235.589 ms
+[bench] payload_request_residual_ms: p50=100.128 p95=102.688 ms
+[bench] payload_response_download_ms: p50=0.262 p95=0.695 ms
+[bench] payload_response_headers_wait_ms: p50=230.194 p95=235.259 ms
+[bench] payload_server_install_ms: p50=131.036 p95=133.950 ms
+[bench] round_trip_ms: p50=5782.004 p95=6485.910 ms
+[bench] step_observation_pack_ms: p50=0.626 p95=0.867 ms
+[bench] step_request_ms: p50=2034.852 p95=2044.003 ms
+[bench] step_response_download_ms: p50=0.252 p95=0.382 ms
+[bench] step_response_headers_wait_ms: p50=2034.490 p95=2043.684 ms
+[bench] step_response_unpack_ms: p50=0.291 p95=0.301 ms
+[bench] throughput: {"measured_elapsed_s": 117.58629743900383, "attempted": 20, "successful": 20, "failed": 0, "completed_operations_per_s": 0.17008784557039655, "successful_http_requests_per_s": 0.5102635367111897, "completed_replans_per_s": 0.17008784557039655, "action_chunks_per_s": 0.17008784557039655, "generated_action_vectors_per_s": 5.44281105825269, "declared_consumed_action_vectors_per_s": 1.7008784557039656, "stage": "full", "schedule": "serial"}
+[bench] wrote /tmp/leapbotce_20261029/formal_results/hardware_raw_serial_r3.json

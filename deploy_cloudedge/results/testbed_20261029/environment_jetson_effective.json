@@ -1,0 +1,15 @@
+{
+  "sys_executable": "/home/daojie/anaconda3/envs/robot/bin/python",
+  "sys_path": [
+    "",
+    "/data_pdj/daojie/envs/leapbotce/aarch64/site-packages",
+    "/home/daojie/anaconda3/envs/robot/lib/python310.zip",
+    "/home/daojie/anaconda3/envs/robot/lib/python3.10",
+    "/home/daojie/anaconda3/envs/robot/lib/python3.10/lib-dynload",
+    "/home/daojie/anaconda3/envs/robot/lib/python3.10/site-packages"
+  ],
+  "overlay_lock": "/data_pdj/daojie/envs/leapbotce/aarch64/requirements-overlay-installed.txt",
+  "effective_lock": "/data_pdj/daojie/envs/leapbotce/aarch64/requirements-effective-jetson.txt",
+  "launcher": "/data_pdj/daojie/envs/leapbotce/aarch64/start_edge.sh",
+  "local_cache": "/tmp/leapbotce_20261029"
+}

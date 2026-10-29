@@ -1,0 +1,19 @@
+{
+  "recorded_utc": "2026-10-29T11:31:59.331940+00:00",
+  "checks": [
+    {
+      "host": "aihub-wifi",
+      "command": "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader",
+      "returncode": 0,
+      "stdout": "3137546, /home/aihub/.local/share/lan-comfyui/runtime/venv/bin/python, 14684 MiB\n3137546, /home/aihub/.local/share/lan-comfyui/runtime/venv/bin/python, 17204 MiB\n",
+      "stderr": ""
+    },
+    {
+      "host": "jetson",
+      "command": "ss -ltn '( sport = :8601 )'",
+      "returncode": 0,
+      "stdout": "State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "elapsed_import_s": 11.443479238994769,
+  "server_common_file": "/tmp/leapbotce_20261029/FastWAM/deploy_cloudedge/server_common.py",
+  "edge_server_file": "/tmp/leapbotce_20261029/FastWAM/deploy_cloudedge/edge_server.py",
+  "transformers_file": "/tmp/leapbotce_20261029/site-packages/transformers/__init__.py",
+  "fastapi_file": "/tmp/leapbotce_20261029/site-packages/fastapi/__init__.py",
+  "hydra_file": "/tmp/leapbotce_20261029/site-packages/hydra/__init__.py",
+  "timm_file": "/tmp/leapbotce_20261029/site-packages/timm/__init__.py",
+  "torch": "2.8.0",
+  "cuda": true
+}

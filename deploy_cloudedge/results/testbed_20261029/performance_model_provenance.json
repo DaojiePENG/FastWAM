@@ -1,0 +1,136 @@
+{
+  "performance_only": true,
+  "trained_leapbotce_delta": false,
+  "new_modules_untrained": [
+    "planning codec",
+    "edge vision projector",
+    "video LoRA (zero update)"
+  ],
+  "initialization_note": "robotwin_experts_libero_io_untrained_codec_projector_zero_LoRA",
+  "base_checkpoint": "/tmp/leapbotce_20261029/artifacts/performance_base.pt",
+  "original_base_checkpoint": "/home/aihub/daojie/FastWAM/checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt",
+  "io_override_checkpoint": "/tmp/leapbotce_20261029/libero_io.pt",
+  "siglip_checkpoint": "/home/aihub/daojie/FastWAM/checkpoints/siglip-base/model.safetensors",
+  "dataset_stats": "/data/Database/fastwam_data/checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json",
+  "seed": 0,
+  "task": "libero_all_leapbotce_codec_lora",
+  "dtype": "bfloat16",
+  "num_layers": 30,
+  "num_tokens": 56,
+  "cache_dim": 3072,
+  "payload_bytes": 344064,
+  "lora_wrappers": 120,
+  "lora_rank": 16,
+  "warning": "Timing/throughput artifact only; no task accuracy or retention claims.",
+  "resolved_model_config": {
+    "_target_": "fastwam.models.wan22.leapbotce_edge_train_factory.create_leapbotce",
+    "model_id": "Wan-AI/Wan2.2-TI2V-5B",
+    "tokenizer_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+    "tokenizer_max_len": 128,
+    "load_text_encoder": true,
+    "proprio_dim": 8,
+    "redirect_common_files": true,
+    "mot_checkpoint_mixed_attn": false,
+    "compile_training_denoise": false,
+    "action_dit_pretrained_path": null,
+    "mot_pretrained_path": "/tmp/leapbotce_20261029/artifacts/performance_base.pt",
+    "skip_dit_load_from_pretrain": true,
+    "edge_vision": {
+      "model_name": "vit_base_patch16_siglip_224",
+      "num_views": 2,
+      "pretrained": true,
+      "freeze": true,
+      "checkpoint_path": "/home/aihub/daojie/FastWAM/checkpoints/siglip-base/model.safetensors",
+      "mode": "select",
+      "tokens_per_view": 5,
+      "selection": "topk"
+    },
+    "cloudedge": {
+      "stale_loss_lambda_max": 0.5,
+      "stale_loss_warmup_steps": -1,
+      "kv_adapter": {
+        "enabled": false,
+        "rank": 64,
+        "dropout": 0.0
+      },
+      "kv_codec": {
+        "enabled": true,
+        "pool_grid": [
+          7,
+          8
+        ],
+        "bottleneck_dim": 1024,
+        "use_kv_decoder": false,
+        "decoder_rank": 256,
+        "dropout": 0.0
+      },
+      "edge_prefix_enabled": true,
+      "use_cloud_proprio": true
+    },
+    "video_dit_config": {
+      "has_image_input": false,
+      "patch_size": [
+        1,
+        2,
+        2
+      ],
+      "in_dim": 48,
+      "hidden_dim": 3072,
+      "ffn_dim": 14336,
+      "freq_dim": 256,
+      "text_dim": 4096,
+      "out_dim": 48,
+      "num_heads": 24,
+      "attn_head_dim": 128,
+      "num_layers": 30,
+      "eps": 1e-06,
+      "seperated_timestep": true,
+      "require_clip_embedding": false,
+      "require_vae_embedding": false,
+      "fuse_vae_embedding_in_latents": true,
+      "use_gradient_checkpointing": false,
+      "video_attention_mask_mode": "first_frame_causal",
+      "action_conditioned": false,
+      "action_dim": 7,
+      "action_group_causal_mask_mode": "group_diagonal"
+    },
+    "action_dit_config": {
+      "action_dim": 7,
+      "hidden_dim": 1024,
+      "ffn_dim": 4096,
+      "num_heads": 24,
+      "attn_head_dim": 128,
+      "num_layers": 30,
+      "text_dim": 4096,
+      "freq_dim": 256,
+      "eps": 1e-06,
+      "use_gradient_checkpointing": false
+    },
+    "video_scheduler": {
+      "train_shift": 5.0,
+      "infer_shift": 5.0,
+      "num_train_timesteps": 1000
+    },
+    "action_scheduler": {
+      "train_shift": 1.0,
+      "infer_shift": 1.0,
+      "num_train_timesteps": 1000
+    },
+    "loss": {
+      "lambda_video": 0.0,
+      "lambda_action": 1.0
+    },
+    "video_lora": {
+      "enabled": true,
+      "rank": 16,
+      "alpha": 16.0,
+      "dropout": 0.0,
+      "targets": [
+        "q",
+        "k",
+        "v",
+        "o"
+      ]
+    }
+  }
+}

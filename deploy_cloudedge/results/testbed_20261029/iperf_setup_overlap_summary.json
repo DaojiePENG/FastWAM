@@ -1,0 +1,88 @@
+{
+  "group": "setup_overlap",
+  "exclude_from_clean_comparison": true,
+  "trials": [
+    {
+      "file": "iperf_setup_overlap_forward_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:16:14+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.025385,
+      "receiver_Mbit_s": 11.245200419578302,
+      "sender_Mbit_s": 11.307265041324223,
+      "sender_retransmits": 986,
+      "sender_bytes": 42402528,
+      "receiver_bytes": 42205184
+    },
+    {
+      "file": "iperf_setup_overlap_forward_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:16:44+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.014914,
+      "receiver_Mbit_s": 11.039512423723751,
+      "sender_Mbit_s": 11.196335234815267,
+      "sender_retransmits": 1053,
+      "sender_bytes": 41986656,
+      "receiver_bytes": 41418752
+    },
+    {
+      "file": "iperf_setup_overlap_forward_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:17:15+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.009608,
+      "receiver_Mbit_s": 11.495701776577688,
+      "sender_Mbit_s": 11.533835080198509,
+      "sender_retransmits": 933,
+      "sender_bytes": 43252056,
+      "receiver_bytes": 43122688
+    },
+    {
+      "file": "iperf_setup_overlap_reverse_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:17:45+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000091,
+      "receiver_Mbit_s": 85.45158719685216,
+      "sender_Mbit_s": 86.28937391244263,
+      "sender_retransmits": 37,
+      "sender_bytes": 323747840,
+      "receiver_bytes": 320444424
+    },
+    {
+      "file": "iperf_setup_overlap_reverse_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:18:15+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000084,
+      "receiver_Mbit_s": 93.62535278234553,
+      "sender_Mbit_s": 94.428442937032,
+      "sender_retransmits": 15,
+      "sender_bytes": 354418688,
+      "receiver_bytes": 351096056
+    },
+    {
+      "file": "iperf_setup_overlap_reverse_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:18:46+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000079,
+      "receiver_Mbit_s": 88.62610261792977,
+      "sender_Mbit_s": 89.66697969278844,
+      "sender_retransmits": 21,
+      "sender_bytes": 336461824,
+      "receiver_bytes": 332348760
+    }
+  ],
+  "direction_summary": {
+    "jetson_to_aihub": {
+      "n": 3,
+      "mean_Mbit_s": 11.26013820662658,
+      "min_Mbit_s": 11.039512423723751,
+      "max_Mbit_s": 11.495701776577688,
+      "sample_sd_Mbit_s": 0.22846123199735252
+    },
+    "aihub_to_jetson": {
+      "n": 3,
+      "mean_Mbit_s": 89.23434753237582,
+      "min_Mbit_s": 85.45158719685216,
+      "max_Mbit_s": 93.62535278234553,
+      "sample_sd_Mbit_s": 4.120689550137338
+    }
+  }
+}

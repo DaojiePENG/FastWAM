@@ -1,0 +1,51 @@
+{
+  "metric": "TCP receiver effective throughput, 30 seconds single stream, 3 trials per direction before and after",
+  "before": {
+    "jetson_to_aihub": {
+      "n": 3,
+      "mean_Mbit_s": 11.367403864612903,
+      "min_Mbit_s": 7.932142614825522,
+      "max_Mbit_s": 13.486368732842172,
+      "sample_sd_Mbit_s": 3.0019716963342304
+    },
+    "aihub_to_jetson": {
+      "n": 3,
+      "mean_Mbit_s": 86.93826615335738,
+      "min_Mbit_s": 85.50084929756534,
+      "max_Mbit_s": 88.14490330345353,
+      "sample_sd_Mbit_s": 1.3370489336348759
+    }
+  },
+  "after": {
+    "jetson_to_aihub": {
+      "n": 3,
+      "mean_Mbit_s": 13.441241036078575,
+      "min_Mbit_s": 12.26453596739651,
+      "max_Mbit_s": 14.606401679941197,
+      "sample_sd_Mbit_s": 1.1709755374073436
+    },
+    "aihub_to_jetson": {
+      "n": 3,
+      "mean_Mbit_s": 93.65301141550073,
+      "min_Mbit_s": 91.68361172354555,
+      "max_Mbit_s": 95.97055049325677,
+      "sample_sd_Mbit_s": 2.1645696518644577
+    }
+  },
+  "combined": {
+    "jetson_to_aihub": {
+      "n": 6,
+      "min_Mbit_s": 7.932142614825522,
+      "max_Mbit_s": 14.606401679941197,
+      "mean_Mbit_s": 12.40432245034574,
+      "sample_sd_Mbit_s": 2.333119648463214
+    },
+    "aihub_to_jetson": {
+      "n": 6,
+      "min_Mbit_s": 85.50084929756534,
+      "max_Mbit_s": 95.97055049325677,
+      "mean_Mbit_s": 90.29563878442906,
+      "sample_sd_Mbit_s": 4.014419737910538
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-29",
+  "timezone": "Asia/Shanghai",
+  "cloud_host": "aihub",
+  "cloud_ssh": "aihub-wifi",
+  "cloud_ip": "10.7.140.45",
+  "cloud_port": 8600,
+  "edge_ssh": "jetson",
+  "edge_ip": "10.7.136.8",
+  "edge_port": 8601,
+  "client_host": "jetson",
+  "task": "libero_all_leapbotce_codec_lora",
+  "performance_only": true,
+  "new_modules": "seed 0 untrained codec/projector, rank16 zero-update LoRA",
+  "dtype": "bfloat16",
+  "inference_steps": 10,
+  "action_horizon": 32,
+  "declared_executed_steps": 10,
+  "batch_size": 1,
+  "repetitions": 3,
+  "source_path": "/data/daojie/codes/LeapBot_ws/FastWAM",
+  "edge_source_path": "/data_pdj/daojie/codes/LeapBot_ws/FastWAM",
+  "environment_maintenance_root_jetson": "/data_pdj/daojie/envs/leapbotce",
+  "environment_maintenance_root_aihub": "/data/daojie/envs/leapbotce",
+  "source_cache": "/tmp/leapbotce_20261029",
+  "excluded_metrics": [
+    "task success",
+    "retention",
+    "robot actuation"
+  ],
+  "raw_payload_bytes": 36126720,
+  "codec_payload_bytes": 344064,
+  "base_requested": "/data/Database/fastwam_data/checkpoints/fastwam_release/libero_uncond_2cam224.pt",
+  "actual_model_provenance": "performance_model_provenance.json",
+  "actual_base": "/home/aihub/daojie/FastWAM/checkpoints/fastwam_release/robotwin_uncond_3cam_384.pt",
+  "io_override": "/tmp/leapbotce_20261029/libero_io.pt",
+  "input": "Fixed LIBERO episode_000056 frame@0.4s, two RGB images pre-resized to224x224; see frames/sources.json",
+  "conditions": [
+    {
+      "stage": "full",
+      "mode": "codec",
+      "schedule": "serial",
+      "n": 50,
+      "warmup": 5
+    },
+    {
+      "stage": "full",
+      "mode": "codec",
+      "schedule": "pipeline",
+      "n": 50,
+      "warmup": 5
+    },
+    {
+      "stage": "full",
+      "mode": "raw",
+      "schedule": "serial",
+      "n": 20,
+      "warmup": 2
+    },
+    {
+      "stage": "edge",
+      "mode": "codec",
+      "schedule": "serial",
+      "n": 20,
+      "warmup": 5
+    },
+    {
+      "stage": "cloud",
+      "mode": "codec",
+      "schedule": "serial",
+      "n": 50,
+      "warmup": 5
+    }
+  ],
+  "formal_operations_total": 570,
+  "warmup_operations_total": 66
+}

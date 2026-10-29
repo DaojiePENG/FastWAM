@@ -1,0 +1,8 @@
+{
+  "aihub_cloud_pid": 3556335,
+  "jetson_edge_pid": 799983,
+  "cloud_gpu": 0,
+  "cloud_port": 8600,
+  "edge_port": 8601,
+  "client": "jetson"
+}

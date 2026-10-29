@@ -54,8 +54,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8601)
     parser.add_argument("--task", default="libero_all_leapbotce_codec_lora")
-    parser.add_argument("--ckpt", required=True)
-    parser.add_argument("--stats", required=True)
+    parser.add_argument("--ckpt")
+    parser.add_argument("--stats")
+    parser.add_argument("--edge-artifact", help="Trusted local edge-only policy export")
+    parser.add_argument("--config-override", action="append", default=[])
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--mot-pretrained",
@@ -65,12 +67,34 @@ def parse_args() -> argparse.Namespace:
 
 
 def boot(args) -> dict:
+    if args.edge_artifact:
+        # Only load artifacts generated locally by performance_model.py.
+        # This avoids constructing Wan/T5 on a unified-memory edge device.
+        artifact = torch.load(args.edge_artifact, map_location="cpu", weights_only=False)
+        policy = artifact["policy"]
+        policy.model.to(args.device).eval()
+        for module in policy.model.modules():
+            if hasattr(module, "device"):
+                module.device = torch.device(args.device)
+        torch.set_grad_enabled(False)
+        return {
+            "policy": policy,
+            "scale_k": artifact["scale_k"].to(args.device),
+            "scale_v": artifact["scale_v"].to(args.device),
+            "num_tokens": artifact["num_tokens"],
+            "num_layers": artifact["num_layers"],
+            "sessions": {}, "latest": {},
+            "ckpt": args.edge_artifact,
+            "performance_only": artifact.get("performance_only", False),
+        }
+    if not args.ckpt or not args.stats:
+        raise ValueError("--ckpt and --stats are required without --edge-artifact")
     overrides = [
         f"model.mot_pretrained_path={args.mot_pretrained}",
         "model.load_text_encoder=true",
         "model.skip_dit_load_from_pretrain=false",
     ]
-    cfg = compose_deploy_cfg(args.task, overrides)
+    cfg = compose_deploy_cfg(args.task, overrides + args.config_override)
     policy = load_policy(cfg, args.ckpt, args.stats, args.device)
     model = policy.model
     if model.cloud_kv_codec is None:
@@ -99,6 +123,7 @@ def health():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
         "payload_tokens": _STATE.get("num_tokens"),
         "ckpt": _STATE.get("ckpt"),
+        "performance_only": _STATE.get("performance_only", False),
     }
 
 

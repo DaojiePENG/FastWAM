@@ -1,0 +1,35 @@
+[bench] cloud: {'status': 'ok', 'stage': 'cloud', 'gpu': 'NVIDIA GeForce RTX 4090 D', 'payload_tokens': 56, 'payload_bytes': 344064, 'ckpt': '/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt', 'performance_only': True}
+[bench] edge: {'status': 'ok', 'stage': 'edge', 'gpu': 'Orin', 'payload_tokens': 56, 'ckpt': '/tmp/leapbotce_20261029/edge_artifact.pt', 'performance_only': True}
+[bench] measured 10/50
+[bench] measured 20/50
+[bench] measured 30/50
+[bench] measured 40/50
+[bench] measured 50/50
+[bench] cloud_codec_ms: p50=0.106 p95=0.107 ms
+[bench] cloud_compute_ms: p50=32.594 p95=32.742 ms
+[bench] cloud_observation_pack_ms: p50=0.354 p95=0.496 ms
+[bench] cloud_prefill_ms: p50=22.363 p95=22.390 ms
+[bench] cloud_request_ms: p50=317.468 p95=495.509 ms
+[bench] cloud_response_download_ms: p50=59.626 p95=89.780 ms
+[bench] cloud_response_headers_wait_ms: p50=255.772 p95=426.739 ms
+[bench] cloud_response_unpack_ms: p50=0.393 p95=0.463 ms
+[bench] cloud_vae_ms: p50=10.123 p95=10.249 ms
+[bench] edge_compute_ms: p50=2017.939 p95=2025.431 ms
+[bench] edge_denoise_ms: p50=1989.260 p95=1994.930 ms
+[bench] edge_queue_wait_ms: p50=0.043 p95=0.050 ms
+[bench] edge_siglip_ms: p50=28.410 p95=33.282 ms
+[bench] kv_reinit_ms: p50=4.637 p95=4.721 ms
+[bench] payload_pack_ms: p50=0.387 p95=0.436 ms
+[bench] payload_request_ms: p50=13.456 p95=14.297 ms
+[bench] payload_request_residual_ms: p50=7.225 p95=7.716 ms
+[bench] payload_response_download_ms: p50=0.341 p95=0.367 ms
+[bench] payload_response_headers_wait_ms: p50=13.042 p95=13.905 ms
+[bench] payload_server_install_ms: p50=6.215 p95=6.740 ms
+[bench] round_trip_ms: p50=2362.043 p95=2537.820 ms
+[bench] step_observation_pack_ms: p50=0.593 p95=0.663 ms
+[bench] step_request_ms: p50=2030.407 p95=2038.113 ms
+[bench] step_response_download_ms: p50=0.270 p95=0.369 ms
+[bench] step_response_headers_wait_ms: p50=2030.107 p95=2037.768 ms
+[bench] step_response_unpack_ms: p50=0.224 p95=0.321 ms
+[bench] throughput: {"measured_elapsed_s": 118.57569655100815, "attempted": 50, "successful": 50, "failed": 0, "completed_operations_per_s": 0.4216715689162434, "successful_http_requests_per_s": 1.2650147067487303, "completed_replans_per_s": 0.4216715689162434, "action_chunks_per_s": 0.4216715689162434, "generated_action_vectors_per_s": 13.49349020531979, "declared_consumed_action_vectors_per_s": 4.216715689162434, "stage": "full", "schedule": "serial"}
+[bench] wrote /tmp/leapbotce_20261029/formal_results/hardware_codec_serial_r2.json

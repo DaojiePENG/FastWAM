@@ -11,7 +11,6 @@ import numpy as np
 from einops import repeat
 from omegaconf import OmegaConf
 
-from .trainer import Wan22Trainer
 from .utils.logging_config import get_logger, setup_logging
 from .utils.video_io import save_mp4
 from .utils import misc
@@ -468,6 +467,8 @@ def run_training(cfg: DictConfig):
     model_dtype = _mixed_precision_to_model_dtype(mixed_precision)
     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
     train_ds, val_ds = build_datasets(cfg.data)
+
+    from .trainer import Wan22Trainer
 
     trainer = Wan22Trainer(
         cfg=cfg,

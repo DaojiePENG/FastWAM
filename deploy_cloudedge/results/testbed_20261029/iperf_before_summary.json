@@ -1,0 +1,88 @@
+{
+  "group": "before",
+  "metric": "receiver throughput, TCP one stream, 30 seconds each",
+  "trials": [
+    {
+      "file": "iperf_before_forward_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:41:29+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.01181,
+      "receiver_Mbit_s": 13.486368732842172,
+      "sender_Mbit_s": 13.63826277910943,
+      "sender_retransmits": 969,
+      "sender_bytes": 51144048,
+      "receiver_bytes": 50593792
+    },
+    {
+      "file": "iperf_before_forward_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:42:01+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.009625,
+      "receiver_Mbit_s": 12.68370024617102,
+      "sender_Mbit_s": 12.781778892377904,
+      "sender_retransmits": 1032,
+      "sender_bytes": 47931984,
+      "receiver_bytes": 47579136
+    },
+    {
+      "file": "iperf_before_forward_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:39:33+08:00",
+      "direction": "jetson_to_aihub",
+      "seconds": 30.007876,
+      "receiver_Mbit_s": 7.932142614825522,
+      "sender_Mbit_s": 7.987989654046557,
+      "sender_retransmits": 1056,
+      "sender_bytes": 29955096,
+      "receiver_bytes": 29753344
+    },
+    {
+      "file": "iperf_before_reverse_1.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:42:32+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000086,
+      "receiver_Mbit_s": 85.50084929756534,
+      "sender_Mbit_s": 86.5670164833627,
+      "sender_retransmits": 34,
+      "sender_bytes": 324796416,
+      "receiver_bytes": 320629104
+    },
+    {
+      "file": "iperf_before_reverse_2.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:43:04+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000089,
+      "receiver_Mbit_s": 88.14490330345353,
+      "sender_Mbit_s": 89.1448670491994,
+      "sender_retransmits": 32,
+      "sender_bytes": 334495744,
+      "receiver_bytes": 330544368
+    },
+    {
+      "file": "iperf_before_reverse_3.json",
+      "timestamp_Asia_Shanghai": "2026-10-29T18:43:35+08:00",
+      "direction": "aihub_to_jetson",
+      "seconds": 30.000096,
+      "receiver_Mbit_s": 87.16904585905326,
+      "sender_Mbit_s": 87.7548854792048,
+      "sender_retransmits": 47,
+      "sender_bytes": 329252864,
+      "receiver_bytes": 326884968
+    }
+  ],
+  "direction_summary": {
+    "jetson_to_aihub": {
+      "n": 3,
+      "mean_Mbit_s": 11.367403864612903,
+      "min_Mbit_s": 7.932142614825522,
+      "max_Mbit_s": 13.486368732842172,
+      "sample_sd_Mbit_s": 3.0019716963342304
+    },
+    "aihub_to_jetson": {
+      "n": 3,
+      "mean_Mbit_s": 86.93826615335738,
+      "min_Mbit_s": 85.50084929756534,
+      "max_Mbit_s": 88.14490330345353,
+      "sample_sd_Mbit_s": 1.3370489336348759
+    }
+  }
+}

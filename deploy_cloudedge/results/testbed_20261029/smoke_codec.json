@@ -1,0 +1,716 @@
+{
+  "schema_version": 2,
+  "tag": "smoke_codec",
+  "mode": "codec",
+  "ts": "2026-10-29T10:55:27.817781+00:00",
+  "host": "jetson",
+  "cloud_url": "http://10.7.140.45:8600",
+  "edge_url": "http://127.0.0.1:8601",
+  "session_id": "bench-0b1e55710e4b497dac205a1ba095e3f3",
+  "n": 2,
+  "warmup": 1,
+  "stage": "full",
+  "schedule": "serial",
+  "instruction": "put the bowl on the stove",
+  "prompt": "A video recorded from a robot's point of view executing the following instruction: put the bowl on the stove",
+  "seed": 0,
+  "action_horizon": 32,
+  "executed_steps_per_replan": 10,
+  "num_inference_steps": 10,
+  "http_connection": "keep-alive",
+  "client_software": {
+    "python": "3.10.19 (main, Oct 21 2025, 16:38:01) [GCC 11.2.0]",
+    "platform": "Linux-5.15.148-tegra-aarch64-with-glibc2.35",
+    "machine": "aarch64",
+    "torch": "2.8.0",
+    "torch_cuda_build": "12.6",
+    "numpy": "1.26.1",
+    "requests": "2.32.5",
+    "torch_num_threads": 8,
+    "torch_num_interop_threads": 12,
+    "thread_environment": {
+      "OMP_NUM_THREADS": "8",
+      "OPENBLAS_NUM_THREADS": "8",
+      "MKL_NUM_THREADS": "8",
+      "TOKENIZERS_PARALLELISM": "false"
+    },
+    "bench_client_sha256": "6b09317d159ce0f639d72b8d26a6121b9155da4654de57852012d70d0f80d244",
+    "protocol_sha256": "10c779233e98accbf12ac05de9bf64ded405c66af8cd0d3f4ea7c14d5aa90b0b"
+  },
+  "input": {
+    "primary": "/tmp/leapbotce_20261029/frames/primary_224.png",
+    "wrist": "/tmp/leapbotce_20261029/frames/wrist_224.png",
+    "primary_rgb_sha256": "3f048c75c58e9bff7496664f6bd449e77ea52645a20551c84d0984b051bb3268",
+    "wrist_rgb_sha256": "9d9f7d5cf6d72a0abebc5233a9118e5d895c55c8aab30e5de6f2c58b5cbce5bd",
+    "primary_shape": [
+      224,
+      224,
+      3
+    ],
+    "wrist_shape": [
+      224,
+      224,
+      3
+    ],
+    "observations": "fixed replay; no physical robot actuation"
+  },
+  "measurement_notes": {
+    "clock": "All request and replan durations use this client's perf_counter only.",
+    "topology": "cloud -> client -> edge relay; payload crosses two HTTP legs.",
+    "request_ms": "From dispatch until complete response body; includes upload, HTTP, server queue/host/GPU work and response download.",
+    "response_headers_wait_ms": "Dispatch until response headers; not upload-only or TTFB.",
+    "response_download_ms": "Time reading response body after headers were exposed to requests; buffered/previously arrived bytes are included. Not pure network time or a one-way latency.",
+    "payload_server_install_ms": "Edge X-Recv-Done minus X-Recv-Start (same server clock): queue, unpack, H2D and installation; starts after body reception.",
+    "payload_request_residual_ms": "Payload request duration minus server install interval; includes bidirectional network and other HTTP/server overhead. Not a one-way network latency.",
+    "body_bytes": "Application HTTP body only, including LBC1 framing; excludes HTTP/TCP/IP headers.",
+    "gpu_compute_ms": "Server CUDA-event substeps; excludes other host/server work.",
+    "capacity": "Successful chunks / measured batch elapsed, including failed attempt time; warmup and one-time prompt/session/cache preparation excluded.",
+    "actions": "Each step generates 32 actions by default; deployment consumes 10 before replanning. Neither action rate is measured robot control frequency.",
+    "warmup": "Warmup batch uses the selected schedule, drains fully, then measured batch starts.",
+    "stages": "full=cloud+payload+step; cloud=encode only; payload=repeated install of fixed precomputed payload; edge=step only with fixed preinstalled cache.",
+    "concurrency": "One stream; pipeline has one cloud lookahead and serial edge calls. Not multi-session or open-loop saturation capacity."
+  },
+  "deprecated_metrics": {
+    "cloud_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "edge_uplink_ms": "Invalid cross-host perf_counter subtraction; not measured.",
+    "z_transfer_ms": "Old payload HTTP duration minus pooled RTT included installation and omitted the cloud response leg. No one-way transfer is measured.",
+    "rtt_baseline_ms": "Pooled cloud/edge RTT replaced by per-endpoint RTT samples."
+  },
+  "rtt_baseline_ms": null,
+  "records": [
+    {
+      "replan_id": "w0",
+      "warmup": true,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 156.6452120023314,
+          "status_code": 200,
+          "response_body_bytes": 344396,
+          "response_download_ms": 31.08867800619919,
+          "x_cloud_compute_ms": 32.962,
+          "request_ms": 187.80400000105146
+        },
+        "payload": {
+          "url": "http://127.0.0.1:8601/payload",
+          "request_body_bytes": 344246,
+          "ok": true,
+          "response_headers_wait_ms": 53.759157002787106,
+          "status_code": 200,
+          "response_body_bytes": 41,
+          "response_download_ms": 0.37346099270507693,
+          "x_kv_reinit_ms": 40.501,
+          "server_install_ms": 44.01027399580926,
+          "request_ms": 54.19536899717059
+        },
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2639.792875997955,
+          "status_code": 200,
+          "response_body_bytes": 1145,
+          "response_download_ms": 0.2610810042824596,
+          "x_edge_compute_ms": 2574.306,
+          "request_ms": 2640.089316002559
+        }
+      },
+      "started_perf": 92864.572651139,
+      "started_utc": "2026-10-29T10:55:28.250894+00:00",
+      "cloud_observation_pack_ms": 1.628338999580592,
+      "cloud_response_unpack_ms": 0.9756209910847247,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.3789,
+        "prefill": 22.4778,
+        "codec": 0.1057
+      },
+      "cloud_compute_ms": 32.962,
+      "cloud_header": {
+        "replan_id": "w0",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.3789,
+          "prefill": 22.4778,
+          "codec": 0.1057
+        },
+        "cloud_compute_ms": 32.96236680448055,
+        "recv_start_perf": 2559317.56049035,
+        "recv_start_wall": 1793271328.4169328
+      },
+      "cloud_ready_perf": 92864.763180695,
+      "edge_queue_wait_ms": 0.04809501115232706,
+      "payload_pack_ms": 0.4061009967699647,
+      "kv_reinit_ms": 40.501,
+      "step_observation_pack_ms": 0.6243669922696427,
+      "step_response_unpack_ms": 0.19932199211325496,
+      "returned_replan_id": "w0",
+      "edge_timings": {
+        "siglip": 471.8951,
+        "denoise": 2102.4106
+      },
+      "edge_compute_ms": 2574.306,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 92867.4591757,
+      "round_trip_ms": 2886.5245610068087,
+      "cloud_request_ms": 187.80400000105146,
+      "cloud_response_headers_wait_ms": 156.6452120023314,
+      "cloud_response_download_ms": 31.08867800619919,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344396,
+      "payload_request_ms": 54.19536899717059,
+      "payload_response_headers_wait_ms": 53.759157002787106,
+      "payload_response_download_ms": 0.37346099270507693,
+      "payload_request_body_bytes": 344246,
+      "payload_response_body_bytes": 41,
+      "step_request_ms": 2640.089316002559,
+      "step_response_headers_wait_ms": 2639.792875997955,
+      "step_response_download_ms": 0.2610810042824596,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1145,
+      "payload_server_install_ms": 44.01027399580926,
+      "payload_request_residual_ms": 10.185095001361333,
+      "cloud_vae_ms": 10.3789,
+      "cloud_prefill_ms": 22.4778,
+      "cloud_codec_ms": 0.1057,
+      "edge_siglip_ms": 471.8951,
+      "edge_denoise_ms": 2102.4106,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r0",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 203.4580979961902,
+          "status_code": 200,
+          "response_body_bytes": 344395,
+          "response_download_ms": 67.83352101047058,
+          "x_cloud_compute_ms": 32.823,
+          "request_ms": 271.3611210056115
+        },
+        "payload": {
+          "url": "http://127.0.0.1:8601/payload",
+          "request_body_bytes": 344246,
+          "ok": true,
+          "response_headers_wait_ms": 18.33024699590169,
+          "status_code": 200,
+          "response_body_bytes": 40,
+          "response_download_ms": 0.3539099998306483,
+          "x_kv_reinit_ms": 8.819,
+          "server_install_ms": 10.77992600039579,
+          "request_ms": 18.744986999081448
+        },
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2050.9971819992643,
+          "status_code": 200,
+          "response_body_bytes": 1143,
+          "response_download_ms": 0.3400550049263984,
+          "x_edge_compute_ms": 2039.467,
+          "request_ms": 2051.384403996053
+        }
+      },
+      "started_perf": 92867.459232275,
+      "started_utc": "2026-10-29T10:55:31.137473+00:00",
+      "cloud_observation_pack_ms": 0.3227749984944239,
+      "cloud_response_unpack_ms": 0.3939090092899278,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.324,
+        "prefill": 22.3927,
+        "codec": 0.1065
+      },
+      "cloud_compute_ms": 32.823,
+      "cloud_header": {
+        "replan_id": "r0",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.324,
+          "prefill": 22.3927,
+          "codec": 0.1065
+        },
+        "cloud_compute_ms": 32.82323183864355,
+        "recv_start_perf": 2559320.496324845,
+        "recv_start_wall": 1793271331.349511
+      },
+      "cloud_ready_perf": 92867.731400926,
+      "edge_queue_wait_ms": 0.04524599353317171,
+      "payload_pack_ms": 0.3883419994963333,
+      "kv_reinit_ms": 8.819,
+      "step_observation_pack_ms": 0.5846880085300654,
+      "step_response_unpack_ms": 0.24338500224985182,
+      "returned_replan_id": "r0",
+      "edge_timings": {
+        "siglip": 28.1221,
+        "denoise": 2011.345
+      },
+      "edge_compute_ms": 2039.467,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 92869.803215294,
+      "round_trip_ms": 2343.9830190036446,
+      "cloud_request_ms": 271.3611210056115,
+      "cloud_response_headers_wait_ms": 203.4580979961902,
+      "cloud_response_download_ms": 67.83352101047058,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344395,
+      "payload_request_ms": 18.744986999081448,
+      "payload_response_headers_wait_ms": 18.33024699590169,
+      "payload_response_download_ms": 0.3539099998306483,
+      "payload_request_body_bytes": 344246,
+      "payload_response_body_bytes": 40,
+      "step_request_ms": 2051.384403996053,
+      "step_response_headers_wait_ms": 2050.9971819992643,
+      "step_response_download_ms": 0.3400550049263984,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1143,
+      "payload_server_install_ms": 10.77992600039579,
+      "payload_request_residual_ms": 7.965060998685658,
+      "cloud_vae_ms": 10.324,
+      "cloud_prefill_ms": 22.3927,
+      "cloud_codec_ms": 0.1065,
+      "edge_siglip_ms": 28.1221,
+      "edge_denoise_ms": 2011.345,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    },
+    {
+      "replan_id": "r1",
+      "warmup": false,
+      "ok": true,
+      "requests": {
+        "cloud": {
+          "url": "http://10.7.140.45:8600/encode_cloud",
+          "request_body_bytes": 301361,
+          "ok": true,
+          "response_headers_wait_ms": 430.19427900435403,
+          "status_code": 200,
+          "response_body_bytes": 344397,
+          "response_download_ms": 47.143404008238576,
+          "x_cloud_compute_ms": 32.664,
+          "request_ms": 477.41096100071445
+        },
+        "payload": {
+          "url": "http://127.0.0.1:8601/payload",
+          "request_body_bytes": 344246,
+          "ok": true,
+          "response_headers_wait_ms": 14.909475998138078,
+          "status_code": 200,
+          "response_body_bytes": 40,
+          "response_download_ms": 0.23385000531561673,
+          "x_kv_reinit_ms": 6.181,
+          "server_install_ms": 8.035266000661068,
+          "request_ms": 15.180317001068033
+        },
+        "step": {
+          "url": "http://127.0.0.1:8601/step",
+          "request_body_bytes": 301376,
+          "ok": true,
+          "response_headers_wait_ms": 2063.187237989041,
+          "status_code": 200,
+          "response_body_bytes": 1143,
+          "response_download_ms": 0.37493401032406837,
+          "x_edge_compute_ms": 2049.31,
+          "request_ms": 2063.618169995607
+        }
+      },
+      "started_perf": 92869.803267836,
+      "started_utc": "2026-10-29T10:55:33.481511+00:00",
+      "cloud_observation_pack_ms": 0.42200500320177525,
+      "cloud_response_unpack_ms": 0.4152530018473044,
+      "payload_bytes": 344064,
+      "cloud_timings": {
+        "vae": 10.1734,
+        "prefill": 22.3844,
+        "codec": 0.1057
+      },
+      "cloud_compute_ms": 32.664,
+      "cloud_header": {
+        "replan_id": "r1",
+        "seq_len": 56,
+        "tokens_per_frame": 98,
+        "payload_bytes": 344064,
+        "timings": {
+          "vae": 10.1734,
+          "prefill": 22.3844,
+          "codec": 0.1057
+        },
+        "cloud_compute_ms": 32.66361507773399,
+        "recv_start_perf": 2559323.069495075,
+        "recv_start_wall": 1793271333.9224944
+      },
+      "cloud_ready_perf": 92870.281621235,
+      "edge_queue_wait_ms": 0.049502996262162924,
+      "payload_pack_ms": 0.4233799991197884,
+      "kv_reinit_ms": 6.181,
+      "step_observation_pack_ms": 0.4234120133332908,
+      "step_response_unpack_ms": 0.287192000541836,
+      "returned_replan_id": "r1",
+      "edge_timings": {
+        "siglip": 37.3584,
+        "denoise": 2011.9515
+      },
+      "edge_compute_ms": 2049.31,
+      "action_shape": [
+        32,
+        7
+      ],
+      "action_abs_mean": 0.7009337544441223,
+      "action_finite": true,
+      "completed_perf": 92872.362031742,
+      "round_trip_ms": 2558.7639059958747,
+      "cloud_request_ms": 477.41096100071445,
+      "cloud_response_headers_wait_ms": 430.19427900435403,
+      "cloud_response_download_ms": 47.143404008238576,
+      "cloud_request_body_bytes": 301361,
+      "cloud_response_body_bytes": 344397,
+      "payload_request_ms": 15.180317001068033,
+      "payload_response_headers_wait_ms": 14.909475998138078,
+      "payload_response_download_ms": 0.23385000531561673,
+      "payload_request_body_bytes": 344246,
+      "payload_response_body_bytes": 40,
+      "step_request_ms": 2063.618169995607,
+      "step_response_headers_wait_ms": 2063.187237989041,
+      "step_response_download_ms": 0.37493401032406837,
+      "step_request_body_bytes": 301376,
+      "step_response_body_bytes": 1143,
+      "payload_server_install_ms": 8.035266000661068,
+      "payload_request_residual_ms": 7.145051000406966,
+      "cloud_vae_ms": 10.1734,
+      "cloud_prefill_ms": 22.3844,
+      "cloud_codec_ms": 0.1057,
+      "edge_siglip_ms": 37.3584,
+      "edge_denoise_ms": 2011.9515,
+      "cloud_uplink_ms": null,
+      "edge_uplink_ms": null,
+      "z_transfer_ms": null
+    }
+  ],
+  "status": "ok",
+  "legs": {
+    "cloud_codec_ms": {
+      "n": 2,
+      "mean": 0.1061,
+      "p50": 0.1061,
+      "p95": 0.10646
+    },
+    "cloud_compute_ms": {
+      "n": 2,
+      "mean": 32.7435,
+      "p50": 32.7435,
+      "p95": 32.81505
+    },
+    "cloud_observation_pack_ms": {
+      "n": 2,
+      "mean": 0.3723900008480996,
+      "p50": 0.3723900008480996,
+      "p95": 0.4170435029664077
+    },
+    "cloud_prefill_ms": {
+      "n": 2,
+      "mean": 22.388550000000002,
+      "p50": 22.388550000000002,
+      "p95": 22.392285
+    },
+    "cloud_request_ms": {
+      "n": 2,
+      "mean": 374.386041003163,
+      "p50": 374.386041003163,
+      "p95": 467.1084690009593
+    },
+    "cloud_response_download_ms": {
+      "n": 2,
+      "mean": 57.48846250935458,
+      "p50": 57.48846250935458,
+      "p95": 66.79901516035898
+    },
+    "cloud_response_headers_wait_ms": {
+      "n": 2,
+      "mean": 316.8261885002721,
+      "p50": 316.8261885002721,
+      "p95": 418.85746995394584
+    },
+    "cloud_response_unpack_ms": {
+      "n": 2,
+      "mean": 0.4045810055686161,
+      "p50": 0.4045810055686161,
+      "p95": 0.4141858022194356
+    },
+    "cloud_vae_ms": {
+      "n": 2,
+      "mean": 10.2487,
+      "p50": 10.2487,
+      "p95": 10.31647
+    },
+    "edge_compute_ms": {
+      "n": 2,
+      "mean": 2044.3885,
+      "p50": 2044.3885,
+      "p95": 2048.81785
+    },
+    "edge_denoise_ms": {
+      "n": 2,
+      "mean": 2011.64825,
+      "p50": 2011.64825,
+      "p95": 2011.921175
+    },
+    "edge_queue_wait_ms": {
+      "n": 2,
+      "mean": 0.04737449489766732,
+      "p50": 0.04737449489766732,
+      "p95": 0.04929014612571336
+    },
+    "edge_siglip_ms": {
+      "n": 2,
+      "mean": 32.74025,
+      "p50": 32.74025,
+      "p95": 36.896585
+    },
+    "kv_reinit_ms": {
+      "n": 2,
+      "mean": 7.5,
+      "p50": 7.5,
+      "p95": 8.687100000000001
+    },
+    "payload_pack_ms": {
+      "n": 2,
+      "mean": 0.40586099930806085,
+      "p50": 0.40586099930806085,
+      "p95": 0.42162809913861565
+    },
+    "payload_request_ms": {
+      "n": 2,
+      "mean": 16.96265200007474,
+      "p50": 16.96265200007474,
+      "p95": 18.566753499180777
+    },
+    "payload_request_residual_ms": {
+      "n": 2,
+      "mean": 7.555055999546312,
+      "p50": 7.555055999546312,
+      "p95": 7.924060498771723
+    },
+    "payload_response_download_ms": {
+      "n": 2,
+      "mean": 0.2938800025731325,
+      "p50": 0.2938800025731325,
+      "p95": 0.3479070001048967
+    },
+    "payload_response_headers_wait_ms": {
+      "n": 2,
+      "mean": 16.619861497019883,
+      "p50": 16.619861497019883,
+      "p95": 18.15920844601351
+    },
+    "payload_server_install_ms": {
+      "n": 2,
+      "mean": 9.407596000528429,
+      "p50": 9.407596000528429,
+      "p95": 10.642693000409054
+    },
+    "round_trip_ms": {
+      "n": 2,
+      "mean": 2451.3734624997596,
+      "p50": 2451.3734624997596,
+      "p95": 2548.024861646263
+    },
+    "step_observation_pack_ms": {
+      "n": 2,
+      "mean": 0.5040500109316781,
+      "p50": 0.5040500109316781,
+      "p95": 0.5766242087702267
+    },
+    "step_request_ms": {
+      "n": 2,
+      "mean": 2057.50128699583,
+      "p50": 2057.50128699583,
+      "p95": 2063.006481695629
+    },
+    "step_response_download_ms": {
+      "n": 2,
+      "mean": 0.3574945076252334,
+      "p50": 0.3574945076252334,
+      "p95": 0.37319006005418487
+    },
+    "step_response_headers_wait_ms": {
+      "n": 2,
+      "mean": 2057.0922099941527,
+      "p50": 2057.0922099941527,
+      "p95": 2062.577735189552
+    },
+    "step_response_unpack_ms": {
+      "n": 2,
+      "mean": 0.2652885013958439,
+      "p50": 0.2652885013958439,
+      "p95": 0.2850016506272368
+    },
+    "cloud_uplink_ms": null,
+    "edge_uplink_ms": null,
+    "z_transfer_ms": null
+  },
+  "throughput": {
+    "measured_elapsed_s": 4.902869673998794,
+    "attempted": 2,
+    "successful": 2,
+    "failed": 0,
+    "completed_operations_per_s": 0.4079243653174233,
+    "successful_http_requests_per_s": 1.22377309595227,
+    "completed_replans_per_s": 0.4079243653174233,
+    "action_chunks_per_s": 0.4079243653174233,
+    "generated_action_vectors_per_s": 13.053579690157546,
+    "declared_consumed_action_vectors_per_s": 4.079243653174233,
+    "stage": "full",
+    "schedule": "serial"
+  },
+  "payload_bytes": 344064,
+  "cloud_health": {
+    "status": "ok",
+    "stage": "cloud",
+    "gpu": "NVIDIA GeForce RTX 4090 D",
+    "payload_tokens": 56,
+    "payload_bytes": 344064,
+    "ckpt": "/tmp/leapbotce_20261029/artifacts/performance_full_seed0.pt",
+    "performance_only": true
+  },
+  "edge_health": {
+    "status": "ok",
+    "stage": "edge",
+    "gpu": "Orin",
+    "payload_tokens": 56,
+    "ckpt": "/tmp/leapbotce_20261029/edge_artifact.pt",
+    "performance_only": true
+  },
+  "rtt": {
+    "cloud": {
+      "request_ms": {
+        "n": 3,
+        "mean": 9.020988329818161,
+        "p50": 8.94752900057938,
+        "p95": 9.573220692982432
+      },
+      "request_body_bytes": 1024,
+      "records": [
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 9.443930990528315,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.16994800535030663,
+          "request_ms": 9.642741992138326
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 8.305209994432516,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.14386800467036664,
+          "request_ms": 8.47269399673678
+        },
+        {
+          "url": "http://10.7.140.45:8600/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 8.788845007074997,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.1361559989163652,
+          "request_ms": 8.94752900057938
+        }
+      ]
+    },
+    "edge": {
+      "request_ms": {
+        "n": 3,
+        "mean": 3.4063383306299024,
+        "p50": 3.1330659985542297,
+        "p95": 3.9012267981888726
+      },
+      "request_body_bytes": 1024,
+      "records": [
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 3.7245690036797896,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.23087399313226342,
+          "request_ms": 3.9865779981482774
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 2.8698089881800115,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.23333801073022187,
+          "request_ms": 3.1330659985542297
+        },
+        {
+          "url": "http://127.0.0.1:8601/ping",
+          "request_body_bytes": 1024,
+          "ok": true,
+          "response_headers_wait_ms": 2.879440988181159,
+          "status_code": 200,
+          "response_body_bytes": 1024,
+          "response_download_ms": 0.19413800328038633,
+          "request_ms": 3.0993709951872006
+        }
+      ]
+    }
+  },
+  "setup_requests": {
+    "encode_prompt": {
+      "url": "http://10.7.140.45:8600/encode_prompt",
+      "request_body_bytes": 201,
+      "ok": true,
+      "response_headers_wait_ms": 41.78022300766315,
+      "status_code": 200,
+      "response_body_bytes": 1048996,
+      "response_download_ms": 184.81435399735346,
+      "request_ms": 226.6693590063369
+    },
+    "session": {
+      "url": "http://127.0.0.1:8601/session",
+      "request_body_bytes": 1048989,
+      "ok": true,
+      "response_headers_wait_ms": 112.60991598828696,
+      "status_code": 200,
+      "response_body_bytes": 73,
+      "response_download_ms": 0.36626200017053634,
+      "request_ms": 113.020079996204
+    }
+  },
+  "failure_count": 0
+}
