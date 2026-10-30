@@ -252,3 +252,51 @@ stamp_seal           turn_switch
   金丝雀全绿(ckpt=step_158206 ✓ 四窗 ✓ 16 lanes ✓ render OK ✓)——
   与 v2 无冲突(10 任务在 robotwin_sweep_b6 根,v2 用独立根);④smoke
   排程:GPU 6 今日 14:00 起 ours → AHA,明日 StarWAM。
+
+## 8. chunk 保护机制分析(论文 RoboTwin 段写作素材,10-31 冻结)
+
+> 用途:解释 Table 3 三方法 RoboTwin 差异 + D60/D80 探针动机。写论文时
+> 引用本节数字,勿凭记忆重算。
+
+### 8.1 定义
+
+frame-delay 协议下每次 **replan 才采样一次**时延 k~U{1..D};chunk 化策略
+多步动作一次执行,replan 频次低 → 每集抽到大时延的次数少 → 退化被节拍
+**结构性缓冲**。时延曝光 ∝ replans/集,与成功率高低无关,是评测构造量。
+
+### 8.2 数值(本评测口径)
+
+| 基准 | 方法 | replan 节奏 | ≈replans/集 | 相对 AHA 曝光 |
+|---|---|---|---|---|
+| LIBERO | ours + 四基线 | 每 10 步(32-action chunk 执行前 10 步) | 集长/10 | 全员相同 |
+| RoboTwin(集≈450 步) | AHA-WAM | 每 1 步 | ~450 | 1×(无保护) |
+| 同上 | ours | 每 24 步 | ~19 | ~1/24 |
+| 同上 | StarWAM-MoT | ~每 27 步(实测 ~16.6 replans/ep) | ~16.6 | ~1/27 |
+
+来源:节奏 = 论文协议(LIBERO 10 步、ours RoboTwin 24 步)+ StarWAM v2
+运行实测(~16.6 replans/ep);集长 ~450 由 AHA per-step ~450 replans/ep 反推。
+
+### 8.3 论证三角(优势归因)
+
+1. **同节奏对照(LIBERO)**:全员每 10 步 replan、曝光完全相同,基线塌到
+   D40 ret 2.8-13.5% vs ours 77.7% → LIBERO 差距与保护无关,纯训练机制。
+2. **等保护对照(RoboTwin vs StarWAM)**:每集 ~19 vs ~16.6 次抽样(差 15%),
+   D40 +8.9pp(≈12σ)、retention 87.0% vs 80.4%、per-task ret 中位 0.94 vs
+   0.83、头对头 D40 30/49 —— **等曝光下的净优势**。
+3. **无保护对照(RoboTwin vs AHA)**:+55.4pp(Fig 1(b)/curves caption 已用)。
+   AHA 每 1 步 replan 是唯一无保护方法。
+
+三点互证把优势归因到 paired-age 训练机制,而非评测构造。
+
+### 8.4 边界与预测(诚实披露,写作注意)
+
+- **不能**把 RoboTwin 优势全归因于保护:ours/StarWAM 曝光几乎相同。
+- **不能**回避 cadence 差异:AHA 对比必须披露 native cadence 保留
+  (论文协议已声明 "systems with other native cadences retain them")。
+- 中段(D10/D20)StarWAM 略先(D10 +2.1≈3σ 真、D20 +0.4 噪声):其 D0 低
+  (89.5 vs 92.9)分母小;两法都在各自 chunk 保护段内。
+- chunk 保护**只延后不消除**:每集仍有 ~17-19 次大时延抽样,D→保护段外
+  (D≫节拍)失效。D60/D80 探针(§7 10-31 条)把 D 推出保护段
+  (60/80 ≫ 24 步节拍),预测 StarWAM 加速塌陷、ours 平缓衰减(stale-condition
+  训练泛化),分离应重现(LIBERO D40 已示 67.8pp 分离)。探针若证实,
+  RoboTwin 段落按此收尾;若不证实,中段叙事维持"等保护下小幅领先"。
