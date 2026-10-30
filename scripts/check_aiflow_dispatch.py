@@ -56,6 +56,20 @@ CASES = [
      ["LEAPBOTCE_RUN_DIR"]),
     # 训练名（含 a6_lora —— 与 b6 无子串包含，不得互相污染）
     ("leapbot_ce_train_robotwin_a6_lora", "train_robotwin_a6_lora", [], []),
+    # ── a7 加容量重训轮（10-30；a6_lora_fs 全量复制版）──
+    # 与 a6 差异仅三处：r32/α32 Hydra 覆盖、20ep（28928 步 = 20×277713/192）、
+    # 24 卡 eff192（bs8/卡，lr 2.8e-4×√1.5≈3.4e-4）。mot_pretrained_path 必须
+    # 保留（10-21 事故铁律）；不得带 --resume（冷启动）。
+    ("leapbot_ce_train_libero_a7_lora", "libero_a7_lora",
+     ["--gpus 24", "--batch-size 8", "--lr 0.00034", "--steps 28928",
+      "--delay 20", "--stale-lambda 0.5 --stale-warmup -1",
+      "--run-name codec_a7_lora_r32_20ep_seed42_h100",
+      "--save-every 1447", "--keep-ckpt 20",
+      "model.video_lora.rank=32", "model.video_lora.alpha=32.0",
+      "model.mot_pretrained_path=/mnt/c2-worldmodel/2638088/fastwam/"
+      "fastwam_release/libero_uncond_2cam224.pt",
+      "wandb.name=codec_a7_lora_r32_20ep_seed42_h100"],
+     ["--delay 40", "--resume", "rank=16", "alpha=16", "codec_a6_lora_fs"]),
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),
