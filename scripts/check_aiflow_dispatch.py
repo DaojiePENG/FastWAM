@@ -125,6 +125,29 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_lora_fs_step32544_noedgeprefix",
       "LIBERO_EVAL_EXTRA=model.cloudedge.edge_prefix_enabled=false"],
      ["TAG=a6_lora_fs_step32544 ", "use_cloud_proprio"]),
+    # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
+    # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
+    # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）
+    ("leapbot_ce_eval_libero_a6_ep9", "eval_libero_a6_ep9",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_019530.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step019530",
+      "LIBERO_EVAL_DELAYS='0 40'", "GPU_NUM=4"],
+     ["codec_a6_stale0", "codec_a6_stale1", "codec_a6_dtrain40", "use_cloud_proprio"]),
+    ("leapbot_ce_eval_libero_a6_ep11", "eval_libero_a6_ep11",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_023870.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step023870",
+      "LIBERO_EVAL_DELAYS='0 40'", "GPU_NUM=4"],
+     ["codec_a6_stale0", "codec_a6_stale1", "codec_a6_dtrain40", "use_cloud_proprio"]),
+    ("leapbot_ce_eval_libero_a6_ep13", "eval_libero_a6_ep13",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_028210.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step028210",
+      "LIBERO_EVAL_DELAYS='0 40'", "GPU_NUM=4"],
+     ["codec_a6_stale0", "codec_a6_stale1", "codec_a6_dtrain40", "use_cloud_proprio"]),
+    ("leapbot_ce_eval_libero_a6_ep14", "eval_libero_a6_ep14",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_030380.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step030380",
+      "LIBERO_EVAL_DELAYS='0 40'", "GPU_NUM=4"],
+     ["codec_a6_stale0", "codec_a6_stale1", "codec_a6_dtrain40", "use_cloud_proprio"]),
 ]
 
 SNIP = r"""
