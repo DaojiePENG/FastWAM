@@ -1,8 +1,9 @@
 """AIFlow 平台训练变体：a7 = a6 配方的加容量重训轮（10-30 用户定）。
 
 ═══════════════════════════════════════════════════════════════════════
-★ 与 a6_lora_fs 的差异只有三处：video LoRA rank 16→32（α 同步 32，α/r=1
-  不变）、15ep→20ep、8×H200→24×H100（bs 8/卡，eff 192，lr 按 √batch 折算）
+★ 与 a6_lora_fs 的差异只有两处：video LoRA rank 16→32（α 同步 32，α/r=1
+  不变）、15ep→20ep。卡数 8×H200→16×H100（bs 8/卡，eff 128 与 a6 完全
+  一致，lr 同为 2.8e-4；10-31 用户定 16 卡重提，24 卡单 22724896 已取消）
 ═══════════════════════════════════════════════════════════════════════
 动机（10-30 checkpoint 筛选实据）：a6_lora_fs(r16) 的 ep9/11/13/14/15 终点
 D0 = 89.3/89.5/91.0/90.8/91.0——ep13 起饱和，中期 ckpt 无 D0 红利（换终点
@@ -14,8 +15,8 @@ retention。
 过得去(≥0.76)才在论文换行；否则弃用，a6 行不动。每 1ep 存 1 ckpt 组成
 梯子——中途 D0 饱和可直接杀任务保留已存 ckpt 提前筛。
 
-配方：24×H100 bs8 accum1（eff 192：H100 80G 显存档位 bs8；24 卡不能整除
-a6 的 eff 128，按 √batch 折算 lr 2.8e-4×√(192/128)≈3.4e-4）+ cosine 全退火
+配方：16×H100 bs8 accum1（eff 128 = a6 同动力学，lr 2.8e-4 与 a6 完全一致，
+√batch 折算系数 1）+ cosine 全退火
 + stale λ0.5 warmup -1（自动 total/2）+ seed 42 + d_train 20——除
 rank/epochs/卡数外与 a6_lora_fs 逐项对齐。mot_pretrained_path 注入保留
 （10-21 事故铁律：缺=video expert 随机基座全废）。
@@ -77,25 +78,25 @@ AI_FLOW_TASK = "libero_all_leapbotce_codec_lora"  # a6 task：codec + video LoRA
                                        # 四套件联合训练
 AI_FLOW_DELAY = 20    # d_train=20，与 a1 一致
 AI_FLOW_SEED = 42     # 与 a1 一致
-AI_FLOW_GPU_NUM = 24  # 24×H100 bs8 = eff 192（a6 是 8×H200 bs16 eff 128；24 卡
-                      # 不能整除 128，eff 上调 1.5×，lr 按 √batch 同步折算）；
-                      # 冷启动无 resume，无 4-rank 铁律约束
+AI_FLOW_GPU_NUM = 16  # 16×H100 bs8 = eff 128（= a6 的 8×H200 bs16 eff 128，
+                      # 动力学不变，lr 无需折算）；冷启动无 resume，
+                      # 无 4-rank 铁律约束
 
 # ─────────────────────────────────────────────────────────────────────
 # ② 批大小 / 学习率 / 总步数
 # ─────────────────────────────────────────────────────────────────────
 # 总数据量固定 277,713 帧（1,712 条 demo）：
-#   有效 batch = 卡数 × 每卡 batch × 累积 = 8×16×1 = 128（= a1）
+#   有效 batch = 卡数 × 每卡 batch × 累积 = 16×8×1 = 128（= a1/a6）
 #   总步数     = AI_FLOW_EPOCHS × 277713 ÷ 128（自动折算）
-AI_FLOW_BATCH_SIZE = 8     # H100 80G 显存档位（VRAM 表 (72,8) 桶）；24×8=192
-AI_FLOW_ACCUM = 1          # eff 128 = a1 动力学
-AI_FLOW_LR = 0.00034       # = a6 的 2.8e-4 × √(192/128)（√batch 折算规则同
-                           # 基座 1e-4@eff16 公式）；LoRA 从 step0 co-adapt
+AI_FLOW_BATCH_SIZE = 8     # H100 80G 显存档位（VRAM 表 (72,8) 桶）；16×8=128
+AI_FLOW_ACCUM = 1          # eff 128 = a1/a6 动力学
+AI_FLOW_LR = 0.00028       # = a6 同值（eff 128 不变，√batch 折算系数 1；
+                           # 规则同基座 1e-4@eff16 公式）；LoRA 从 step0 co-adapt
 AI_FLOW_BATCH_BY_VRAM_GB = [(128, 16), (72, 8), (40, 4), (0, 2)]
                            # 显存(GB)阈值 → 每卡 batch（显式值优先，本表仅兜底）
 AI_FLOW_EPOCHS = 20        # a6 筛选实证 r16 于 ep13 饱和 → r32 容量翻倍配
                            # 20ep 给饱和点右移留量；每 1ep 1 ckpt 组成梯子
-AI_FLOW_MAX_STEPS = 0      # 0 = 按 AI_FLOW_EPOCHS 折算：15 × 277713 / 128 = 32544
+AI_FLOW_MAX_STEPS = 0      # 0 = 按 AI_FLOW_EPOCHS 折算：20 × 277713 / 128 = 43393
 
 # ─────────────────────────────────────────────────────────────────────
 # ③ 其余训练超参（全部对齐 a1）
@@ -105,13 +106,13 @@ AI_FLOW_WEIGHT_DECAY = 1.0e-2
 AI_FLOW_GRAD_CLIP = 1.0
 AI_FLOW_WORKERS = 8
 AI_FLOW_STALE_LAMBDA = 0.5
-AI_FLOW_STALE_WARMUP = -1        # 自动 = total/2 = 16272，与 a1（12475/24951）
+AI_FLOW_STALE_WARMUP = -1        # 自动 = total/2 = 21696，与 a1（12475/24951）
                                  # 同为半程 ramp 构型，动力学同构
 
 # ─────────────────────────────────────────────────────────────────────
 # ④ 保存与恢复
 # ─────────────────────────────────────────────────────────────────────
-AI_FLOW_NUM_SAVE = 20            # 每 1ep 存 1 个（save_every 自动 = 1447 ≈ 1ep）
+AI_FLOW_NUM_SAVE = 20            # 每 1ep 存 1 个（save_every 自动 = 2170 ≈ 1ep）
 AI_FLOW_SAVE_EVERY = 0
 AI_FLOW_KEEP_CKPT = 20           # 全保留（~2GB/个 ≈ 40GB）
 AI_FLOW_RESUME = ""              # 冷启动：官方 ActionDiT ckpt 由任务配置加载，

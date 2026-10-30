@@ -56,20 +56,42 @@ CASES = [
      ["LEAPBOTCE_RUN_DIR"]),
     # 训练名（含 a6_lora —— 与 b6 无子串包含，不得互相污染）
     ("leapbot_ce_train_robotwin_a6_lora", "train_robotwin_a6_lora", [], []),
-    # ── a7 加容量重训轮（10-30；a6_lora_fs 全量复制版）──
-    # 与 a6 差异仅三处：r32/α32 Hydra 覆盖、20ep（28928 步 = 20×277713/192）、
-    # 24 卡 eff192（bs8/卡，lr 2.8e-4×√1.5≈3.4e-4）。mot_pretrained_path 必须
-    # 保留（10-21 事故铁律）；不得带 --resume（冷启动）。
+    # ── a7 加容量重训轮（10-30 建，10-31 改 16 卡重提；a6_lora_fs 全量复制版）──
+    # 与 a6 差异仅两处：r32/α32 Hydra 覆盖、20ep（43393 步 = round(20×277713/128)）。
+    # 16 卡 eff128（bs8/卡，lr 与 a6 同 2.8e-4；24 卡单 22724896 已取消）。
+    # mot_pretrained_path 必须保留（10-21 事故铁律）；不得带 --resume（冷启动）。
     ("leapbot_ce_train_libero_a7_lora", "libero_a7_lora",
-     ["--gpus 24", "--batch-size 8", "--lr 0.00034", "--steps 28928",
+     ["--gpus 16", "--batch-size 8", "--lr 0.00028", "--steps 43393",
       "--delay 20", "--stale-lambda 0.5 --stale-warmup -1",
       "--run-name codec_a7_lora_r32_20ep_seed42_h100",
-      "--save-every 1447", "--keep-ckpt 20",
+      "--save-every 2170", "--keep-ckpt 20",
       "model.video_lora.rank=32", "model.video_lora.alpha=32.0",
       "model.mot_pretrained_path=/mnt/c2-worldmodel/2638088/fastwam/"
       "fastwam_release/libero_uncond_2cam224.pt",
       "wandb.name=codec_a7_lora_r32_20ep_seed42_h100"],
      ["--delay 40", "--resume", "rank=16", "alpha=16", "codec_a6_lora_fs"]),
+    # ── RoboTwin D60/D80 时延探针（10-31；两单并行 8×H100）──
+    # ours B6 侧：B6 v2 同 run/ckpt、v1 既有 10 任务子集、独立 ext 根
+    # （防污染 v2 主根 .done/聚合）、只跑 '60 80' 两窗。对照窗不重跑。
+    ("leapbot_ce_eval_robotwin_b6_ext", "eval_robotwin_b6_ext",
+     ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "robotwin_all_leapbotce_codec_lora/robotwin_all_codec_lora_dtrain20_seed42_gpu_n3",
+      "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_v2_sweep_b6_ext",
+      "ROBOTWIN_EVAL_DELAYS='60 80'",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
+      "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer",
+      "LEAPBOTCE_CKPT=latest"],
+     ["robotwin_sweep_b6'", "0 10 20 40"]),
+    # StarWAM 侧：4 词后缀压过既有 3 词 starwam 委托；env 预设探针口径 +
+    # V2_SWEEP_ROOT patch 到独立 ext 根（该常量非 env 可覆盖，缺省会写进
+    # v2 主根）。
+    ("leapbot_ce_eval_robotwin_starwam_ext", "eval_robotwin_starwam_ext",
+     ["STARWAM_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "starwam/robotwin_v2_sweep_ext",
+      "STARWAM_V2_DELAYS='60 80'",
+      "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
+     ["robotwin_v2_sweep'", "0 10 20 40"]),
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),
