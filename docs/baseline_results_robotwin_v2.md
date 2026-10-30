@@ -172,6 +172,8 @@ stamp_seal           turn_switch
 4. 收数判读(异常即停)→ §5 表格回填 → 本文档 + daojie md 双归档。
 
 ## 7. 状态日志(新条目在最上)
+- **2026-10-31 01:50 D60/D80 时延探针基建就绪(commit a81174f),待用户提单**。动机:StarWAM-MoT v2 保留率 80.4% 与 ours 87.0% 接近,机制上是 chunk 保护(~16.6 replans/ep vs AHA ~450,27× 曝光差)在 D≤40 段未破;D60/D80(≫ours chunk 24 步)推出保护段,检验分离是否重现(LIBERO D40 分离 67.8pp)。冻结口径:10 任务 v1 子集 × D{60,80} × ours(B6 v2 同 ckpt)+StarWAM-MoT = 40 格;独立结果根 `leapbotce/robotwin_v2_sweep_b6_ext` / `starwam/robotwin_v2_sweep_ext`(防污染主根);对照窗 D{0,10,20,40} 从既有 per-task 数据取同 10 任务算受限 macro,不重跑。变体 `eval_robotwin_b6_ext` / `eval_robotwin_starwam_ext`(后者 env 预设+V2_SWEEP_ROOT patch),自测 24/24 PASS。两单各 8×H100 并行;ours 约 1.5-2h,StarWAM 约 12-15h。同 commit:a7 改 16×H100 重提(eff128,lr 2.8e-4,steps 43393,save_every 2170)。
+
 - **2026-10-30 19:05 StarWAM v2 全量收齐入表(§5 填列)**。单 22560488(10-27 提),200/200 jsonl 全 50 行可解析、FAILED=0,末格 D40/stamp_seal 19:05 收尾。macro **89.5 / 87.9 / 85.6 / 72.0**,retention 80.4%——三基线中最平缓(ours 87.1% / AHA 31.7%),但 D0 绝对值最低(89.5 vs ours 92.9)。v2 三方法收数全部完成。
 
 - **2026-10-29 10:39 AHA v2 全量收齐入表(§5 填列)**。200/200 `_result.txt` 全可解析,macro 93.5 / 78.7 / 54.3 / 29.6;四方法中退化最陡的基线,与 ours 的平缓 retention 曲线对照成立(机制叙事用)。StarWAM 180/200 收数中,收齐后补最后一列。
