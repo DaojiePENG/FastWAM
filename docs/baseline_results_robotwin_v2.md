@@ -172,6 +172,7 @@ stamp_seal           turn_switch
 4. 收数判读(异常即停)→ §5 表格回填 → 本文档 + daojie md 双归档。
 
 ## 7. 状态日志(新条目在最上)
+- **2026-10-31 23:00 chunk 剂量-响应探针 rs8 基建就绪(FastWAM commit 0229447 + XPolicyLab 2413c8f + StarWAM 39565d2),待用户提单**。动机:与 D60/D80 探针互补的另一半 —— 固定 D、chunk 执行步数 24→8,delay 采样 ×3(~19→~56 replans/集),画 retention vs replan 频率剂量曲线,验证 §8.4"保护只延后不消除"。**双方法对称**(只改基线=审稿必打):ours `b6_ext_rs8` + StarWAM `starwam_ext_rs8`,10 任务同表 × D{0,40} 受限版,独立 rs8 结果根;chunk=24 对照取既有 v2 per-task 数据不重跑。实现链:基座 `AI_FLOW_REPLAN_STEPS`→`LEAPBOTCE_REPLAN_STEPS`→lane `EVALUATION.replan_steps`;StarWAM `AI_FLOW_REPLAN_STEPS`→`STARWAM_REPLAN_STEPS`→adapter env 覆盖(SERVER_HOST/PORT 同款模式);delay 协议零改动。判读矩阵(双向可证伪,写入变体 docstring):ours 平+StarWAM 陡=机制叙事最强证据;双平=保护只延后;StarWAM 反稳=混杂(观测更新增益>曝光惩罚)主导须改叙事。混杂披露:短 chunk 观测新鲜度增益(D0 可能升)+采样惩罚反向,retention 比值部分归一。自测 26/26 PASS;lane 脚本(baseline_delay/,非 git 管辖)bash -n 双过。⚠️ StarWAM rs8 链路新执行策略,首格盯防(沿用 10-26 先例不单独 smoke)。
 - **2026-10-31 09:55 探针两单平台调度事故 + curobo 多架构重编译修复(commit 待填)**。
   两探针单(22727253 b6_ext 02:21 起跑 / 22727274 starwam_ext 09:14 起跑)均被平台
   调度到**非 H100-80G 节点**(PACK=1 → lanes/GPU=1,推算 VRAM<74GB),curobo 的
