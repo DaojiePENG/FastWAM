@@ -82,7 +82,7 @@ CASES = [
       "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
       "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer",
       "LEAPBOTCE_CKPT=latest"],
-     ["robotwin_sweep_b6'", "0 10 20 40"]),
+     ["robotwin_sweep_b6'", "0 10 20 40", "REPLAN_STEPS"]),
     # StarWAM 侧：4 词后缀压过既有 3 词 starwam 委托；env 预设探针口径 +
     # V2_SWEEP_ROOT patch 到独立 ext 根（该常量非 env 可覆盖，缺省会写进
     # v2 主根）。
@@ -91,7 +91,29 @@ CASES = [
       "starwam/robotwin_v2_sweep_ext",
       "STARWAM_V2_DELAYS='60 80'",
       "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
-     ["robotwin_v2_sweep'", "0 10 20 40"]),
+     ["robotwin_v2_sweep'", "0 10 20 40", "REPLAN_STEPS"]),
+    # ── chunk 剂量-响应变体（10-31；replan 24→8，与 D60/80 探针互补）──
+    # ours 侧：ext 同 run/ckpt/任务表，独立 rs8 根，D{0,40} 两窗 +
+    # LEAPBOTCE_REPLAN_STEPS=8（lane 脚本转 EVALUATION.replan_steps）。
+    ("leapbot_ce_eval_robotwin_b6_ext_rs8", "eval_robotwin_b6_ext_rs8",
+     ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "robotwin_all_leapbotce_codec_lora/robotwin_all_codec_lora_dtrain20_seed42_gpu_n3",
+      "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_v2_sweep_b6_ext_rs8",
+      "LEAPBOTCE_REPLAN_STEPS=8",
+      "ROBOTWIN_EVAL_DELAYS='0 40'",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
+      "LEAPBOTCE_CKPT=latest"],
+     ["robotwin_sweep_b6'", "60 80", "REPLAN_STEPS=24"]),
+    # StarWAM 侧：5 词后缀压过 starwam_ext；rs8 独立根 + STARWAM_REPLAN_STEPS=8
+    # （config→chains→lane→adapter 链透传）。
+    ("leapbot_ce_eval_robotwin_starwam_ext_rs8", "eval_robotwin_starwam_ext_rs8",
+     ["STARWAM_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "starwam/robotwin_v2_sweep_ext_rs8",
+      "STARWAM_REPLAN_STEPS=8",
+      "STARWAM_V2_DELAYS='0 40'",
+      "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
+     ["robotwin_v2_sweep'", "60 80"]),
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),

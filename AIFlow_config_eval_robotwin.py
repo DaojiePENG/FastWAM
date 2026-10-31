@@ -57,6 +57,11 @@ except ImportError:
 # smoke 开关：空串 = 全量 5 延迟 × 10 任务；填值 = 只跑子集（1 卡即可验证）
 AI_FLOW_DELAYS = os.environ.get("AI_FLOW_DELAYS", "").strip()
 AI_FLOW_TASKS = os.environ.get("AI_FLOW_TASKS", "").strip()
+# chunk 执行步数旋钮（10-31 剂量-响应变体）：空 = 缺省 24（官方 RoboTwin
+# recipe，既有全部行均此值）；填值 = 执行前 N 步即 replan（如 rs8 探针填 8）。
+# 由 lane 脚本转成 EVALUATION.replan_steps，delay 采样语义不变（每 replan
+# 一次 U{0..D}），只改曝光频率。
+AI_FLOW_REPLAN_STEPS = os.environ.get("AI_FLOW_REPLAN_STEPS", "").strip()
 # 任务名拆单快捷键（优先于 AI_FLOW_DELAYS）：任务名含标记即锁定 delay 子集，
 # 如 leapbot_ce_eval_robotwin_d0510 只跑 D∈{0,5,10}，…_d2040 只跑 {20,40}。
 # 先剥掉平台追加的 "-<8hex>" 哈希尾巴再匹配，避免哈希里的 d5/d0 假命中。
@@ -175,6 +180,8 @@ def _build_cmd() -> str:
         extra += f" LEAPBOTCE_SWEEP_ROOT={_q(AI_FLOW_SWEEP_ROOT)}"
     if AI_FLOW_EVAL_TASK:
         extra += f" LEAPBOTCE_EVAL_TASK={_q(AI_FLOW_EVAL_TASK)}"
+    if AI_FLOW_REPLAN_STEPS:
+        extra += f" LEAPBOTCE_REPLAN_STEPS={_q(AI_FLOW_REPLAN_STEPS)}"
     return (
         f"cd {_q(_repo_workdir())} && {exports} "
         f"LEAPBOTCE_CKPT={_q(AI_FLOW_CKPT)}{smoke}{extra} "
