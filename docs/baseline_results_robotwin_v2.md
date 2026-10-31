@@ -172,6 +172,23 @@ stamp_seal           turn_switch
 4. 收数判读(异常即停)→ §5 表格回填 → 本文档 + daojie md 双归档。
 
 ## 7. 状态日志(新条目在最上)
+- **2026-10-31 09:55 探针两单平台调度事故 + curobo 多架构重编译修复(commit 待填)**。
+  两探针单(22727253 b6_ext 02:21 起跑 / 22727274 starwam_ext 09:14 起跑)均被平台
+  调度到**非 H100-80G 节点**(PACK=1 → lanes/GPU=1,推算 VRAM<74GB),curobo 的
+  5 个扩展 .so(09-16 于 sm_90 调试 pod 构建,单架构)缺目标节点内核 → 全 cell
+  `RuntimeError: CUDA error: no kernel image is available` 死循环,零产出,b6_ext
+  侧 log 膨胀至 ~917MB×8(约 82 卡时损失,待批后清理)。22727253 用户已停;
+  22727274 cell log 自 09:46 冻结(90s 零增长,疑似已停,待平台确认)。
+  **修复**:重编译 `code/RoboTwin/envs/curobo`(双消费 env fastwam-robotwin /
+  robotwin editable 同指此树,torch 同 2.7.1+cu126,单次构建通用):
+  `TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"` build_ext --inplace,5 .so 体积 2-3.4×
+  (多架构特征);本 pod(H800 sm_90)MotionGen 完整链路回归(init+warmup+
+  plan_single success=True,5 内核全过)。旧 .so 备份 `envs/curobo/so_backup_20261031/`,
+  属主已修。fwv2 树无自有 curobo、共用此树,新 .so 含 sm_90 对 H 系节点安全。
+  sm_80/86/89/90 覆盖平台现实卡池(A100-40G/A800-40G、A6000、L40S/4090、H 系);
+  更老架构(V100/T4)不在池内,未编 PTX 前向兼容。
+  **教训固化**:探针/全量任务起跑首屏判 `lanes/GPU=2 → 16 lanes` 才是 H100-80G
+  正常节点,`=1` 即错节点,立即停单重提;重提时在平台备注/卡型栏指定 H100。
 - **2026-10-31 01:50 D60/D80 时延探针基建就绪(commit a81174f),待用户提单**。动机:StarWAM-MoT v2 保留率 80.4% 与 ours 87.0% 接近,机制上是 chunk 保护(~16.6 replans/ep vs AHA ~450,27× 曝光差)在 D≤40 段未破;D60/D80(≫ours chunk 24 步)推出保护段,检验分离是否重现(LIBERO D40 分离 67.8pp)。冻结口径:10 任务 v1 子集 × D{60,80} × ours(B6 v2 同 ckpt)+StarWAM-MoT = 40 格;独立结果根 `leapbotce/robotwin_v2_sweep_b6_ext` / `starwam/robotwin_v2_sweep_ext`(防污染主根);对照窗 D{0,10,20,40} 从既有 per-task 数据取同 10 任务算受限 macro,不重跑。变体 `eval_robotwin_b6_ext` / `eval_robotwin_starwam_ext`(后者 env 预设+V2_SWEEP_ROOT patch),自测 24/24 PASS。两单各 8×H100 并行;ours 约 1.5-2h,StarWAM 约 12-15h。同 commit:a7 改 16×H100 重提(eff128,lr 2.8e-4,steps 43393,save_every 2170)。
 
 - **2026-10-30 19:05 StarWAM v2 全量收齐入表(§5 填列)**。单 22560488(10-27 提),200/200 jsonl 全 50 行可解析、FAILED=0,末格 D40/stamp_seal 19:05 收尾。macro **89.5 / 87.9 / 85.6 / 72.0**,retention 80.4%——三基线中最平缓(ours 87.1% / AHA 31.7%),但 D0 绝对值最低(89.5 vs ours 92.9)。v2 三方法收数全部完成。
