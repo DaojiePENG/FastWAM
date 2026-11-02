@@ -3,6 +3,42 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-02 15:30 dtrain40 消融行终局(负结果删行) + a7 探针 r16/r32 事故修复
+
+**dtrain40（Table 3 训练因子消融行）终局闭环：**
+
+- 终点四窗（step_032544，2000 eps/窗，root `leapbotce/a6_dtrain40_step32544`）：
+  **D0 22.95 / D10 18.00 / D20 15.20 / D40 13.15**，全塌。
+- 排查定性 = 真实训练效应，eval 侧零事故：同 step 对照 a6_lora_fs D0=90.95、
+  ckpt 完好、训练 cmd diff 仅 `max_delay_steps=40`、loss 收敛正常（0.0065 vs 母本 0.0060）。
+- ep9 中点快评（单 22808438，11-02 14:52 收，root `leapbotce/a6_dtrain40_step019530`）：
+  **D0 25.65%**（513/2000），与终点差 2.7 点、谱型与终点同构
+  （object 0.6% / spatial 23.4% vs goal 45.2%）→ **训练早期即坏、全程未恢复**
+  （阈值判读：<2 点早期即坏 / >20 点后期塌，实测落前者）。
+- **用户 11-02 拍板：行从论文 Table 3（tab:ablations）移除**，正文不做说明
+  （结果不可用 + 无重训窗口；论文仓 commit d163407）。负结果数据留结果根备查，
+  不删除任何资产。
+- a7_final 四窗评测 config 已备好（`AIFlow_config_eval_libero_a7_final.py`，
+  自测 29/29，commit 6682b5c）；等 a7 训练收工（~今晚 20:00）后提交，
+  CKPT=latest 有"收工后再提"时序约束（docstring 内注明）。
+
+**a7 本地 D0 探针事故与修复（同日）：**
+
+- 首启（GPU 5/6）4 分钟双 worker 全崩：eval 工厂按 a4 task yaml 默认注入
+  rank=16 LoRA，a7 ckpt 为 r32/α32 → `load_state_dict` strict 尺寸不匹配
+  （lora_a [32,3072] vs [16,3072]）。a6 系恰好 r16 故此前从未暴露。
+- 根修：sweep 脚本 config.yaml 派生逻辑补转发 `model.video_lora.rank/alpha/dropout`
+  （commit badbfff）；干验派生输出 rank=32 后 6 卡（0,3,4,5,6,7）重启
+  （用户 11-02 解除"仅 5/6 调试卡"限制；GPU 1/2 空余 ~36GB < 45GB/格线排除），
+  ckpt 加载实锤通过（rank=32, 23.59M LoRA 参数）。
+- **15:11 二次事故（非本任务）**：用户侧 230xxx 四进程在 GPU 0/4/5/6 反复
+  Xid 31 MMU Fault（~10s 一次，15:11:40 后停止），四进程自行崩溃退出，
+  同卡上本任务 4 个 worker 被驱动级连带击杀（日志无 traceback，manager 按
+  隔离逻辑存活，GPU 3/7 两 worker 继续全速）。事后该四卡对新进程仍病态
+  （eval 19.8s/步 vs 3/7 卡 0.09s/步，差 200×+，且 14:59 起即爬行、先于
+  Xid 风暴）→ 放弃 0/4/5/6，**终态 = GPU 3/7 双 worker**（15:49 提单
+  PID 907005，~12-13 it/s 全速出集），预计 ~19:30-21:30 出 D0。
+
 ## 2026-10-19 14:30 a6 终点探针收口(D20 88.8 / D0 94.8):两线终判定案
 
 - **a6 终点(15ep step_032544,cosine lr→0)spatial 25-trial 全出**:
