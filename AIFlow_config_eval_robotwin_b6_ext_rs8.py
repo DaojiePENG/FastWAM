@@ -17,11 +17,14 @@ retention vs replan 频率的剂量曲线。判读：
 ×3 惩罚；retention 为比值可部分归一。模型与 delay 协议零改动 —— 只改
 执行策略（EVALUATION.replan_steps，lane 脚本 LEAPBOTCE_REPLAN_STEPS 透传）。
 
-冻结口径：
+冻结口径（2026-11-02 用户拍板升级）：
   - 评测对象 = B6 v2 同一 run/ckpt（LEAPBOTCE_CKPT=latest）
-  - 任务 = v1 既有 10 任务子集（与 D60/D80 探针同表）
-  - 窗 = D{0,40} 受限版（D40 是 retention 主读数；中段窗后补不迟）
-  - 结果根独立：robotwin_v2_sweep_b6_ext_rs8（防污染 ext 根与 v2 主根）
+  - 任务 = v2 全量 50 任务（11-02 拍板：rs8 完整 v2 六窗作为论文 Table 2
+    的 RoboTwin 正式结果，与 StarWAM 侧成对；不再设 AI_FLOW_TASKS，
+    落基座缺省 50 任务全表）
+  - 窗 = D{0,10,20,40,60,80} 六窗全量
+  - 结果根不变：robotwin_v2_sweep_b6_ext_rs8（.done 幂等，既有 10 任务
+    D{0,40} 20 格直接复用，新增 280 格）
   - chunk=24 的对照 = 既有 v2 per-task 数据，不重跑。
 薄委托：只设 AI_FLOW_* env 默认值，其余接口全部转发基座。
 """
@@ -49,14 +52,20 @@ os.environ.setdefault(
 os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40 60 80")  # 11-02 用户指示扩全六窗; 既有 D{0,40} .done 幂等跳过
 os.environ.setdefault("AI_FLOW_REPLAN_STEPS", "8")  # 剂量变体本体
 os.environ.setdefault("AI_FLOW_EVAL_TASK", "robotwin_all_leapbotce_codec_lora")
-os.environ.setdefault(
-    "AI_FLOW_TASKS",
-    # v1 既有 10 任务子集（与 D60/D80 探针同表）
-    "adjust_bottle beat_block_hammer blocks_ranking_rgb blocks_ranking_size "
-    "click_alarmclock click_bell dump_bin_bigbin grab_roller handover_block "
-    "handover_mic",
-)
+# AI_FLOW_TASKS 不在此预设（11-02 升级 v2 全量 50 任务）：基座 "b6" 分支
+# 本就不注入任务表缺省（仅 b6v2 分支注入），转发后统一 patch，见下。
+# 平台注入同名 env 时以 env 为准（基座 import 期消费）。
 
 from AIFlow_config_eval_robotwin import *  # noqa: F401,F403,E402
 from AIFlow_config_eval_robotwin import __C  # noqa: F401,E402 显式导入（star 不带下划线名），平台经分发器读 __C.TRAIN.CMD
 from AIFlow_config_eval_robotwin import AutoTrain, cfg  # noqa: E402
+
+# 11-02 升级 v2 全量 50 任务（论文 Table 2 正式结果口径）：任务表不写死
+# 字符串，直接 patch 基座模块级 AI_FLOW_TASKS = _B6V2_TASKS 本体（无漂移），
+# 并重建静态 CMD（与 starwam ext_rs8 变体的 patch 模式同款；AutoTrain
+# 运行时重建读同一模块级值）。
+import AIFlow_config_eval_robotwin as _base  # noqa: E402
+_base.AI_FLOW_TASKS = _base._B6V2_TASKS
+_cmd = _base._build_cmd()
+_base.cfg.TRAIN.CMD = _cmd
+_base.cfg.CMD = _cmd

@@ -103,7 +103,9 @@ CASES = [
       "LEAPBOTCE_REPLAN_STEPS=8",
       "ROBOTWIN_EVAL_DELAYS='0 10 20 40 60 80'",  # 11-02 六窗; 既有 D{0,40} .done 幂等跳过
       "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
-      "LEAPBOTCE_CKPT=latest"],
+      "LEAPBOTCE_CKPT=latest",
+      # 11-02 升级 v2 全量:不再预设 10 任务,落基座缺省 50 任务全表
+      "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer"],
      ["robotwin_sweep_b6'", "REPLAN_STEPS=24"]),
     # StarWAM 侧：5 词后缀压过 starwam_ext；rs8 独立根 + STARWAM_REPLAN_STEPS=8
     # （config→chains→lane→adapter 链透传）。
@@ -112,7 +114,9 @@ CASES = [
       "starwam/robotwin_v2_sweep_ext_rs8",
       "STARWAM_REPLAN_STEPS=8",
       "STARWAM_V2_DELAYS='0 10 20 40 60 80'",  # 11-02 六窗; 既有 D{0,40} .done 幂等跳过
-      "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
+      # 11-02 升级 v2 全量:不再预设 10 任务,sibling 缺省 50 任务全表
+      # (beat_block_hammer 打头) —— 断言默认表而非 10 任务子集
+      "STARWAM_V2_TASKS='beat_block_hammer adjust_bottle"],
      ["robotwin_v2_sweep'"]),
     # handover_block 跨批次矛盾复跑（11-02）：显式 step_158206 + 矛盾本体+
     # 锚任务两格表 + D{20,40} 谷区 + 独立 recheck 根。绝不指向 v1/ext 根。

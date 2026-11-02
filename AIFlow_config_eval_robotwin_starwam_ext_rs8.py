@@ -12,6 +12,10 @@ STARWAM_REPLAN_STEPS env → chains → lane 透传 → adapter
 (XPolicyLab/policy/StarWAM/model.py) 覆盖 self.replan_steps。
 模型与 delay 协议零改动，只改执行策略。
 
+2026-11-02 升级：任务表升为 v2 全量 50 任务（用户拍板 rs8 完整 v2 六窗
+作为论文 Table 2 的 RoboTwin 正式结果，与 ours 侧成对）；六窗与 8 卡
+不变，结果根不变（.done 幂等复用 10 任务时代已收的 D{0,40} 20 格）。
+
 与 eval_robotwin_starwam_ext 委托的三处差异：
   ① 转发前预设 AI_FLOW_DELAYS / AI_FLOW_TASKS / AI_FLOW_REPLAN_STEPS env
     —— StarWAM config 在 import 期消费这三个 env（前两者缺省 = 全量 50
@@ -49,15 +53,11 @@ print(f"{_BANNER} starwam chunk=8 剂量探针: 预设 env 后转发 {_SIBLING}"
 # ① 探针口径（sibling 在 import 期消费；平台注入同名 env 时以 env 为准）
 # 11-02 用户指示：chunk8 补全六窗 D{0,10,20,40,60,80}；既有 D{0,40} 两窗
 # 已收齐（.done 幂等跳过不重跑），实际新增 D{10,20,60,80} 40 格。
+# 11-02 二次升级：AI_FLOW_TASKS 不再预设 10 任务子集 —— 用户拍板 rs8
+# 完整 v2（50 任务 × 六窗）作为论文 Table 2 的 RoboTwin 正式结果，
+# 落 sibling 缺省 50 任务全表；结果根不变，.done 幂等复用已收格。
 os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40 60 80")
 os.environ.setdefault("AI_FLOW_REPLAN_STEPS", "8")  # 剂量变体本体
-os.environ.setdefault(
-    "AI_FLOW_TASKS",
-    # v1 既有 10 任务子集（与 ours 探针侧同表）
-    "adjust_bottle beat_block_hammer blocks_ranking_rgb blocks_ranking_size "
-    "click_alarmclock click_bell dump_bin_bigbin grab_roller handover_block "
-    "handover_mic",
-)
 
 try:
     _spec = importlib.util.spec_from_file_location("_starwam_ext_rs8_real_config",
