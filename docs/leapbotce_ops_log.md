@@ -3,6 +3,31 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-02 20:05 rs8 升级 v2 全量 50 任务×六窗（论文 Table 2 正式数据口径）
+
+- **用户拍板**：ours + StarWAM 的 rs8（chunk8）升级为完整 v2（50 任务 ×
+  D{0,10,20,40,60,80}）作为论文 **Table 2 的 RoboTwin 正式结果**；用 H100 卡。
+- 已收底子（.done 幂等复用，不重跑）：两根 10 任务 D{0,40} 各 20 格
+  （ours D0 96.8 / D40 94.8；starwam D0 88.6 / D40 26.0 —— chunk8 剂量
+  结论已双向清晰：ours 不塌反升、starwam 塌方）。新增各 280 格。
+- config 改动（commit 7516d3c，29/29 PASS + CMD 干验 50 任务/六窗/
+  REPLAN_STEPS=8/rs8 根全过）：
+  - ours `b6_ext_rs8`：**基座 "b6" 分支不注入任务表缺省（仅 b6v2 分支）**，
+    删 setdefault 不够 —— 转发后 patch 基座模块级
+    `AI_FLOW_TASKS = _B6V2_TASKS` 本体（无漂移）+ 重建静态 CMD
+    （与 starwam ext_rs8 变体 ② 模式同款；AutoTrain 重建读同值）。
+  - starwam `ext_rs8`：删 10 任务 setdefault → sibling 缺省 50 任务全表
+    （beat_block_hammer 打头）。
+- 提单口径：任务名不变（同名重提），结果根不变，8×H100
+  （ours rs8 首提即 8 卡 16 lanes，卡数一致准则无冲突）；
+  starwam 侧依赖 chains driver 11-02 加固版（19:15 条目）。
+- 预估：chunk8 每集 infer 次数 ×3（24→8 步/chunk，总步数不变），
+  每格时长约 ×2-3 → ours ~2.5-4 天、starwam ~3.5-5 天（各 8 卡）。
+- **Table 2 口径提醒（论文侧待用户定）**：其余 baseline（X-WAM/Motus/
+  AHA-WAM 等）现有数据为 chunk24 四窗 v2 口径；若 Table 2 全表统一
+  chunk8 六窗，各 baseline 需补跑同口径（量级 ~340 格/家），或 Table 2
+  行设计另行安排。
+
 ## 2026-11-02 19:15 starwam rs8 六窗(22810271)死亡诊断 + chains driver 加固 + 待重提
 
 **22810271（leapbot_ce_eval_robotwin_starwam_ext_rs8, 8×L20）停止诊断：**
