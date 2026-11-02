@@ -169,6 +169,13 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_dtrain40_step32544",
       "LIBERO_EVAL_DELAYS='0 10 20 40'"],
      ["codec_a6_lora_fs"]),
+    # dtrain40 ep9 中点快评（11-02）：只跑 D0 一窗定位塌方时点；5 词后缀
+    # 压过 dtrain40(4 词)与 ep9(4 词)。ep9=step_019530 与终点 ckpt 必须区分。
+    ("leapbot_ce_eval_libero_a6_dtrain40_ep9", "eval_libero_a6_dtrain40_ep9",
+     ["codec_a6_dtrain40_15ep_seed42_h200", "step_019530.pt",
+      "LIBERO_EVAL_TAG=a6_dtrain40_step019530",
+      "LIBERO_EVAL_DELAYS=0"],  # 单窗无空格, _q() 不加引号
+     ["step_032544", "a6_dtrain40_step32544", "0 10 20 40"]),
     # nocloudproprio eval：EVAL_EXTRA 注入 use_cloud_proprio=false 是必需项
     # （sweep 推导白名单不含此键，漏注入=strict load 过但行为回 True，整行作废）
     ("leapbot_ce_eval_libero_a6_nocloudproprio", "eval_libero_a6_nocloudproprio",
