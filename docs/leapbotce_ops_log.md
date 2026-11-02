@@ -3,6 +3,22 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-02 20:45 AHA D60/80 补窗烤入变体（平台无 env 栏实锤；AHA 排队单停止重提）
+
+- **平台限制实锤（11-02 用户确认）**：提单系统只能选卡数/卡型 + 任务命名，
+  无 env 栏 → 20:35 条目的"同名重提 + 平台注入 AI_FLOW_DELAYS"方案作废。
+- **修复（commit 3e7fda0）**：`AIFlow_config_eval_robotwin_ahawam.py`
+  转发前 `setdefault AI_FLOW_DELAYS='60 80'` → sibling import 期消费 →
+  `_build_cmd()` 显式拼 `ROBOTWIN_EVAL_DELAYS='60 80'` 进 CMD → driver
+  `read -ra DELAYS` 消费，三段链路 checker 实证。**选纯 '60 80' 而非六窗
+  缺省：xpolicy driver 无 skip-existing**（line 194 只数 .done 做进度汇报），
+  落六窗会把已收四窗 200 格全部重跑。
+- **checker**：新增 `ahawam_v2` 用例（断言 delay 令牌 + v2 根 + AHA_WAM
+  policy + 必不含四窗串），**30/30 PASS**。
+- **用户已停止排队单 22832152**（20:23 提的那单会落缺省四窗 → 200 格
+  全 .done 秒空跑），修复落地后**同名单重提即可**，config 自动带补窗口径。
+  注意：收齐 D60/80 后勿再重提同名单（driver 无幂等，会重跑覆盖 100 格）。
+
 ## 2026-11-02 20:35 Table 2 口径拍板：AHA 行 rs16 不可转 rs8（硬校验）+ D60/80 取舍判据
 
 - **用户拍板**：Table 2 = 三行混合口径 —— AHA-WAM 标 **rs16**（官方），
