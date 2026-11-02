@@ -182,6 +182,13 @@ codec = cloudedge.get("kv_codec") or {}
 lora = model.get("video_lora") or {}
 if lora.get("enabled"):
     print("libero_all_leapbotce_codec_lora_a4")
+    # LoRA rank/alpha must match the ckpt's stored wrappers (load_state_dict
+    # strict); the a4 task yaml pins the a6-era default rank=16, so re-pin
+    # from the run's own config (a7 = r32/alpha32, 11-02 probe crash).
+    # targets stays with the task yaml (all runs use q,k,v,o).
+    for key in ("rank", "alpha", "dropout"):
+        if lora.get(key) is not None:
+            print(f"model.video_lora.{key}={lora[key]}")
 elif codec.get("enabled"):
     print("libero_all_leapbotce_codec")
 else:
