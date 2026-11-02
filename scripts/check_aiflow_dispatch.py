@@ -111,9 +111,9 @@ CASES = [
      ["STARWAM_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
       "starwam/robotwin_v2_sweep_ext_rs8",
       "STARWAM_REPLAN_STEPS=8",
-      "STARWAM_V2_DELAYS='0 40'",
+      "STARWAM_V2_DELAYS='0 10 20 40 60 80'",  # 11-02 六窗; 既有 D{0,40} .done 幂等跳过
       "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
-     ["robotwin_v2_sweep'", "60 80"]),
+     ["robotwin_v2_sweep'"]),
     # handover_block 跨批次矛盾复跑（11-02）：显式 step_158206 + 矛盾本体+
     # 锚任务两格表 + D{20,40} 谷区 + 独立 recheck 根。绝不指向 v1/ext 根。
     ("leapbot_ce_eval_robotwin_b6_handover", "eval_robotwin_b6_handover",

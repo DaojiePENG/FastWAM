@@ -47,7 +47,9 @@ except ImportError:  # 与 sibling config 同款兜底
 print(f"{_BANNER} starwam chunk=8 剂量探针: 预设 env 后转发 {_SIBLING}", flush=True)
 
 # ① 探针口径（sibling 在 import 期消费；平台注入同名 env 时以 env 为准）
-os.environ.setdefault("AI_FLOW_DELAYS", "0 40")  # 受限两窗；chunk=24 对照取既有数据
+# 11-02 用户指示：chunk8 补全六窗 D{0,10,20,40,60,80}；既有 D{0,40} 两窗
+# 已收齐（.done 幂等跳过不重跑），实际新增 D{10,20,60,80} 40 格。
+os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40 60 80")
 os.environ.setdefault("AI_FLOW_REPLAN_STEPS", "8")  # 剂量变体本体
 os.environ.setdefault(
     "AI_FLOW_TASKS",
