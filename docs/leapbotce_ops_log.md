@@ -3,6 +3,29 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-02 20:35 Table 2 口径拍板：AHA 行 rs16 不可转 rs8（硬校验）+ D60/80 取舍判据
+
+- **用户拍板**：Table 2 = 三行混合口径 —— AHA-WAM 标 **rs16**（官方），
+  ours/StarWAM 标 **rs8**，表格标注 + 正文一句话说明；RoboTwin 基准就用
+  这三行。
+- **AHA rs8 不可行实锤**（用户记忆"没有 chunk 机制"的内核正确）：
+  `AHA_WAM/model.py _validate_rollout_config` 硬校验
+  `replan_steps == action_chunk_size`，错误信息原文 "AHA-WAM advances
+  one complete internal action chunk per inference call" —— 每次推理必须
+  整块推进 16 步内部 chunk（模型/checkpoint 内在属性），eval 侧无截短
+  重推理自由度；ours/StarWAM 的 24→8 配置旋钮对 AHA 不存在（改=重设计
+  推理状态机）。XPolicyLab 零改动（已备好的 env 旋钮方案作废未落码）。
+- **AHA rs16 官方主表四窗实锤**（50 任务宏均，delay_metrics_*.jsonl 的
+  `result.success` 字段）：**D0 93.5 / D10 78.7 / D20 54.3 / D40 29.6**。
+  D40 仍 >20% → D60/80 有信息量，建议补全量 100 格凑齐 Table 2 六窗列
+  （提单方式：同名 `leapbot_ce_eval_robotwin_ahawam_v2` + 平台注入
+  `AI_FLOW_DELAYS='60 80'`，基座 RoboTwin config 支持 env 覆盖缺省四窗，
+  .done 幂等复用 200 格）。是否补由用户定。
+- **D60/80 取舍判据（本日定）**：D40 宏均 ≤10% → D60/80 只跑 10 任务
+  尾点或留空；>10% → 六窗全量。ours rs8 D40=94.8%（六窗全量 ✓ 在提）、
+  StarWAM rs8 D40=26%（边缘，单已按六窗配置且十任务 D60/80 已有塌光
+  证据 0%/0.5%，80 格顺带跑避免二次排队）、AHA rs16 D40=29.6%（建议补）。
+
 ## 2026-11-02 20:05 rs8 升级 v2 全量 50 任务×六窗（论文 Table 2 正式数据口径）
 
 - **用户拍板**：ours + StarWAM 的 rs8（chunk8）升级为完整 v2（50 任务 ×
