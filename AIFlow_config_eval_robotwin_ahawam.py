@@ -22,6 +22,21 @@ bash run_sweep_cluster_xpolicy_2653853.sh AHA_WAM` 正确；v2 旋钮
 ⚠️ 平台把 config import 异常一律折成「aiflowconfig.py有错误」秒挂 ——
    本文件 import 期绝不 raise：转发失败时打印横幅 + 秒败 AutoTrain，
    绝不静默回落 ours 配置（那正是本文件要消灭的错路由）。
+
+═══════════════════════════════════════════════════════════════════════
+D60/80 补窗内建（2026-11-02 用户拍板 + 平台限制实锤）
+═══════════════════════════════════════════════════════════════════════
+AHA rs16 v2 主表四窗已收齐 200 格（宏均 D0 93.5 / D10 78.7 / D20 54.3 /
+D40 29.6），D40 > 10% 判据 → 六窗全量补 D{60,80}（100 格，同 v2 根）。
+原方案「同名重提 + 平台注入 AI_FLOW_DELAYS env」不可行：平台提单系统
+只能选卡数/卡型 + 任务命名，无 env 栏（11-02 实锤）→ 补窗口径直接烤进
+本变体：转发前 setdefault AI_FLOW_DELAYS='60 80'。链路三段已验：
+sibling import 期消费该 env（v2 分支仅空缺省时才落四窗）→ _build_cmd()
+显式拼 ROBOTWIN_EVAL_DELAYS='60 80' 进 CMD → driver read 消费。
+选纯 '60 80' 而非六窗缺省：xpolicy driver 无 skip-existing（只数 .done
+做进度汇报），落六窗会把已收四窗 200 格全部重跑。
+注意：本名此后重提永远只补 D{60,80}；若格已存在会重跑覆盖（driver 无
+幂等），勿在收齐后重复提交同名单。
 """
 
 from __future__ import annotations
@@ -41,6 +56,11 @@ except ImportError:  # 与 sibling config 同款兜底
         __setattr__ = dict.__setitem__
 
 print(f"{_BANNER} 任务名含整词 ahawam -> 转发 {_SIBLING}", flush=True)
+
+# ① 补窗口径（sibling 在 import 期消费；平台无法注 env，此处为唯一入口）
+# 11-02 拍板：D40=29.6% > 10% 判据 → 同 v2 根补 D{60,80} 全量 100 格；
+# 四窗 200 格已收齐在既有结果里，绝不重跑（见文件头冻结段）。
+os.environ.setdefault("AI_FLOW_DELAYS", "60 80")
 
 try:
     _spec = importlib.util.spec_from_file_location("_ahawam_v2_real_config",

@@ -129,6 +129,15 @@ CASES = [
       "ROBOTWIN_EVAL_DELAYS='20 40'",
       "ROBOTWIN_EVAL_TASKS='handover_block beat_block_hammer'"],
      ["robotwin_sweep_b6'", "robotwin_v2_sweep_b6_ext", "0 10", "60 80"]),
+    # AHA-WAM v2 主表 D60/80 补窗（11-02）：转发 RoboTwin 基座；平台提单
+    # 无 env 栏（只能选卡+命名）→ 变体内建 setdefault AI_FLOW_DELAYS='60 80'，
+    # 转发→sibling 消费→CMD 显式拼 ROBOTWIN_EVAL_DELAYS='60 80'。四窗 200
+    # 格已收齐（主表 D0 93.5/D10 78.7/D20 54.3/D40 29.6），不得出现四窗串。
+    ("leapbot_ce_eval_robotwin_ahawam_v2", "eval_robotwin_ahawam",
+     ["ROBOTWIN_EVAL_DELAYS='60 80'",
+      "XPOLICY_SWEEP_SUFFIX=robotwin_v2_sweep",
+      "bash run_sweep_cluster_xpolicy_2653853.sh AHA_WAM"],
+     ["0 10 20 40"]),
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),
