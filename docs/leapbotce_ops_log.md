@@ -3,6 +3,43 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-02 19:15 starwam rs8 六窗(22810271)死亡诊断 + chains driver 加固 + 待重提
+
+**22810271（leapbot_ce_eval_robotwin_starwam_ext_rs8, 8×L20）停止诊断：**
+
+- 死因：chains driver bash 16:26 无征兆死亡（autolaunch 日志无 "all chains
+  exited"、无 OOM 记录、无脚本退出回显）→ 平台按主进程退出即
+  "train end, trainResult=True" 收割 success 并回收 pod（orphan eval 进程
+  仅存活 ~1 秒，node log 16:26:47 ps 快照 → 16:26:48 jsonl 停写）。
+- 布局缺陷（连带发现）：旧 `P = N/ND` 整除 → 6 窗 × 8 卡 = P=1，已收尾的
+  d0/d40（10/10 全 done）也各占一条秒退链，实际仅 4 条工作链，GPU 6/7
+  整程闲置。autolaunch 日志 `tasks=154` 为 `${#CHAIN_TASKS}` 对字符串取
+  字符长度的化妆性错误（非 bug）。
+- 污染风险（连带发现）：StarWAM delay_metrics jsonl 为 append 模式
+  （model.py `path.open("a")`），在飞格直接重跑会叠两次运行的 episode。
+
+**driver 加固（baseline_delay/starwam_robotwin_v2_chains_2653853.sh 重写）：**
+
+1. pending 加权链布局：每窗 round(N×pending/total) 条链（活窗保底 1 条，
+   pend=0 的窗 0 条），超/欠分按权重微调 → 本次重提即 8 链铺满 8 卡
+   （d10:2/d20:2/d60:2/d80:2，d0/d40 自动 0 链）。
+2. /tmp 自拷贝重执行（FastWAM sweep 同款 NFS 加固，exec 保 PID）。
+3. stdout 心跳：每 10 分钟一拍 → 链级日志全在文件、driver stdout 静默
+   是死亡后被误收割的诱因之一；再死时心跳断点可定位死亡时刻。
+4. trap EXIT：退出码+时刻写 autolaunch_v2.log + stdout（SIGKILL 不可
+   trap，但心跳断点兜底）。空链不占 GPU 槽位；全 done 干净退出 rc=0。
+
+**脏格隔离（防 jsonl append 污染）：** 4 个在飞格（d10/blocks_ranking_size、
+d20+d60+d80/blocks_ranking_rgb，mtime 全落 12:33–16:26 任务窗）的
+task 目录/log/jsonl/infer_server.log 共 16 项 mv 至结果根
+`_quarantine_20261102/delay_<D>/`（不删除）；隔离后复扫零残留，
+.done 现状 D0:10 D10:3 D20:2 D40:10 D60:2 D80:2（31 格待跑）。
+
+**自测：** bash -n 过；真实参数 DRYRUN（8 逻辑卡 × 六窗 × 10 任务 × 真实
+结果根）布局 8/8 链正确；re-exec 分支实走通过；全 done 边界干净退出。
+待用户平台重提同名 `leapbot_ce_eval_robotwin_starwam_ext_rs8`（8×L20，
+与首提卡数一致），预计 ~31 格 / 8 链 × 5 格/链 ≈ 8-11h。
+
 ## 2026-11-02 15:30 dtrain40 消融行终局(负结果删行) + a7 探针 r16/r32 事故修复
 
 **dtrain40（Table 3 训练因子消融行）终局闭环：**
