@@ -187,6 +187,14 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_dtrain40_step019530",
       "LIBERO_EVAL_DELAYS=0"],  # 单窗无空格, _q() 不加引号
      ["step_032544", "a6_dtrain40_step32544", "0 10 20 40"]),
+    # a7 final 四窗（11-02）：r32/alpha32 加强版 20ep；latest 解析=训练收工后
+    # 提交（提前提交会把 TAG 钉在中段 ckpt，docstring 有时序约束）；rank 适配
+    # 由 sweep 脚本从 run config.yaml 派生（badbfff），CMD 里无需显式覆盖。
+    ("leapbot_ce_eval_libero_a7_final", "eval_libero_a7_final",
+     ["codec_a7_lora_r32_20ep_seed42_h100_n2", "LEAPBOTCE_CKPT=latest",
+      "LIBERO_EVAL_TAG=a7_lora_r32_final",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'", "GPU_NUM=4"],
+     ["step_032544", "codec_a6"]),
     # nocloudproprio eval：EVAL_EXTRA 注入 use_cloud_proprio=false 是必需项
     # （sweep 推导白名单不含此键，漏注入=strict load 过但行为回 True，整行作废）
     ("leapbot_ce_eval_libero_a6_nocloudproprio", "eval_libero_a6_nocloudproprio",
