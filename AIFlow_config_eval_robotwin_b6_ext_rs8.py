@@ -46,7 +46,7 @@ os.environ.setdefault(
     "/mnt/c2-worldmodel/2653853/baseline-evaluations/"
     "leapbotce/robotwin_v2_sweep_b6_ext_rs8",
 )
-os.environ.setdefault("AI_FLOW_DELAYS", "0 40")  # 受限两窗；chunk=24 对照取既有数据
+os.environ.setdefault("AI_FLOW_DELAYS", "0 10 20 40 60 80")  # 11-02 用户指示扩全六窗; 既有 D{0,40} .done 幂等跳过
 os.environ.setdefault("AI_FLOW_REPLAN_STEPS", "8")  # 剂量变体本体
 os.environ.setdefault("AI_FLOW_EVAL_TASK", "robotwin_all_leapbotce_codec_lora")
 os.environ.setdefault(

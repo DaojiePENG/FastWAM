@@ -101,10 +101,10 @@ CASES = [
       "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
       "leapbotce/robotwin_v2_sweep_b6_ext_rs8",
       "LEAPBOTCE_REPLAN_STEPS=8",
-      "ROBOTWIN_EVAL_DELAYS='0 40'",
+      "ROBOTWIN_EVAL_DELAYS='0 10 20 40 60 80'",  # 11-02 六窗; 既有 D{0,40} .done 幂等跳过
       "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
       "LEAPBOTCE_CKPT=latest"],
-     ["robotwin_sweep_b6'", "60 80", "REPLAN_STEPS=24"]),
+     ["robotwin_sweep_b6'", "REPLAN_STEPS=24"]),
     # StarWAM 侧：5 词后缀压过 starwam_ext；rs8 独立根 + STARWAM_REPLAN_STEPS=8
     # （config→chains→lane→adapter 链透传）。
     ("leapbot_ce_eval_robotwin_starwam_ext_rs8", "eval_robotwin_starwam_ext_rs8",
