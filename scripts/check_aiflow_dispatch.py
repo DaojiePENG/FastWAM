@@ -114,6 +114,17 @@ CASES = [
       "STARWAM_V2_DELAYS='0 40'",
       "STARWAM_V2_TASKS='adjust_bottle beat_block_hammer"],
      ["robotwin_v2_sweep'", "60 80"]),
+    # handover_block 跨批次矛盾复跑（11-02）：显式 step_158206 + 矛盾本体+
+    # 锚任务两格表 + D{20,40} 谷区 + 独立 recheck 根。绝不指向 v1/ext 根。
+    ("leapbot_ce_eval_robotwin_b6_handover", "eval_robotwin_b6_handover",
+     ["LEAPBOTCE_RUN_DIR=/mnt/c2-worldmodel/2653853/leapbot-ce/runs/"
+      "robotwin_all_leapbotce_codec_lora/robotwin_all_codec_lora_dtrain20_seed42_gpu_n3",
+      "step_158206.pt",
+      "LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_sweep_b6_handover_recheck",
+      "ROBOTWIN_EVAL_DELAYS='20 40'",
+      "ROBOTWIN_EVAL_TASKS='handover_block beat_block_hammer'"],
+     ["robotwin_sweep_b6'", "robotwin_v2_sweep_b6_ext", "0 10", "60 80"]),
     # LIBERO 薄委托变体：最长后缀胜出
     ("leapbot_ce_eval_libero_a1_ft_fresh100_full",
      "eval_libero_a1_ft_fresh100_full", ["libero"], []),
