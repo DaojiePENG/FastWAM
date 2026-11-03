@@ -607,3 +607,66 @@ def test_sync_wrapper_matches_two_stage_edge_inference_with_fixed_seed():
     assert observed["edge_context"].shape == (1, 3, 4)
     assert two_stage["action"].dtype == torch.float32
     torch.testing.assert_close(synchronous["action"], two_stage["action"])
+
+
+def test_cloud_cache_switch_skips_cloud_forward():
+    # "w/o cloud cache" (eval-time): encode_cloud must not touch the cloud
+    # expert at all and must return a zero-length planning cache that still
+    # carries the language context for the edge side.
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.device = torch.device("cpu")
+    model.torch_dtype = torch.float32
+    model.use_cloud_cache = False
+    model.mot = SimpleNamespace(num_layers=2, num_heads=2, attn_head_dim=4)
+
+    language = torch.ones(1, 2, 8)
+    language_mask = torch.ones(1, 2, dtype=torch.bool)
+    model.encode_prompt = lambda _: (language, language_mask)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("cloud forward must be skipped when use_cloud_cache=False")
+
+    model._encode_cloud_tensor = boom
+    cache = model.encode_cloud(
+        torch.zeros(1, 3, 8, 8), prompt="task", cloud_proprio=torch.tensor([[1.0, 2.0]]))
+
+    assert cache.video_seq_len == 0
+    assert len(cache.video_cache_k) == len(cache.video_cache_v) == 2
+    assert all(t.shape == (1, 0, 8) for t in cache.video_cache_k)
+    assert all(t.shape == (1, 0, 8) for t in cache.video_cache_v)
+    torch.testing.assert_close(cache.context, language)
+    torch.testing.assert_close(cache.context_mask, language_mask)
+
+
+def test_empty_cloud_cache_attention_covers_prefix_and_action_only():
+    # With video_seq_len=0 the denoiser attention mask must cover exactly
+    # (edge prefix + action) tokens, and the zero-length cache must cat away.
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.edge_vision = SimpleNamespace(
+        mode="select",
+        projector=SimpleNamespace(scale_k=torch.ones(2), scale_v=torch.ones(2)))
+    model.mot = SimpleNamespace(num_layers=2)
+
+    empty = torch.zeros(1, 0, 8)
+    cache = CloudPlanningCache(
+        [empty, empty], [empty, empty], torch.ones(1, 2, 8),
+        torch.ones(1, 2, dtype=torch.bool), 0, 0)
+    captured = {}
+
+    def denoise(noisy, timestep, context, context_mask, cache_k, cache_v,
+                action_mask, edge_prefix_k=None, edge_prefix_v=None):
+        captured["mask"] = action_mask
+        captured["key_shapes"] = [
+            torch.cat([k, p], dim=1).shape for k, p in zip(cache_k, edge_prefix_k)]
+        return noisy
+
+    model._denoise_action_with_video_cache = denoise
+    model._predict_from_cache(
+        cache, torch.zeros(1, 5, 8), torch.zeros(1),
+        torch.ones(1, 2, 8), torch.ones(1, 2, dtype=torch.bool),
+        edge_prefix=torch.ones(1, 3, 8))
+
+    assert captured["mask"].shape == (5, 3 + 5)
+    assert all(shape == (1, 3, 8) for shape in captured["key_shapes"])

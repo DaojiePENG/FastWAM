@@ -61,6 +61,13 @@ cloudedge:
   # state.  true = protocol default: the delayed side carries image +
   # proprioception of the same t-k entry (paper sec. 4 protocol contract).
   use_cloud_proprio: true
+  # Table 4 eval-time ablation "w/o cloud cache": set false to skip the cloud
+  # forward and hand the edge denoiser a zero-length planning cache, so the
+  # deployed policy conditions on language + current proprio + current edge
+  # views only.  Deployed checkpoints are trained with the cloud cache always
+  # on; this switch measures deployment-time reliance, not training without
+  # cloud (that would be a separate training ablation).
+  use_cloud_cache: true
 
 video_dit_config:
   has_image_input: false

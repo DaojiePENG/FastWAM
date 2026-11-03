@@ -222,6 +222,13 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_lora_fs_step32544_noedgeprefix",
       "LIBERO_EVAL_EXTRA=model.cloudedge.edge_prefix_enabled=false"],
      ["TAG=a6_lora_fs_step32544 ", "use_cloud_proprio"]),
+    # nocloudcache：与 deployed a6 行同 ckpt，唯一差异 = EVAL_EXTRA 关云端载荷
+    # （encode_cloud 返回零长度 planning cache）；TAG 必须区别于 deployed 行
+    ("leapbot_ce_eval_libero_a6_nocloudcache", "eval_libero_a6_nocloudcache",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_nocloudcache",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_cache=false"],
+     ["TAG=a6_lora_fs_step32544 ", "model.cloudedge.edge_prefix_enabled=false"]),
     # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
     # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
     # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）

@@ -221,6 +221,7 @@ class LeapBotCE(FastWAM):
                  cloud_kv_codec_bottleneck_dim=1024, cloud_kv_codec_use_decoder=False,
                  cloud_kv_codec_decoder_rank=256, cloud_kv_codec_dropout=0.0,
                  edge_prefix_enabled=True, use_cloud_proprio=True,
+                 use_cloud_cache=True,
                  **kwargs):
         super().__init__(*args, **kwargs)
         # Select-mode prefix K/V are concatenated with the per-layer video
@@ -249,6 +250,13 @@ class LeapBotCE(FastWAM):
         # encode_cloud), leaving a vision-only cloud payload; the edge side
         # always fuses its own current state.  Mirrors edge_prefix_enabled.
         self.use_cloud_proprio = bool(use_cloud_proprio)
+        # Eval-time ablation switch (Table 4 "w/o cloud cache"): set False to
+        # skip the cloud forward entirely -- encode_cloud returns a zero-length
+        # planning cache, so the edge denoiser attends only to its own prefix
+        # and action tokens.  Mirrors edge_prefix_enabled; checkpoints are
+        # trained with the cloud cache always on, so this measures
+        # deployment-time reliance on the cloud payload.
+        self.use_cloud_cache = bool(use_cloud_cache)
         self.stale_loss_lambda_max = float(stale_loss_lambda_max)
         self.stale_loss_warmup_steps = int(stale_loss_warmup_steps)
         self.training_step = 0
@@ -392,6 +400,12 @@ class LeapBotCE(FastWAM):
                 context, context_mask = context.unsqueeze(0), context_mask.unsqueeze(0)
             context = context.to(self.device, self.torch_dtype)
             context_mask = context_mask.to(self.device, torch.bool)
+        if not getattr(self, "use_cloud_cache", True):
+            # "w/o cloud cache" (eval-time ablation): skip the cloud forward
+            # entirely -- the planning payload is zero-length and the cloud
+            # proprio fusion is moot.  The language context is retained so the
+            # edge side still receives its prompt and current proprio.
+            return self._empty_cloud_cache(context, context_mask)
         if cloud_proprio is not None and cloud_proprio.ndim == 1:
             cloud_proprio = cloud_proprio.unsqueeze(0)
         cloud_context, cloud_context_mask = self._with_proprio(
@@ -401,6 +415,26 @@ class LeapBotCE(FastWAM):
             input_image.to(self.device, self.torch_dtype),
             cloud_context, cloud_context_mask, context, context_mask
         )
+
+    def _empty_cloud_cache(self, context, context_mask):
+        """Zero-length planning cache for the "w/o cloud cache" ablation.
+
+        ``video_seq_len == 0`` makes ``_predict_from_cache`` build the
+        attention mask over (edge prefix + action) tokens only, and the
+        zero-length per-layer K/V tensors cat away cleanly, so the denoiser
+        never sees a cloud planning token.  The language context is carried
+        through because the edge side conditions on it.
+        """
+        if context.ndim == 2:
+            context = context.unsqueeze(0)
+        if context_mask.ndim == 1:
+            context_mask = context_mask.unsqueeze(0)
+        dim = int(self.mot.num_heads) * int(self.mot.attn_head_dim)
+        layers = int(self.mot.num_layers)
+        empty = torch.zeros((int(context.shape[0]), 0, dim),
+                            device=self.device, dtype=self.torch_dtype)
+        return CloudPlanningCache(
+            [empty] * layers, [empty] * layers, context, context_mask, 0, 0)
 
     def _encode_edge_prefix(self, current_views):
         """Encode current views into per-layer prefix K/V in select mode."""
@@ -436,6 +470,13 @@ class LeapBotCE(FastWAM):
 
     def training_loss(self, sample, tiled=False):
         del tiled
+        if not getattr(self, "use_cloud_cache", True):
+            # Guard: use_cloud_cache=False is an eval-time ablation only.  A
+            # training run with this flag would silently keep training the
+            # full cloud branch while being labelled "w/o cloud cache".
+            raise ValueError(
+                "use_cloud_cache=False is an eval-time ablation; training "
+                "requires the cloud planning cache.")
         action = sample["action"].to(self.device, self.torch_dtype)
         context, context_mask = self._prepare_context(sample)
         edge_proprio = sample.get("edge_current_proprio", sample.get("proprio"))
