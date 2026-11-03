@@ -66,6 +66,10 @@ except ImportError:
 # ⚠️ smoke 必须用独立 TAG（manager 跳过已有结果的任务，会污染正式 sweep）。
 AI_FLOW_DELAYS = os.environ.get("AI_FLOW_DELAYS", "").strip()
 AI_FLOW_TAG = os.environ.get("AI_FLOW_TAG", "").strip()
+# 协议方差重复旋钮（11-03）：空 = 脚本缺省 1234；重复轮换 seed 采样完整
+# 协议随机性（delay 抽样按 RandomState(seed+episode_idx) 逐集钉死，
+# eval_libero_delayed.py:58 —— 同 seed 重复只测 GPU 非确定性）。
+AI_FLOW_SEED = os.environ.get("AI_FLOW_SEED", "").strip()
 AI_FLOW_SUITES = os.environ.get("AI_FLOW_SUITES", "").strip()
 AI_FLOW_TRIALS = os.environ.get("AI_FLOW_TRIALS", "").strip()
 # checkpoint："latest" = RUN_DIR 下最新 step_*.pt；或具体 ckpt 绝对路径
@@ -137,6 +141,8 @@ def _build_cmd() -> str:
         smoke += f" LIBERO_EVAL_DELAYS={_q(AI_FLOW_DELAYS)}"
     if AI_FLOW_TAG:
         smoke += f" LIBERO_EVAL_TAG={_q(AI_FLOW_TAG)}"
+    if AI_FLOW_SEED:
+        smoke += f" SEED={_q(AI_FLOW_SEED)}"
     if AI_FLOW_SUITES:
         smoke += f" LIBERO_EVAL_SUITES={_q(AI_FLOW_SUITES)}"
     if AI_FLOW_TRIALS:

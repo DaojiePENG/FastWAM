@@ -245,6 +245,29 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_lora_fs_step030380",
       "LIBERO_EVAL_DELAYS='0 40'", "GPU_NUM=4"],
      ["codec_a6_stale0", "codec_a6_stale1", "codec_a6_dtrain40", "use_cloud_proprio"]),
+    # ── deployed a6 行协议方差重复（11-03；3 seeds + 原轮 = n=4 报均值±std）──
+    # 同 ckpt step_032544 / D{0,10,20,40} / 50 trials / PACK=1；仅 TAG+SEED
+    # 不同（delay 采样按 seed+episode_idx 钉死，换 seed 才采样完整协议随机
+    # 性）；SEED 透传旋钮（AI_FLOW_SEED → SEED=）为本批新增。独立 TAG 根，
+    # manager 不跳格。决策规则防 cherry-pick：报均值±std，绝不取 max。
+    ("leapbot_ce_eval_libero_a6_rept1", "eval_libero_a6_rept1",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_recheck_seed1235", "SEED=1235",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'", "NUM_TRIALS=50",
+      "LIBERO_LIBERO_PACK=1"],
+     ["use_cloud_proprio", "step_019530", "step_023870"]),
+    ("leapbot_ce_eval_libero_a6_rept2", "eval_libero_a6_rept2",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_recheck_seed1236", "SEED=1236",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'", "NUM_TRIALS=50",
+      "LIBERO_LIBERO_PACK=1"],
+     ["use_cloud_proprio", "SEED=1235", "SEED=1237"]),
+    ("leapbot_ce_eval_libero_a6_rept3", "eval_libero_a6_rept3",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_recheck_seed1237", "SEED=1237",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'", "NUM_TRIALS=50",
+      "LIBERO_LIBERO_PACK=1"],
+     ["use_cloud_proprio", "SEED=1235", "SEED=1236"]),
 ]
 
 SNIP = r"""
