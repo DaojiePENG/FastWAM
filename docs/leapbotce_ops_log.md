@@ -3,6 +3,29 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-03 w/o cloud cache (eval-time) 消融就绪 — 任务名 `leapbot_ce_eval_libero_a6_nocloudcache`
+
+- **缘起（用户 11-03 提议）**：训练一个"只有本地模型"的对照证明云端价值；
+  中途改口径为"部署时关云端信息，像关 edge 信息那样"（= eval-time 消融）。
+  采纳后者：新代码路径 + 15ep 重训 ≈ 2-3 天墙钟，而 eval-time 行只花一次评测；
+  "从头不用云"的代价论文里已有外部基线兜底（FastWAM 97.1→2.7，ret 2.8%）。
+- **实现（commit a5b30ab）**：`use_cloud_cache` 开关（默认 True）。False 时
+  `encode_cloud` 跳过整个云端前向、返回零长度 planning cache（edge denoiser
+  只对 edge prefix + action token 做注意力，注意力掩码自动 = prefix+action）；
+  语言 context 与当前 proprio 保留。`training_loss` 加护栏——该开关仅限
+  eval-time，防误标训练消融。与 `w/o edge prefix (eval-time)` 镜像：一个关
+  本地前缀、一个关云端载荷，合成"两条流各自 load-bearing"的对称证据。
+- **验证**：单测 23 passed（新增 2 例：跳云前向 + 空 cache 掩码）；分发回归
+  34/34 PASS；hydra compose 端到端实证 `model.cloudedge.use_cloud_cache=false`
+  在 `task=libero_all_leapbotce_codec_lora` 下生效（默认 True / 覆盖 False）。
+- **提交口径**：任务名 `leapbot_ce_eval_libero_a6_nocloudcache`，userPath =
+  FastWAM 根，建议 4 卡（PACK=1，8 卡有 10-19 内存墙签名风险）；TAG =
+  a6_lora_fs_step32544_nocloudcache（独立根，勿与 deployed 行混）；ETA 4×H200
+  估 8-11h（比 noedgeprefix 的 13.8h 快，省掉云端 encode）。首屏三查：
+  ① resolved yaml `use_cloud_cache: false`；② eval task 仍是 codec_lora；
+  ③ 首格出结果。结果入表行名必须带 `(eval-time)`，正文表述为"部署模型对
+  云端载荷的依赖"，不可写成"无云训练"。
+
 ## 2026-11-03 AHA-WAM 无 LIBERO 行定性：官方无 LIBERO 权重/训练路径（非"有 ckpt 没跑"）
 
 - **问题**（用户）：AHA-WAM [2] 为什么 LIBERO 表没有对应结果，是找不到检查点
