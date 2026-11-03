@@ -470,13 +470,6 @@ class LeapBotCE(FastWAM):
 
     def training_loss(self, sample, tiled=False):
         del tiled
-        if not getattr(self, "use_cloud_cache", True):
-            # Guard: use_cloud_cache=False is an eval-time ablation only.  A
-            # training run with this flag would silently keep training the
-            # full cloud branch while being labelled "w/o cloud cache".
-            raise ValueError(
-                "use_cloud_cache=False is an eval-time ablation; training "
-                "requires the cloud planning cache.")
         action = sample["action"].to(self.device, self.torch_dtype)
         context, context_mask = self._prepare_context(sample)
         edge_proprio = sample.get("edge_current_proprio", sample.get("proprio"))
@@ -495,6 +488,34 @@ class LeapBotCE(FastWAM):
         timestep = self.train_action_scheduler.sample_training_t(action.shape[0], self.device, action.dtype)
         noisy = self.train_action_scheduler.add_noise(action, noise, timestep)
         target = self.train_action_scheduler.training_target(action, noise, timestep)
+        valid = None
+        if sample.get("action_is_pad") is not None:
+            valid = (~sample["action_is_pad"].to(self.device, torch.bool)).float()
+
+        def compute(pred):
+            token = F.mse_loss(pred.float(), target.float(), reduction="none").mean(2)
+            per_sample = token.mean(1) if valid is None else (token * valid).sum(1) / valid.sum(1).clamp(min=1)
+            return (per_sample * self.train_action_scheduler.training_weight(timestep).to(per_sample)).mean()
+
+        if not getattr(self, "use_cloud_cache", True):
+            # "w/o cloud" training ablation (edge-only): no cloud forward at
+            # all -- a zero-length cache plus the edge prefix/action tokens is
+            # the entire conditioning.  There is no fresh/stale split, so the
+            # stale-loss weight is unused and the loss is the single action
+            # loss.  Cloud images and delay indices are still served by the
+            # dataset but ignored here.
+            empty = self._empty_cloud_cache(context, context_mask)
+            pred = self._predict_from_cache(
+                empty, noisy, timestep, edge_context, edge_mask, edge_prefix)
+            loss = compute(pred)
+            if self.training:
+                self.training_step += 1
+            delay = sample.get("cloud_delay_steps")
+            return loss, {"loss_fresh": float(loss.detach()),
+                          "loss_stale": 0.0,
+                          "stale_loss_weight": 0.0,
+                          "delay_steps": float(delay.float().mean()) if delay is not None else 0.0}
+
         cloud_current_proprio = sample.get("cloud_current_proprio", edge_proprio)
         cloud_stale_proprio = sample.get("cloud_stale_proprio")
         if (self.proprio_encoder is not None and self.use_cloud_proprio
@@ -519,14 +540,6 @@ class LeapBotCE(FastWAM):
             fresh, noisy, timestep, edge_context, edge_mask, edge_prefix)
         pred_stale = self._predict_from_cache(
             stale, noisy, timestep, edge_context, edge_mask, edge_prefix)
-        valid = None
-        if sample.get("action_is_pad") is not None:
-            valid = (~sample["action_is_pad"].to(self.device, torch.bool)).float()
-
-        def compute(pred):
-            token = F.mse_loss(pred.float(), target.float(), reduction="none").mean(2)
-            per_sample = token.mean(1) if valid is None else (token * valid).sum(1) / valid.sum(1).clamp(min=1)
-            return (per_sample * self.train_action_scheduler.training_weight(timestep).to(per_sample)).mean()
 
         fresh_loss, stale_loss = compute(pred_fresh), compute(pred_stale)
         lam = stale_loss_weight(self.training_step, self.stale_loss_warmup_steps,
@@ -601,6 +614,8 @@ class LeapBotCE(FastWAM):
                    "method": "LeapBotCE", "step": step, "torch_dtype": str(self.torch_dtype),
                    "leapbotce_meta": {"edge_num_views": self.edge_num_views,
                                        "edge_vision_mode": self.edge_vision.mode,
+                                       "use_cloud_cache": bool(
+                                           getattr(self, "use_cloud_cache", True)),
                                        "stale_loss_lambda_max": self.stale_loss_lambda_max,
                                        "stale_loss_warmup_steps": self.stale_loss_warmup_steps}}
         cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)
@@ -637,6 +652,16 @@ class LeapBotCE(FastWAM):
                     f"Checkpoint was trained with edge_vision_mode={checkpoint_mode!r} but "
                     f"the model uses {self.edge_vision.mode!r}; rebuild the model with the "
                     "matching mode before loading."
+                )
+            ckpt_cloud_cache = payload.get("leapbotce_meta", {}).get("use_cloud_cache")
+            if ckpt_cloud_cache is False and getattr(self, "use_cloud_cache", True):
+                # One-way guard: an edge-only checkpoint evaluated with the
+                # cloud path re-enabled would silently condition on a branch
+                # that never received a gradient.  The reverse direction
+                # (cloud-trained ckpt, eval-time cloud off) is legitimate.
+                raise ValueError(
+                    "Checkpoint was trained edge-only (use_cloud_cache=False); rebuild "
+                    "the model with model.cloudedge.use_cloud_cache=false."
                 )
             adapter_state = payload.get("cloud_kv_adapter")
             if adapter_state is not None:

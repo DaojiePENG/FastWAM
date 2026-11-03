@@ -3,6 +3,37 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-03 w/o cloud (training, edge-only) 训练变体就绪 — 任务名 `leapbot_ce_train_libero_a6_edgeonly`
+
+- **缘起（用户 11-03 拍板）**：eval-time 行只能证明"部署模型依赖云端"，
+  审稿人会反问"它从没见过无云数据"；补训练消融 = 从头只训本地流，回答
+  "训练后本地流能不能补回来"。两行互补，构成 Table 4 的 w/o-cloud 证据对。
+- **实现**：`training_loss` 新增 edge-only 分支（use_cloud_cache=false →
+  不做任何云端前向、零长度 cache + edge prefix + action token、single loss、
+  无 stale 分支）；`save_checkpoint` 写入 `use_cloud_cache` 到 leapbotce_meta，
+  `load_checkpoint` 加**单向护栏**（ckpt 为 edge-only 而评测启用云 → 直接报错；
+  反向 = 合法 eval-time 消融，不拦）。
+- **训练变体** `AIFlow_config_libero_a6_edgeonly.py`：沿用 a6 task 的 model 块，
+  与 a6 的差异仅三条 override —— `use_cloud_cache=false`（机制本身）、
+  `video_lora.enabled=false`、`kv_codec.enabled=false`（后两者挂云端，云缺席
+  时无梯度 = unused-parameter 雷）。其余 15ep/32544 步、d_train=20、seed42、
+  lr 2.8e-4、bs16×8 卡 = eff128、cosine、冷启动、mot_pretrained_path 同源
+  逐字保留。run 名 `codec_a6_edgeonly_15ep_seed42_h200`。
+- **评测变体** `AIFlow_config_eval_libero_a6_edgeonly.py` 已备：TAG
+  `a6_edgeonly_step32544`，EVAL_EXTRA 必须带 `use_cloud_cache=false`
+  （否则 ckpt 护栏拒绝），等 `step_032544.pt` 落盘再提。
+- **预期形态**：协议只加龄云端、本地流永远看当前帧 → 该行曲线应接近**平**，
+  retention 100% 是构造性的，不可与 a6 的 retention 直接比；价值在"每窗
+  绝对值都更低"。论文行名 `w/o cloud (training, edge-only)`。
+- **验证**：单测 24 passed（新增 edge-only 训练单测：云分支零调用、
+  loss_stale=0、空 cache 0 长度）；分发回归 **36/36 PASS**；hydra compose 实证
+  三 override 在 `task=libero_all_leapbotce_codec_lora` 下全部生效且其余超参
+  与 a6 一致（32544/16/2.8e-4/select-5/warmup -1）。
+- **提交口径**：任务名 `leapbot_ce_train_libero_a6_edgeonly`，userPath =
+  FastWAM 根，**8 卡**（eff batch 128 必须与 a6 对齐；少卡会触发 lr 折算、
+  动力学不同）；ETA 25-40h（a6 8×H100 锚 44h，省了云端前向但数据管线仍是
+  瓶颈，别按折半估）。首屏四查见任务汇报。
+
 ## 2026-11-03 w/o cloud cache (eval-time) 消融就绪 — 任务名 `leapbot_ce_eval_libero_a6_nocloudcache`
 
 - **缘起（用户 11-03 提议）**：训练一个"只有本地模型"的对照证明云端价值；

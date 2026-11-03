@@ -670,3 +670,64 @@ def test_empty_cloud_cache_attention_covers_prefix_and_action_only():
 
     assert captured["mask"].shape == (5, 3 + 5)
     assert all(shape == (1, 3, 8) for shape in captured["key_shapes"])
+
+
+def test_edge_only_training_skips_cloud_branch_and_stale_loss():
+    class TinyTrainScheduler:
+        def sample_training_t(self, batch, device, dtype):
+            return torch.zeros(batch, dtype=dtype)
+
+        def add_noise(self, action, noise, timestep):
+            return action + noise
+
+        def training_target(self, action, noise, timestep):
+            return noise
+
+        def training_weight(self, timestep):
+            return torch.ones_like(timestep)
+
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.device = torch.device("cpu")
+    model.torch_dtype = torch.float32
+    model.use_cloud_cache = False
+    model.use_cloud_proprio = True
+    model.proprio_encoder = None
+    model.training_step = 0
+    model.stale_loss_lambda_max = 0.5
+    model.stale_loss_warmup_steps = 10
+    model.mot = SimpleNamespace(num_layers=2, num_heads=2, attn_head_dim=4)
+    model.edge_vision = SimpleNamespace(mode="select")
+    model.train_action_scheduler = TinyTrainScheduler()
+
+    batch, horizon, dim = 2, 5, 8
+    model._prepare_context = lambda sample: (
+        torch.ones(batch, 2, dim), torch.ones(batch, 2, dtype=torch.bool))
+    model._encode_edge_prefix = lambda views: torch.ones(batch, 3, dim)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("cloud branch must not run in edge-only training")
+
+    model._encode_cloud_tensor = boom
+    captured = {}
+
+    def predict_from_cache(cache, noisy, timestep, edge_context, edge_mask, edge_prefix=None):
+        captured["video_seq_len"] = cache.video_seq_len
+        captured["prefix_len"] = int(edge_prefix.shape[1])
+        return torch.zeros_like(noisy)
+
+    model._predict_from_cache = predict_from_cache
+
+    sample = {
+        "action": torch.zeros(batch, horizon, dim),
+        "edge_current_views": torch.zeros(batch, 2, 3, 8, 8),
+        "cloud_delay_steps": torch.tensor([20.0, 20.0]),
+    }
+    loss, metrics = model.training_loss(sample)
+
+    assert torch.isfinite(loss)
+    assert captured["video_seq_len"] == 0
+    assert captured["prefix_len"] == 3
+    assert metrics["loss_stale"] == 0.0
+    assert metrics["stale_loss_weight"] == 0.0
+    assert metrics["delay_steps"] == pytest.approx(20.0)

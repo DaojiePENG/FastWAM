@@ -170,6 +170,16 @@ CASES = [
       "model.cloudedge.use_cloud_proprio=false",
       "model.mot_pretrained_path="],
      ["use_cloud_proprio=true"]),
+    # edgeonly（11-03）：Table 4「w/o cloud (training)」——训练完全不做云端
+    # 前向；LoRA/codec 挂云端、云缺席时无梯度，必须同关
+    ("leapbot_ce_train_libero_a6_edgeonly", "libero_a6_edgeonly",
+     ["--delay 20", "--stale-lambda 0.5",
+      "--run-name codec_a6_edgeonly_15ep_seed42_h200",
+      "model.cloudedge.use_cloud_cache=false",
+      "model.video_lora.enabled=false",
+      "model.cloudedge.kv_codec.enabled=false",
+      "model.mot_pretrained_path="],
+     ["use_cloud_cache=true", "video_lora.enabled=true", "kv_codec.enabled=true"]),
     # ── Table 4 四行终点 eval 变体（10-28；薄委托 a6_lora_fs eval 同款）──
     # 协议四旋钮 DELAYS/TAG/TRIALS/PACK+GPU_NUM 与 deployed a6 行一致；
     # stale0 额外断言不得串行（RUN_DIR/Tag 锚定）且不带 use_cloud_proprio 注入
@@ -229,6 +239,13 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_lora_fs_step32544_nocloudcache",
       "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_cache=false"],
      ["TAG=a6_lora_fs_step32544 ", "model.cloudedge.edge_prefix_enabled=false"]),
+    # edgeonly eval：edge-only 训练线终点；EVAL_EXTRA 必须带 use_cloud_cache
+    # =false（ckpt meta 护栏会拒绝漏注入的评测）
+    ("leapbot_ce_eval_libero_a6_edgeonly", "eval_libero_a6_edgeonly",
+     ["codec_a6_edgeonly_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_edgeonly_step32544",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_cache=false"],
+     ["TAG=a6_lora_fs_step32544 ", "codec_a6_lora_fs_15ep_seed42_h200"]),
     # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
     # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
     # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）
