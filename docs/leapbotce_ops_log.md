@@ -3,6 +3,26 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-03 10:05 deployed a6 行协议方差重复变体就绪（3 seeds，n=4 报均值±std）
+
+- **用户拍板**：a7 不切换主线；deployed 行（a6_lora_fs step_032544，
+  91.0/83.7/79.7/70.7）加跑 3 轮协议重复，报均值±标准差——把「a1 vs a6
+  差异在噪声内」升级成有统计支撑的表述。w/o producer adapter 行（=a1，
+  91.5/84.3/81.2/70.1）经查与 a6 各窗差 ±0.5~1.5pp 全在训练随机量级、
+  D40 反而 a6 优，**不换行**（跨基准口径/方法叙事/真机 demo 三重一致性
+  代价）。
+- **变体（commit 19477c0，checker 33/33）**：`AIFlow_config_eval_libero_
+  a6_rept{1,2,3}.py`，任务名 `leapbot_ce_eval_libero_a6_rept{1,2,3}`。
+  协议与原轮逐项一致（同 RUN_DIR/ckpt step_032544/D{0,10,20,40}/四套件/
+  50 trials/PACK=1），仅 TAG（a6_recheck_seed123{5,6,7}，独立根）与
+  SEED 不同。
+- **seed 必须换的实锤**：delay 采样按 `RandomState(seed+episode_idx)`
+  逐集钉死（`experiments/libero/eval_libero_delayed.py:58`）——同 seed
+  重复只测 GPU 非确定性、低估协议方差；基座加 `AI_FLOW_SEED` 透传旋钮
+  （空 = 缺省 1234，向后兼容）。
+- **决策规则（提交前钉死，防 cherry-pick）**：报 4 seed 均值±std；绝不
+  取 max/择优替换；任一窗偏差 ≥2~3σ → 异常即停查协议/基建再谈表格。
+
 ## 2026-11-02 20:45 AHA D60/80 补窗烤入变体（平台无 env 栏实锤；AHA 排队单停止重提）
 
 - **平台限制实锤（11-02 用户确认）**：提单系统只能选卡数/卡型 + 任务命名，
