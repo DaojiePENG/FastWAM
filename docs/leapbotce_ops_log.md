@@ -3,6 +3,28 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-03 AHA-WAM 无 LIBERO 行定性：官方无 LIBERO 权重/训练路径（非"有 ckpt 没跑"）
+
+- **问题**（用户）：AHA-WAM [2] 为什么 LIBERO 表没有对应结果，是找不到检查点
+  还是有但没跑。
+- **取证**：① 论文 LIBERO 表（`sec/4_experiments.tex` 第 40-53 行）无 AHA-WAM
+  行，只有 RoboTwin 表有（93.5/78.7/54.3/29.6，ret 31.7%）；②
+  `RoboTwin/XPolicyLab/policy/AHA_WAM/` 全树 grep "libero" 零命中，train.sh 头
+  注释固定 `task=robodojo_ahawam_finetune_32_kv_xpolicy`、`model=ahawam`，ckpt
+  命名按 `<bench_name>-<ckpt>-...`；③ README 官方结果链接 = RoboDojo
+  LeaderBoard，上游 = github.com/serene-sivy/AHA-WAM（model assets &
+  checkpoints 由上游发布）；④ 本地/共享盘仅 `robotwin_ahawam.pt`（14.7GB），
+  后台全盘搜 `*ahawam*`/`*aha_wam*` 无非 RoboTwin 命中；⑤ ops log 无任何
+  AHA-LIBERO 评测尝试记录。
+- **结论**：AHA-WAM 是 RoboTwin/RoboDojo 原生方法，官方未发布 LIBERO
+  checkpoint、也没有 LIBERO 训练/评测入口 → 属"不存在可跑检查点"，不是
+  "有但没跑"。要补 LIBERO 行等于用其配方在 LIBERO 上重训（数据管线 + 32-kv
+  finetune，多天 GPU），产出的是我方训练的变体而非官方 baseline，且超出
+  11-10 摘要 deadline 预算，不做。
+- **对外口径**（措辞归论文侧）：LIBERO 表注或正文加一句 "AHA-WAM is a
+  RoboTwin-native method and is evaluated on RoboTwin only (no official LIBERO
+  checkpoint is released)."
+
 ## 2026-11-03 10:05 deployed a6 行协议方差重复变体就绪（3 seeds，n=4 报均值±std）
 
 - **用户拍板**：a7 不切换主线；deployed 行（a6_lora_fs step_032544，
