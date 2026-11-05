@@ -285,12 +285,24 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_singleage_step32544",
       "LIBERO_EVAL_DELAYS='0 10 20 40'"],
      ["codec_a6_lora_fs_15ep_seed42_h200", "LIBERO_EVAL_EXTRA"]),
-    # 11-05 出差无人值守合并单：等两条训练线终点 ckpt 再连跑两行四窗评测；
-    # 不得串到任何单行变体（长后缀裁决），CMD 必须是 wait 脚本而不是直接 sweep
+    # 11-05 出差无人值守：等训练线终点 ckpt 再跑四窗评测。三张单共用同一
+    # wait 脚本，靠 SKIP_* 环境变量分工；长后缀裁决保证不串到单行变体。
+    # 合并单（串行两行）
     ("leapbot_ce_eval_libero_a6_trainablations", "eval_libero_a6_trainablations",
      ["bash scripts/eval_a6_trainablations_wait.sh"],
      ["eval_leapbotce_libero_sweep_2653853.sh",
-      "LIBERO_EVAL_TAG", "LEAPBOTCE_CKPT"]),
+      "LIBERO_EVAL_TAG", "LEAPBOTCE_CKPT", "LEAPBOTCE_SKIP_"]),
+    # 并行双单（用户 11-05 拍板：各 4 卡，比串行合并单早 ~6.5 h 收工）
+    ("leapbot_ce_eval_libero_a6_trainablations_edgeonly",
+     "eval_libero_a6_trainablations_edgeonly",
+     ["LEAPBOTCE_SKIP_SINGLEAGE=1 bash scripts/eval_a6_trainablations_wait.sh"],
+     ["eval_leapbotce_libero_sweep_2653853.sh", "LIBERO_EVAL_TAG",
+      "LEAPBOTCE_SKIP_EDGEONLY"]),
+    ("leapbot_ce_eval_libero_a6_trainablations_singleage",
+     "eval_libero_a6_trainablations_singleage",
+     ["LEAPBOTCE_SKIP_EDGEONLY=1 bash scripts/eval_a6_trainablations_wait.sh"],
+     ["eval_leapbotce_libero_sweep_2653853.sh", "LIBERO_EVAL_TAG",
+      "LEAPBOTCE_SKIP_SINGLEAGE"]),
     # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
     # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
     # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）
