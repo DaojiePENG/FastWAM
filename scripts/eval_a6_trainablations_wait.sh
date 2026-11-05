@@ -112,4 +112,4 @@ if [[ "${LEAPBOTCE_SKIP_SINGLEAGE:-0}" != "1" ]]; then
   fi
 fi
 
-SAY "done: both rows attempted; see per-tag logs"
+SAY "done: requested row(s) attempted; see per-tag logs"
