@@ -3,6 +3,29 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-05 19:00 出差期无人值守准备：a6 训练消融合并评测单建成（dispatch 43/43 PASS）
+
+- **背景**：用户 11-05 晚出差两天，不能按点提交 AIFlow 单。`tab:ablations` 训练块
+  还差 edgeonly / singleage 两行，二者终点 ckpt（step_032544.pt）分别 11-06 ≈08:00、
+  ≈13:25 才落盘，普通变体配置在 import 期会因 ckpt 不存在直接拒绝。
+- **产物**（全部新增，未改动任何在跑任务引用的脚本）：
+  - `scripts/eval_a6_trainablations_wait.sh`：等 ckpt（size>1GB 且 120 s 不变）→ 连跑
+    两次四窗 sweep。契约与普通变体逐项相同（TAG `a6_edgeonly_step32544` /
+    `a6_singleage_step32544`、delays `0 10 20 40`、trials 50、PACK=1、edgeonly 带
+    `use_cloud_cache=false`）。最长等 36 h；幂等（sweep 跳过已有格）；带心跳
+    `logs/a6_trainablations_wait.heartbeat`；有 DRYRUN 模式。
+  - `AIFlow_config_eval_libero_a6_trainablations.py`：平台入口，CMD 指向上面脚本，
+    **不做 ckpt 存在性校验**（本变体的意义就是等它出现）。
+  - `scripts/check_aiflow_dispatch.py` 新增该任务名用例（断言长后缀裁决、CMD 必须是
+    wait 脚本而非直接 sweep）：**43/43 PASS**。
+  - `docs/a6_trainablations_runbook_20261105.md`：提交参数、落数与盯盘口径。
+- **本地验证**：`bash -n` 通过；用已存在的 step_021700.pt 干跑 wait 快路径，120 s 稳
+  定判定正常、env 组装正常、DRYRUN 打印的 CMD 与普通变体一致。
+- **代价/取舍**：合并单在等待期空转 4 卡最多 ~18 h；若用户能按点提两次普通单则等价，
+  runbook 已写明。
+- **另**：nocloudcache 22865923 已不在运行列表（11-05 18:44 用户所提供的清单），即已
+  自行结束，最终态 D20 4/40、D40 0/40，按 11-04 决定冻结不补。
+
 ## 2026-11-05 13:30 盯盘：RoboTwin ours rs8 六窗全齐（D=80 = 75.12%，paper 932ac57）
 
 - **ours rs8 `robotwin_v2_sweep_b6_ext_rs8` 300/300 格落满**：88.56 / 86.08 / 85.28 /

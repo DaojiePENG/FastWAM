@@ -285,6 +285,12 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_singleage_step32544",
       "LIBERO_EVAL_DELAYS='0 10 20 40'"],
      ["codec_a6_lora_fs_15ep_seed42_h200", "LIBERO_EVAL_EXTRA"]),
+    # 11-05 出差无人值守合并单：等两条训练线终点 ckpt 再连跑两行四窗评测；
+    # 不得串到任何单行变体（长后缀裁决），CMD 必须是 wait 脚本而不是直接 sweep
+    ("leapbot_ce_eval_libero_a6_trainablations", "eval_libero_a6_trainablations",
+     ["bash scripts/eval_a6_trainablations_wait.sh"],
+     ["eval_leapbotce_libero_sweep_2653853.sh",
+      "LIBERO_EVAL_TAG", "LEAPBOTCE_CKPT"]),
     # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
     # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
     # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）
