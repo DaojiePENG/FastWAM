@@ -27,6 +27,10 @@ EVALUATION:
   replan_steps: 10
   # Only the cloud planning observation is delayed by this many environment steps.
   max_delay_steps: 0
+  # Info-matched control (eval-time ablation): when true, the edge side also
+  # consumes the aged observation (same age as the cloud one), reproducing the
+  # information condition of a monolithic delayed policy with our own weights.
+  edge_uses_delayed_obs: false
   binarize_gripper: true
   use_action_ensembler: false
   visualize_future_video: false

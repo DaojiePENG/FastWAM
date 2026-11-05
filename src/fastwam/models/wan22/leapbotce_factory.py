@@ -60,6 +60,8 @@ def create_leapbotce(edge_vision=None, cloudedge=None, mot_pretrained_path=None,
         edge_prefix_enabled=bool(cloudedge.get("edge_prefix_enabled", True)),
         use_cloud_proprio=bool(cloudedge.get("use_cloud_proprio", True)),
         use_cloud_cache=bool(cloudedge.get("use_cloud_cache", True)),
+        cloud_cache_mode=str(cloudedge.get("cloud_cache_mode", "full")),
+        paired_age_mode=str(cloudedge.get("paired_age_mode", "paired")),
     )
     if mot_pretrained_path:
         # Optional init from a released FastWAM checkpoint (v1 full-MoT format:

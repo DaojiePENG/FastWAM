@@ -246,6 +246,45 @@ CASES = [
       "LIBERO_EVAL_TAG=a6_edgeonly_step32544",
       "LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_cache=false"],
      ["TAG=a6_lora_fs_step32544 ", "codec_a6_lora_fs_15ep_seed42_h200"]),
+    # ── 11-03 审稿补实验（CVPR2027 模拟审稿 P0 三条 + Paired-Age 行为对照）──
+    # consttoken：同 ckpt，云 token 内容置零但长度不变（排除"槽位容量"解释）
+    ("leapbot_ce_eval_libero_a6_consttoken", "eval_libero_a6_consttoken",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_consttoken",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.cloud_cache_mode=constant"],
+     ["TAG=a6_lora_fs_step32544 ", "use_cloud_cache=false", "cloud_cache_mode=shuffled"]),
+    # shuffledtoken：K/V 同序置换（内容统计保留、结构破坏）；不得串到 constant
+    ("leapbot_ce_eval_libero_a6_shuffledtoken", "eval_libero_a6_shuffledtoken",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_shuffledtoken",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.cloud_cache_mode=shuffled"],
+     ["TAG=a6_lora_fs_step32544 ", "use_cloud_cache=false", "cloud_cache_mode=constant"]),
+    # swaptoken：跨 episode 换 cache（唯一干净的 token 对照；shuffled 已证为空操作）
+    ("leapbot_ce_eval_libero_a6_swaptoken", "eval_libero_a6_swaptoken",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_swaptoken",
+      "LIBERO_EVAL_EXTRA=model.cloudedge.cloud_cache_mode=swap"],
+     ["TAG=a6_lora_fs_step32544 ", "use_cloud_cache=false",
+      "cloud_cache_mode=shuffled", "cloud_cache_mode=constant"]),
+    # edgedelay：信息条件对齐对照——端侧也吃同龄历史观测（Concern 1）
+    ("leapbot_ce_eval_libero_a6_edgedelay", "eval_libero_a6_edgedelay",
+     ["codec_a6_lora_fs_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_lora_fs_step32544_edgedelay",
+      "LIBERO_EVAL_EXTRA=EVALUATION.edge_uses_delayed_obs=true"],
+     ["TAG=a6_lora_fs_step32544 ", "use_cloud_cache=false"]),
+    # singleage 训练：与 a6 逐项相同，唯一任务差异 = 单分支随机龄
+    ("leapbot_ce_train_libero_a6_singleage", "libero_a6_singleage",
+     ["--delay 20", "--stale-lambda 0.5",
+      "--run-name codec_a6_singleage_15ep_seed42_h200",
+      "model.cloudedge.paired_age_mode=single_random",
+      "model.mot_pretrained_path="],
+     ["paired_age_mode=paired", "use_cloud_cache=false", "video_lora.enabled=false"]),
+    # singleage eval：推理路径与 a6 相同，不得带任何行为 override
+    ("leapbot_ce_eval_libero_a6_singleage", "eval_libero_a6_singleage",
+     ["codec_a6_singleage_15ep_seed42_h200", "step_032544.pt",
+      "LIBERO_EVAL_TAG=a6_singleage_step32544",
+      "LIBERO_EVAL_DELAYS='0 10 20 40'"],
+     ["codec_a6_lora_fs_15ep_seed42_h200", "LIBERO_EVAL_EXTRA"]),
     # ── deployed a6 行 checkpoint 筛选 stage-1（10-30；D{0,40} 两窗）──
     # 评测对象 = a6_lora_fs run 的 ep9/11/13/14 终点；只跑两窗（stage-2 另单
     # 补 "10 20"，同 TAG 共用结果根）。选择标准：<2 点改善不换（见变体 docstring）

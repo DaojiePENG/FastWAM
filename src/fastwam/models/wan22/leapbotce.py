@@ -221,7 +221,8 @@ class LeapBotCE(FastWAM):
                  cloud_kv_codec_bottleneck_dim=1024, cloud_kv_codec_use_decoder=False,
                  cloud_kv_codec_decoder_rank=256, cloud_kv_codec_dropout=0.0,
                  edge_prefix_enabled=True, use_cloud_proprio=True,
-                 use_cloud_cache=True,
+                 use_cloud_cache=True, cloud_cache_mode="full",
+                 paired_age_mode="paired",
                  **kwargs):
         super().__init__(*args, **kwargs)
         # Select-mode prefix K/V are concatenated with the per-layer video
@@ -257,6 +258,51 @@ class LeapBotCE(FastWAM):
         # trained with the cloud cache always on, so this measures
         # deployment-time reliance on the cloud payload.
         self.use_cloud_cache = bool(use_cloud_cache)
+        # Planning-token controls (eval-time ablations, Table 4):
+        #   full      -- the real cloud planning tokens (default)
+        #   off       -- zero-length cache (same as use_cloud_cache=False)
+        #   constant  -- same-length cache of zeros, so the denoiser keeps the
+        #                cloud slots but receives no information in them
+        #   shuffled  -- same tokens with the sequence positions permuted.
+        #                NOTE: this is a mathematical no-op.  prefill bakes
+        #                RoPE into k before caching and the denoiser cats the
+        #                cached K/V into flash_attention, whose output is a
+        #                softmax-weighted sum over V and therefore invariant
+        #                to a joint (K,V) permutation.  Kept only so old
+        #                runs stay reproducible; do not use as an ablation.
+        #   swap      -- replace the whole cache with the one prefilled for the
+        #                PREVIOUS episode on this model instance (cross-scene).
+        #                Slot count, per-slot norms and attention geometry are
+        #                exactly those of a real payload; only the correspondence
+        #                to the current scene (and to its prompt, which is baked
+        #                into the cached K/V) is destroyed.  This is the only
+        #                token control that isolates "does the content matter".
+        mode = str(cloud_cache_mode or "full").strip().lower()
+        if not self.use_cloud_cache:
+            mode = "off"
+        if mode not in ("full", "off", "constant", "shuffled", "swap"):
+            raise ValueError(
+                "`cloud_cache_mode` must be one of full/off/constant/shuffled/swap, "
+                f"got {cloud_cache_mode!r}"
+            )
+        self.cloud_cache_mode = mode
+        self.use_cloud_cache = mode != "off"
+        # One-slot cross-episode bank for cloud_cache_mode="swap" plus counters
+        # so the eval log can prove how many episodes were actually swapped
+        # (the first episode on each worker has nothing to swap against).
+        self._swap_bank = None
+        self._swap_used_count = 0
+        self._swap_warmup_count = 0
+        # Paired-age supervision variant (Table 4 "single-branch random-age"):
+        #   paired        -- fresh + stale branches, L=(1-lam)L_fresh+lam L_stale
+        #   single_random -- one aged cloud branch per step (the dataset samples
+        #                    the age), single action loss; no fresh branch
+        pa_mode = str(paired_age_mode or "paired").strip().lower()
+        if pa_mode not in ("paired", "single_random"):
+            raise ValueError(
+                f"`paired_age_mode` must be paired or single_random, got {paired_age_mode!r}"
+            )
+        self.paired_age_mode = pa_mode
         self.stale_loss_lambda_max = float(stale_loss_lambda_max)
         self.stale_loss_warmup_steps = int(stale_loss_warmup_steps)
         self.training_step = 0
@@ -375,8 +421,75 @@ class LeapBotCE(FastWAM):
             tokens_per_frame_out = cloud_kv_codec.num_tokens
         if edge_context is None:
             edge_context, edge_context_mask = cloud_context, cloud_context_mask
-        return CloudPlanningCache(cache_k, cache_v, edge_context, edge_context_mask,
-                                  planning_seq_len, tokens_per_frame_out)
+        cache = CloudPlanningCache(cache_k, cache_v, edge_context, edge_context_mask,
+                                   planning_seq_len, tokens_per_frame_out)
+        return self._apply_cache_token_ablation(cache)
+
+    def _apply_cache_token_ablation(self, cache):
+        """Constant / shuffled planning-token controls (eval-time ablations).
+
+        Both preserve ``video_seq_len`` so the attention mask, the edge prefix
+        concatenation and the per-step compute are identical to the real
+        payload; only the token content changes.  Keeping the layout fixed is
+        what separates "the model needs cloud tokens" (constant/shuffled still
+        degrade) from "the model ignores the cloud" (they match full).
+        """
+        mode = getattr(self, "cloud_cache_mode", "full")
+        if mode == "swap":
+            return self._swap_cloud_cache(cache)
+        if mode not in ("constant", "shuffled"):
+            return cache
+        if mode == "constant":
+            cache_k = [torch.zeros_like(k) for k in cache.video_cache_k]
+            cache_v = [torch.zeros_like(v) for v in cache.video_cache_v]
+        else:
+            seq = int(cache.video_seq_len)
+            if seq <= 1:
+                return cache
+            idx = torch.randperm(seq, device=cache.video_cache_k[0].device)
+            cache_k = [k.index_select(1, idx) for k in cache.video_cache_k]
+            cache_v = [v.index_select(1, idx) for v in cache.video_cache_v]
+        return CloudPlanningCache(cache_k, cache_v, cache.context, cache.context_mask,
+                                  cache.video_seq_len, cache.video_tokens_per_frame)
+
+    def _swap_cloud_cache(self, cache):
+        """Cross-episode cloud-cache replacement (eval-time ablation, Table 4).
+
+        Every call stores the cache it was given and returns the cache prefilled
+        for the previous call, so episode *n* is conditioned on episode *n-1*'s
+        cloud payload.  What is preserved: slot count, ``video_seq_len``, the
+        attention mask, every per-slot K/V norm, the RoPE positions baked into
+        ``k``, and the per-step compute -- the payload is a genuine cache, not a
+        synthetic stand-in.  What is destroyed: the mapping from those slots to
+        the current scene (and to the current prompt, which the cloud prefill
+        folds into K/V).  Contrast with ``constant``, whose zeroed keys hand
+        ``exp(0)=1`` to hundreds of softmax slots and collapse the model for
+        reasons that have nothing to do with information content.
+
+        The very first episode on each model instance has no predecessor and
+        therefore runs on its real cache; ``_swap_warmup_count`` records it so
+        the eval report can state the exact number of swapped episodes.
+        """
+        current = ([k.detach().clone() for k in cache.video_cache_k],
+                   [v.detach().clone() for v in cache.video_cache_v])
+        bank = getattr(self, "_swap_bank", None)
+        compatible = (
+            bank is not None
+            and len(bank[0]) == len(current[0])
+            and bank[0][0].shape == current[0][0].shape
+            and bank[0][0].dtype == current[0][0].dtype
+        )
+        self._swap_bank = current
+        if not compatible:
+            self._swap_warmup_count += 1
+            return cache
+        self._swap_used_count += 1
+        if self._swap_used_count == 1:
+            print(f"[leapbotce][swap] first cross-episode cache swap "
+                  f"(warm-up episodes on this worker: {self._swap_warmup_count})",
+                  flush=True)
+        return CloudPlanningCache(bank[0], bank[1], cache.context, cache.context_mask,
+                                  cache.video_seq_len, cache.video_tokens_per_frame)
 
     @torch.no_grad()
     def encode_cloud(self, input_image, prompt=None, context=None, context_mask=None,
@@ -530,17 +643,32 @@ class LeapBotCE(FastWAM):
         stale_context, stale_context_mask = self._with_proprio(
             context, context_mask, cloud_stale_proprio, "cloud stale"
         )
-        fresh = self._encode_cloud_tensor(
-            sample["cloud_current_image"], fresh_context, fresh_context_mask, context, context_mask
-        )
         stale = self._encode_cloud_tensor(
             sample["cloud_stale_image"], stale_context, stale_context_mask, context, context_mask
         )
-        pred_fresh = self._predict_from_cache(
-            fresh, noisy, timestep, edge_context, edge_mask, edge_prefix)
         pred_stale = self._predict_from_cache(
             stale, noisy, timestep, edge_context, edge_mask, edge_prefix)
 
+        if getattr(self, "paired_age_mode", "paired") == "single_random":
+            # "Single-branch random-age" control (Table 4): one aged cloud
+            # branch per step, no fresh branch and no lambda mixing.  The age
+            # is whatever the dataset sampled for this step (uniform over the
+            # delay window), so the model still sees fresh caches at age 0 but
+            # never gets a second, always-fresh supervision signal.
+            stale_loss = compute(pred_stale)
+            if self.training:
+                self.training_step += 1
+            delay = sample.get("cloud_delay_steps")
+            return stale_loss, {"loss_fresh": 0.0,
+                                "loss_stale": float(stale_loss.detach()),
+                                "stale_loss_weight": 1.0,
+                                "delay_steps": float(delay.float().mean()) if delay is not None else 0.0}
+
+        fresh = self._encode_cloud_tensor(
+            sample["cloud_current_image"], fresh_context, fresh_context_mask, context, context_mask
+        )
+        pred_fresh = self._predict_from_cache(
+            fresh, noisy, timestep, edge_context, edge_mask, edge_prefix)
         fresh_loss, stale_loss = compute(pred_fresh), compute(pred_stale)
         lam = stale_loss_weight(self.training_step, self.stale_loss_warmup_steps,
                                 self.stale_loss_lambda_max)
@@ -616,6 +744,10 @@ class LeapBotCE(FastWAM):
                                        "edge_vision_mode": self.edge_vision.mode,
                                        "use_cloud_cache": bool(
                                            getattr(self, "use_cloud_cache", True)),
+                                       "cloud_cache_mode": str(
+                                           getattr(self, "cloud_cache_mode", "full")),
+                                       "paired_age_mode": str(
+                                           getattr(self, "paired_age_mode", "paired")),
                                        "stale_loss_lambda_max": self.stale_loss_lambda_max,
                                        "stale_loss_warmup_steps": self.stale_loss_warmup_steps}}
         cloud_kv_adapter = getattr(self, "cloud_kv_adapter", None)

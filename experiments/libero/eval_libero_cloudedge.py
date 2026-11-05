@@ -75,8 +75,16 @@ def run_single_episode(env, initial_state, task_description, model, processor, c
         if not pending:
             delayed_obs, delay = history.sample(rng)
             DELAY_SAMPLES.append(delay)
+            # Info-matched control (eval-time): feed the SAME aged observation
+            # to the edge side, so the whole observation stream is delayed the
+            # way a monolithic delayed policy sees it.  This isolates "how much
+            # of the gap is the information condition" from "how much is the
+            # method"; it is our own checkpoint, not a re-implemented baseline.
+            edge_obs = (delayed_obs
+                        if bool(cfg.EVALUATION.get("edge_uses_delayed_obs", False))
+                        else obs)
             chunk, imgs = _predict(
-                delayed_obs, obs, task_description, model, processor, cfg,
+                delayed_obs, edge_obs, task_description, model, processor, cfg,
                 action_horizon, input_w, input_h, model_device)
             pending = chunk[:replan_steps].tolist()
             replay.append(imgs.copy())

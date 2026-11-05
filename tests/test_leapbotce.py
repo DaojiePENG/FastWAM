@@ -731,3 +731,172 @@ def test_edge_only_training_skips_cloud_branch_and_stale_loss():
     assert metrics["loss_stale"] == 0.0
     assert metrics["stale_loss_weight"] == 0.0
     assert metrics["delay_steps"] == pytest.approx(20.0)
+
+
+def _shell_cache(seq=8, dim=4, layers=2):
+    from fastwam.models.wan22.leapbotce import CloudPlanningCache
+
+    k = [torch.arange(seq, dtype=torch.float32).view(1, seq, 1).expand(1, seq, dim).clone()
+         for _ in range(layers)]
+    v = [(torch.arange(seq, dtype=torch.float32).view(1, seq, 1) + 100.0)
+         .expand(1, seq, dim).clone() for _ in range(layers)]
+    return CloudPlanningCache(k, v, torch.ones(1, 2, dim),
+                              torch.ones(1, 2, dtype=torch.bool), seq, seq)
+
+
+def test_constant_cache_mode_keeps_layout_but_zeroes_tokens():
+    # "Constant cloud tokens" (eval-time): identical shape/sequence length so
+    # the attention mask and compute are unchanged; only the content is gone.
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.cloud_cache_mode = "constant"
+    cache = _shell_cache()
+    out = model._apply_cache_token_ablation(cache)
+
+    assert out.video_seq_len == cache.video_seq_len
+    assert out.video_tokens_per_frame == cache.video_tokens_per_frame
+    assert [tuple(t.shape) for t in out.video_cache_k] == [tuple(t.shape) for t in cache.video_cache_k]
+    assert all(torch.count_nonzero(t) == 0 for t in out.video_cache_k)
+    assert all(torch.count_nonzero(t) == 0 for t in out.video_cache_v)
+    torch.testing.assert_close(out.context, cache.context)
+    torch.testing.assert_close(out.context_mask, cache.context_mask)
+
+
+def test_shuffled_cache_mode_permutes_tokens_and_keeps_kv_pairing():
+    # "Shuffled cloud tokens": the token multiset survives (content statistics
+    # identical) but positions are permuted; K and V must share the
+    # permutation or the control would test something else entirely.
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.cloud_cache_mode = "shuffled"
+    torch.manual_seed(0)
+    cache = _shell_cache()
+    out = model._apply_cache_token_ablation(cache)
+
+    assert out.video_seq_len == cache.video_seq_len
+    for k_in, k_out in zip(cache.video_cache_k, out.video_cache_k):
+        torch.testing.assert_close(k_out.sort(dim=1).values, k_in.sort(dim=1).values)
+    # v = k + 100 position-wise, so pairing holds iff the permutation matched.
+    for k_out, v_out in zip(out.video_cache_k, out.video_cache_v):
+        torch.testing.assert_close(v_out, k_out + 100.0)
+    assert not torch.equal(out.video_cache_k[0], cache.video_cache_k[0])
+
+
+def test_full_cache_mode_is_a_no_op():
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.cloud_cache_mode = "full"
+    cache = _shell_cache()
+    assert model._apply_cache_token_ablation(cache) is cache
+
+
+def test_single_random_age_training_uses_only_the_aged_branch():
+    # "Single-branch random-age" (Table 4): one aged cloud branch per step and
+    # a single action loss -- the fresh cloud image must never be encoded.
+    class TinyTrainScheduler:
+        def sample_training_t(self, batch, device, dtype):
+            return torch.zeros(batch, dtype=dtype)
+
+        def add_noise(self, action, noise, timestep):
+            return action + noise
+
+        def training_target(self, action, noise, timestep):
+            return noise
+
+        def training_weight(self, timestep):
+            return torch.ones_like(timestep)
+
+    model = LeapBotCE.__new__(LeapBotCE)
+    nn.Module.__init__(model)
+    model.device = torch.device("cpu")
+    model.torch_dtype = torch.float32
+    model.use_cloud_cache = True
+    model.cloud_cache_mode = "full"
+    model.paired_age_mode = "single_random"
+    model.use_cloud_proprio = True
+    model.proprio_encoder = None
+    model.training_step = 0
+    model.stale_loss_lambda_max = 0.5
+    model.stale_loss_warmup_steps = 10
+    model.mot = SimpleNamespace(num_layers=2, num_heads=2, attn_head_dim=4)
+    model.edge_vision = SimpleNamespace(mode="select")
+    model.train_action_scheduler = TinyTrainScheduler()
+
+    batch, horizon, dim = 2, 5, 8
+    model._prepare_context = lambda sample: (
+        torch.ones(batch, 2, dim), torch.ones(batch, 2, dtype=torch.bool))
+    model._encode_edge_prefix = lambda views: torch.ones(batch, 3, dim)
+
+    def encode_cloud_tensor(image, cloud_context, cloud_context_mask, *_):
+        if torch.all(image == 1.0) or torch.any(image == 1.0):
+            raise AssertionError("fresh cloud branch must not run in single_random mode")
+        from fastwam.models.wan22.leapbotce import CloudPlanningCache
+        token = torch.zeros(batch, 4, dim)
+        return CloudPlanningCache([token.clone()], [token.clone()],
+                                  cloud_context, cloud_context_mask, 4, 4)
+
+    model._encode_cloud_tensor = encode_cloud_tensor
+    captured = {}
+
+    def predict_from_cache(cache, noisy, timestep, edge_context, edge_mask, edge_prefix=None):
+        captured["video_seq_len"] = cache.video_seq_len
+        return torch.ones_like(noisy)
+
+    model._predict_from_cache = predict_from_cache
+
+    sample = {
+        "action": torch.zeros(batch, horizon, dim),
+        "edge_current_views": torch.zeros(batch, 2, 3, 8, 8),
+        "cloud_current_image": torch.ones(batch, 3, 8, 8),
+        "cloud_stale_image": torch.full((batch, 3, 8, 8), 2.0),
+        "cloud_current_proprio": torch.zeros(batch, 2),
+        "cloud_stale_proprio": torch.zeros(batch, 2),
+        "cloud_delay_steps": torch.tensor([5.0, 5.0]),
+    }
+    loss, metrics = model.training_loss(sample)
+
+    assert torch.isfinite(loss)
+    assert captured["video_seq_len"] == 4
+    assert metrics["loss_fresh"] == 0.0
+    assert metrics["stale_loss_weight"] == 1.0
+    assert metrics["loss_stale"] > 0.0
+
+
+def test_encode_cloud_applies_token_mode_end_to_end():
+    # encode_cloud is the eval entry point, and the mode is applied inside the
+    # REAL _encode_cloud_tensor; fake the three inner primitives so the real
+    # method runs end to end rather than stubbing the choke point itself.
+    language = torch.ones(1, 2, 8)
+    language_mask = torch.ones(1, 2, dtype=torch.bool)
+    tokens = (torch.arange(6, dtype=torch.float32).view(1, 6, 1)
+              .expand(1, 6, 8).clone())
+    for mode in ("constant", "shuffled"):
+        model = LeapBotCE.__new__(LeapBotCE)
+        nn.Module.__init__(model)
+        model.device = torch.device("cpu")
+        model.torch_dtype = torch.float32
+        model.use_cloud_cache = True
+        model.cloud_cache_mode = mode
+        model.cloud_kv_adapter = None
+        model.cloud_kv_codec = None
+        model.mot = SimpleNamespace(
+            num_layers=1, num_heads=2, attn_head_dim=4,
+            prefill_video_cache_tensor=lambda *a, **k: ([tokens.clone()], [tokens.clone() + 100.0]))
+        model.encode_prompt = lambda _: (language, language_mask)
+        model._encode_video_latents = lambda frames: torch.zeros(1, 48, 1, 8, 8)
+        model.video_expert = SimpleNamespace(
+            fuse_vae_embedding_in_latents=False,
+            prepare=lambda *a, **k: (tokens, None, None, language, language_mask,
+                                     None, None, None, None, 6),
+            build_video_to_video_mask=lambda n, per_frame, device: None,
+        )
+        torch.manual_seed(0)
+        cache = model.encode_cloud(torch.zeros(1, 3, 8, 8), prompt="task",
+                                   cloud_proprio=torch.tensor([[1.0, 2.0]]))
+        assert cache.video_seq_len == 6
+        if mode == "constant":
+            assert torch.count_nonzero(cache.video_cache_k[0]) == 0
+            assert torch.count_nonzero(cache.video_cache_v[0]) == 0
+        else:
+            torch.testing.assert_close(cache.video_cache_v[0],
+                                       cache.video_cache_k[0] + 100.0)

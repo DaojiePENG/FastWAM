@@ -68,6 +68,19 @@ cloudedge:
   # on; this switch measures deployment-time reliance, not training without
   # cloud (that would be a separate training ablation).
   use_cloud_cache: true
+  # Table 4 planning-token controls (eval-time, deployed checkpoint):
+  #   full     -- real cloud planning tokens (default)
+  #   off      -- alias of use_cloud_cache=false (zero-length cache)
+  #   constant -- same-length all-zero cache: the denoiser keeps the cloud
+  #               slots and the same compute, but they carry no information
+  #   shuffled -- same tokens with sequence positions permuted (K/V share the
+  #               permutation): the payload keeps its content statistics but
+  #               loses spatial/temporal correspondence
+  cloud_cache_mode: full
+  # Table 4 training ablation "single-branch random-age": paired = fresh +
+  # stale branches with lambda mixing (default); single_random = one aged
+  # branch per step and a single action loss.
+  paired_age_mode: paired
 
 video_dit_config:
   has_image_input: false
