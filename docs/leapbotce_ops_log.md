@@ -3,6 +3,458 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-05 13:30 盯盘：RoboTwin ours rs8 六窗全齐（D=80 = 75.12%，paper 932ac57）
+
+- **ours rs8 `robotwin_v2_sweep_b6_ext_rs8` 300/300 格落满**：88.56 / 86.08 / 85.28 /
+  82.48 / 79.80 / 75.12（D=0/10/20/40/60/80，各 50 任务）。六窗 retention
+  95.9 / 96.3 / 93.1 / 90.1 / **84.8**。D=60 的 79.80 与此前定稿值逐位一致，
+  可作聚合自检通过。
+- **最后一格 `put_bottles_dustbin` 诊断（重要，写作侧需知）**：该格拖到 13:27 才落
+  `.done`，最终 52.0%。日志出现 **19 次** `Error: list index out of range`
+  （env 层 `RoboTwin/envs/put_bottles_dustbin.py:116` 与 `:97` 对空动作列表取
+  `[1][0]`，经 `RoboTwin/script/eval_policy.py:273` 调用），单集 `replan_idx` 累积到
+  139（常规 ~56，即触步数上限才终止），故耗时异常。**这不是 D=80 特有**：同类 env
+  报错 D=40/60/80 分别 73/77/70 次、涉及 16/15/15 个任务。判定为 RoboTwin 环境侧
+  固有问题 + harness 捕获后按失败计，非协议缺陷，数字可用；逐任务展示时需知这一格
+  含较多重试。
+- **先前归属更正**：前两轮把最后一格误报为 `rotate_qrcode`（其 `.done` 08:02 已生成）。
+  真正缺的是 `put_bottles_dustbin`。
+- **论文已同步**：`tab:robotwin` 六窗脚注改为 "Six-window probe (full 50 tasks each):
+  D=60 79.8, D=80 75.1"，编译通过（唯一 overfull 仍是该表既有的 3.06pt）；docs §6.1
+  与 §8 Concern 5 行同改；PAPER_TODO 施工单 A 第 4 条与本表对应行标记完成。commit
+  `932ac57`（未 push）。
+- **starwam rs8**：212 done（D0 47 / D10 31 / D20 42 / D40 28 / D60 40 / D80 24），
+  较上轮 +0；最新写入 13:28:48（`delay_80/place_burger_fries_delay_metrics.jsonl`），
+  **有心跳、非僵死**。按实测仍指向 11-07 凌晨收尾，非先前误报的 11-06 03:00–05:00。
+- **AHA**：D60/D80 各 50/50，已完成无变化。
+- **训练**：edgeonly 19140/32544（0.20 step/s，eta 18.3h → 11-06 ~07:50）；
+  singleage 15380/32544（eta 23.6h → 11-06 ~13:10）。两路 stale_loss_weight
+  分别为 0.0000 / 1.0000，符合各自配方。
+- **nocloudcache**：D0 40/40、D10 40/40、D20 4/40、D40 0/40，零增量（最后写入
+  11-03 23:48，≈37.7h），单 22865923 仍疑似占 4×H100，待用户决定是否手动停。
+
+## 2026-11-05 08:30 盯盘：LIBERO 侧全部窗次定稿（info-matched D=40 = 4.10%，paper 6223cac）
+
+- **info-matched D=40 定稿 = 4.10%**（82/2000；spatial 2.0 / object **0.0** / goal 12.4 /
+  long 2.0），主行同窗 70.65%，retention 仅 **4.5%**。四窗曲线 90.95 / 39.40 / 14.75 /
+  4.10 全部落满。
+- **同信息对照的完整读数**（供写作侧定性，非我下结论）：D=10 我们最低（四套 44.7/45.5/
+  56.1/77.1）；D=20 只与 FastWAM/StarWAM 同档；D=40 我们 4.1 高于前三家
+  （2.7/2.9/3.4）但远低于 OpenWAM 13.4。逐窗衰减比我们 0.43→0.37→0.28，FastWAM
+  0.46→0.28→0.21、StarWAM 0.47→0.33→0.19，三者同形 ⇒ 端侧加龄后行为退化为单体式系统，
+  优势来自"端侧持有当前观测"的部署事实。已写入 `PAPER_TODO` 红线 6 与 docs §4。
+- **LIBERO 侧至此无未完成窗**：swap 四窗、edgedelay 四窗、三 seed 12 窗全部定稿；
+  nocloudcache 按用户决定冻结（D20 仍 4/40，零增量 ≈32.6h，单子疑似仍占 4×H100）。
+- **训练**：edgeonly 15480/32544（eta 23.3h → 11-06 ~07:45）；singleage 11830/32544
+  （eta 28.2h → 11-06 ~12:40）。
+- **RoboTwin**：ours rs8 **294/300**（D80 44/50）；starwam rs8 **198 done**
+  （45/28/40/26/36/23，较上轮 +4）；AHA 50/50 齐。两树最新写入 08:24-08:25，无僵死。
+
+## 2026-11-05 06:30 盯盘：swap 四窗全部定稿（D=40 = 38.50%，跌点 −32.15，paper 2081598）
+
+- **swap D=40 定稿 = 38.50%**（770/2000；spatial 36.6 / object 39.6 / goal 42.0 /
+  long 35.8），主行同窗 70.65%，Δ **−32.15**。四窗跌点 **−26.85 / −27.50 / −29.65 /
+  −32.15**，retention 60.1% vs 主行 77.7%。
+- **口径修正（重要）**：此前正文写"跌幅是与延迟无关的常数"，D=40 这一窗证伪了严格版本。
+  已改为"**大部分是载荷错配的固定惩罚，随延迟只轻微累积**（同步窗 −26.9，到 D=40
+  再 +5.3）"。这是我自己先前口径过强的纠正，已同步写进 §4.3 与 docs §3，写作侧照此。
+- **edgedelay**：D=40 30/40（05:25 为 19/40），预计 ~08:00 落满；D=0/10/20 已定稿。
+- **nocloudcache**：D20 仍 4/40（自 11-03 23:48 零增量 ≈30.6h），单子疑似仍占 4×H100。
+- **训练**：edgeonly 14040/32544（eta 25.2h → 11-06 ~07:40）；singleage 10410/32544
+  （eta 30.0h → 11-06 ~12:25）。
+- **RoboTwin**：ours rs8 **290/300**（D80 40/50）；starwam rs8 **193 done**
+  （44/28/38/26/35/22）；AHA 50/50 齐。两树最新写入 06:25，无僵死。
+
+## 2026-11-05 04:30 盯盘：info-matched D=20 定稿 14.75%；ours rs8 D60 定稿 79.8（paper 7726486）
+
+- **info-matched（端侧同窗加龄）D=20 定稿 = 14.75%**（295/2000；spatial 14.2 / object
+  **3.4** / goal 32.0 / long 9.4），主行同窗 79.70%，Δ **−64.95**。
+  与 D=10 的 39.40 连起来看：D10→D20 比值 0.37，而 FastWAM 0.28、StarWAM 0.33——
+  **端侧一旦加龄，本方法的行为与单体式系统同形**，进一步坐实"优势来自端侧当前观测
+  这一部署事实"。已入表（91.0/39.4/14.8）并在 `PAPER_TODO` 红线 6 补上取舍口径。
+- **ours rs8 RoboTwin D=60 定稿 = 79.80**（50/50 任务，原 46/50 的 80.57 作废），
+  单调性成立（88.6/86.1/85.3/82.5/79.8）；论文 `tab:robotwin` 六窗脚注已从
+  "80.6 provisional" 改为 "79.8 full 50 tasks"。D=80 仍在跑（35/50）。
+- **swap**：D=40 30/40（03:25 为 16/40），预计 ~05:10 落满。
+- **edgedelay**：D=40 8/40。
+- **nocloudcache**：D20 仍 4/40（自 11-03 23:48 零增量 ≈28.6h），单子疑似仍占 4×H100。
+- **训练**：edgeonly 12610/32544（eta 27.0h → 11-06 ~07:30）；singleage 9010/32544
+  （eta 31.7h → 11-06 ~12:05）。
+- **RoboTwin**：ours rs8 **285/300**（+2，全在 D80）；starwam rs8 **190 done**
+  （43/27/37/26/35/22；+5）；AHA 50/50 齐。两树最新写入 04:25，无僵死。
+
+## 2026-11-05 02:30 盯盘：swap D=20 定稿 50.05%（三窗常数惩罚成立，paper c7b8865）
+
+- **swap 三窗齐**：D=0/D=10/D=20 = 64.10 / 56.15 / **50.05**（1001/2000），对照主行
+  90.95 / 83.65 / 79.70，Δ = **−26.85 / −27.50 / −29.65** ⇒ "置换损伤是与延迟无关的
+  常数项"这一论断现在有三窗支撑，已写入 `tab:ablations`（50.1）与 §4.3 正文。
+  D=20 分套件：spatial 43.0 / object 59.8 / goal 48.0 / long 49.4。
+- **edgedelay**：D=20 30/40（01:25 为 20/40）；D=40 未起。
+- **nocloudcache**：D20 仍 4/40（自 11-03 23:48 零增量 ≈26.6h），D40 未起；
+  AIFlow 单 22865923 疑似仍占 4×H100，待用户决定是否停。
+- **训练**：edgeonly step 11170/32544（eta 28.9h → 11-06 ~07:20）；singleage 7600/32544
+  （eta 33.2h → 11-06 ~11:40）。
+- **RoboTwin**：ours rs8 **278/300**（D0–D40 各 50、D60 49、D80 29；01:25 为 275，本轮 +3
+  全部落在 D80）；starwam rs8 **181 done**（41/26/35/25/33/21；01:25 为 180）；AHA D60/D80
+  50/50 齐。两棵树最新写入均为 02:25，**无僵死嫌疑**。
+
+## 2026-11-05 00:30 盯盘：info-matched D=10 定稿 39.40%（方向不利，已入表 + 红线标注）
+
+- **⚠️ 关键结果**：`edgedelay` D=10 落满 40/40 → **788/2000 = 39.40%**（spatial 31.8 /
+  object 30.4 / goal 57.0 / long 38.4），主行同窗 83.65%，**Δ −44.25**。D=0 仍与主行
+  逐格相同（90.95，40/40 格成功数一致，自检通过）。
+- **为什么重要**：信息条件对齐后端侧也加龄，本方法 D=10 低于 `tab:audit` 四套已发布
+  配置在同窗的成绩（FastWAM 44.7 / StarWAM-MoT 45.5 / StarWAM-SharedDiT 56.1 /
+  OpenWAM 77.1）⇒ 拆分拓扑的优势主要来自"端侧持有当前观测"这条部署事实。数据本身
+  自洽（D=0 逐格相同、单调、与 8 格中间读数 34.75% 同向），**不是测量异常**，但属于
+  论证方向问题，已按"不得选择性引用"写入 `PAPER_TODO.md` 红线第 6 条，并已入表
+  （`tab:ablations` info-matched 行 91.0 / 39.4）+ paper commit `73d0fc5`。
+- **swap**：D=20 起跑后 23/40（23:30 为 5/40），D=40 未起；D=0/D=10 定稿不变。
+- **nocloudcache**：D0/D10 各 40/40（0.05%），D20 仍 4/40（自 11-03 23:48 零增量
+  ≈24.6h）。按用户决定冻结，**但 AIFlow 单 22865923 可能仍占 4×H100，待用户定**。
+- **训练 22865946 edgeonly**：目录 11-04 11:17 已出现且**在跑**（不是排队）。
+  `userPath = /dahuafs/userdata/2653853/code/FastWAM` ✅；首屏四查全过：
+  ①三条 override 齐（use_cloud_cache=false / video_lora.enabled=false /
+  kv_codec.enabled=false）；②日志 `loss_stale=0.0000`、`stale_loss_weight=0.0000`；
+  ③结构核验 ckpt `step_008680.pt` 顶层只有
+  `leapbotce_delta/action_expert/edge_vision_projector/proprio_encoder/...`，
+  **无 `cloud_kv_codec`、meta 无 `video_lora`**；④0.21 step/s ≈ 4.76 s/step（4–5 量级）。
+  进度 step 9780/32544，eta 30.6h → 11-06 ~07:00。singleage step 6230/32544，
+  eta 34.5h → 11-06 ~11:00。
+- **三 seed 复现**：1235/1236/1237 各 12/12 齐（89.90±0.53 / 83.53±0.75 / 79.63±0.88 /
+  69.48±1.08），与 §4.2 已入表数字一致。
+- **RoboTwin**（按结果文件计数；本树无 `.done` 通配，starwam 用 `<task>.done`）：
+  ours rs8 **273/300**（D60 49、D80 24，最新写入 00:27）；starwam rs8 **184 jsonl /
+  176 done**（41/26/37/26/33/21，最新 00:26–00:27）；AHA D60/D80 **50/50 完成**。
+  三条都活着，**无僵死嫌疑**。
+
+## 2026-11-04 23:30 盯盘：swap D=10 定稿 56.15%，已入表（paper commit d7c2ac7）
+
+- **LIBERO 消融**：`swaptoken` D=10 落满 40/40 → **1123/2000 = 56.15%**（spatial 44.2 /
+  object 71.6 / goal 56.4 / long 52.4），对照主行 83.65%，**Δ −27.50**，与 D=0 的 −26.85
+  几乎相同 ⇒ 置换损伤是**与延迟无关的常数项**，不是误差随延迟累积。已写入
+  `tab:ablations` swap 行（D=10 = 56.2）与 §4.3，重新编译通过（唯一 overfull 仍是
+  `tab:robotwin` 既有的 3.06pt）。
+- **edgedelay**：D=10 38/40（缺 2 格，最新写入 23:16，属任务边界，未判僵死）；D=20/40 未起。
+- **nocloudcache**：维持冻结（D0/D10 各 40/40 = 0.05%），不重提。
+- **RoboTwin**：ours rs8 272/300（D60 48/50，最新 22:18；D80 24/50，最新 23:01，活跃）。
+  starwam native 四窗 **200/200 已全齐**（89.5/87.9/85.6/72.0，与表中行一致）；
+  starwam rs8 六窗全活跃 **182/300**（d0 40/d10 26/d20 37/d40 26/d60 32/d80 21，+8/h）；
+  AHA 六窗 300/300 完成（93.5/78.7/54.3/29.6/18.6/15.2）。
+- **训练**：edgeonly step 9090/32544（0.21 step/s，eta 31.4h → 11-06 ~07:00）；
+  singleage step 5560/32544（eta 35.0h → 11-06 ~10:30）。
+- **论文可更新性**：Table 3（`tab:ablations`）swap 行已补 D=10；**§8.4 仍不可更新**——
+  native D60/D80 探针判不可用（见上一条 21:55），待用户决定是否重跑。
+
+## 2026-11-04 21:55 ⚠️ 异常：native D60/D80 探针数据自相矛盾，判定不可用（停用，待诊断）
+
+- **触发**：盯盘核 RoboTwin 六窗时聚合 `robotwin_v2_sweep_b6_ext`（native cadence，
+  10 任务，10-31 的 22727253/22727274），得到 **D60 98.0 / D80 99.0**，而同 10 任务在
+  全量 native 跑里 **D0 98.8 / D40 88.2** —— 时延加大反而回升，**同路先例偏差远超 2×**，
+  按「异常即停」准则停下汇报，不叙事圆过。
+- **同格反证**：`handover_block` 同 ckpt（`step_158206.pt`）、同协议：全量 D40 = **0.24**，
+  探针 D60 = **0.98**。逐任务看，探针 10 格里有 3 格与全量 D0 **完全相等**、其余也贴 D0，
+  整体几乎是 D0 的复刻。
+- **对照组正常**：同时段同协议 StarWAM 探针（`starwam/robotwin_v2_sweep_ext`，10 任务）
+  D60 **53.6%** / D80 **41.5%**，单调衰减；ours rs8 六窗（chunk8）也单调衰减
+  （D40 82.5 / D60 80.6）。**所以问题限定在 ours 的 native 探针这一路**。
+- **可疑点（未证实）**：这些格子在 10-31 14:41–23:56 之间产出，而 lane 脚本
+  `code/baseline_delay/leapbotce_robotwin_sweep_lane_2653853.sh` 的 mtime 是 **10-31 22:16**
+  —— 即在跑期间被就地改动过（正是"勿就地编辑在跑任务引用的脚本"那条铁律）。探针的
+  `_delay_log.jsonl` 里 `max_delay_steps=60` 与 delay 抽样值都在，说明"采样"发生了，
+  但**无法证明那一帧真的被用于前向**；需要比对 10-31 22:16 前后的脚本版本才能定性。
+- **处置**：①两组探针结果**不得进论文/§8.4**，已在 `PAPER_TODO.md` 写作红线第 5 条标注；
+  ②§8.4 保持现状，六窗证据改用 ours rs8（在跑，D60 47/50）+ AHA 六窗（已齐）；
+  ③待用户决定是否重跑 10 任务探针（改前先归档脚本版本）。
+- **当前六窗可用数据**（ours rs8 / AHA）：D60 80.6（47/50，临时）/ 18.6（定稿）；
+  D80 —/ 15.2（定稿）。
+
+## 2026-11-04 21:40 论文仓数据回填：`\rev` 标蓝 + 施工单（commit 0d62b03，未 push）
+
+- **数据源**：新文件 `LeapBotCEPaper/docs/results_update_20261104.md`（本轮唯一数据源：
+  主行分套件、三 seed 带、swap、edgedelay、旧 token 消融作废理由、RoboTwin 六窗
+  进度、完成时间预估、复算片段）。
+- **`\rev` 宏**：`preamble.tex` 新增 `\newcommand{\rev}[1]{{\color{blue}#1}}`（之前不存在，
+  全文 `\rev` 零命中）。`pdflatex main.tex` = 9 页，无新 overfull（既有的 3.06pt
+  tab:robotwin 超宽在 HEAD 上就存在，非本轮引入）。
+- **入表数据（4 处）**：
+  1. `tab:robotwin` 新增 ours 8-step chunk 全量行 **88.6/86.1/85.3/82.5，ret 93.1%**
+     （同 ckpt，chunk 24→8，每集 replan ~19→56；D{0,10,20,40} 均 50/50 格已满）+
+     三条 `\rev` 脚注（AHA D60/80=18.6/15.2 定稿；ours rs8 D60 80.6 为 46/50 临时值；
+     StarWAM 全量行 38/50 等临时值）。
+  2. `tab:ablations` 新增 swap 行 **D=0 64.1**（其余延迟留 `--`）+ info-matched
+     delayed local obs 行 **D=0 91.0**（按构造与主行相同，40/40 格逐格自检通过）。
+  3. §4.2 三 seed 一句（89.90±0.53 / 83.53±0.75 / 79.63±0.88 / 69.48±1.08，n−1）。
+  4. §4.3 新增 "The identity of the cloud payload matters." 一段（含 98% 同任务口径）；
+     LaTeX 注释记录 shuffled/constant 为何被排除（空操作 / 零键假象）。
+- **未入表而只入档**：StarWAM rs8 全量（未跑满）。
+- **nocloudcache 定案（用户 11-04 拍板：不必重提补齐）**：D0/D10 各 40/40 格均为
+  0.05%（1/2000），已足以证明关云不可用，D{20,40} 再测无新信息。已在结果目录写
+  `_STOPPED_SUFFICIENT.txt` 冻结（属主已修），并在 `tab:ablations` 新增第三块
+  「Cloud payload and observation condition」：swap 64.1 / w/o cloud cache <0.1,<0.1
+  / info-matched 91.0，表下三条说明。写论文只报 D0/D10，其余留 --，且须说明
+  "delayed 与 sync 相同是因为云端根本没被使用"，不要在图 3 连线。
+- **PAPER_TODO**：新增顶部「2026-11-04 施工单」——本轮四处改动清单、四条写作红线
+  （旧 token 消融不得复活 / swap 98% 口径 / RoboTwin 必披露 cadence 且 rs16 不可转 rs8 /
+  未跑满的格子不得当定稿）、回填时间表、审稿 Concern↔数据对应、分工边界。
+  `docs/review_report_cvpr2027_simulated.md` 的「实验侧覆盖现状」附录同步刷到 11-04
+  （**该文件 git 未跟踪，属另一 AI 的交付物，本轮未提交**）。
+- **待用户确认**：本地 commit 0d62b03 尚未 push（按既有约定 push 需用户点头）。
+
+## 2026-11-04 20:25 swaptoken / edgedelay 的 d0 双双满格；两行 d0 定稿
+
+- **`swaptoken` d0（40/40 格，2000 episodes）= 1282/2000 = 64.10%**，主行同 delay
+  1819/2000 = 90.95%，**Δ = −26.85 点**。分套件（swap vs 主行）：
+
+  | 套件 | swap | 主行 | Δ |
+  |---|---|---|---|
+  | libero_spatial | 58.8%（294/500） | 95.6% | **−36.8** |
+  | libero_object | 78.8%（394/500） | 93.8% | **−15.0** |
+  | libero_goal | 63.4%（317/500） | 85.4% | **−22.0** |
+  | libero_10 | 55.4%（277/500） | 89.0% | **−33.6** |
+
+  四个套件全部大幅下降，无一例外。这是 token 消融轴上**第一个也是唯一一个干净、
+  且效应量足够大的对照**（对比 shuffled 的 90.4% 零效应、constant 的机械崩塌）。
+- **`edgedelay` d0（40/40 格）= 1819/2000 = 90.95%，与主行逐格完全相同
+  （40/40 格成功数一致，0 格不同）** —— D=0 一致性自检**满分通过**。
+- **⚠️ 口径更正（我此前的报告有误）**：我一直引用的"主行分套件 d0 =
+  spatial 94.1 / object 94.9 / goal 84.9 / libero_10 85.7"其实是**三 seed 均值**，
+  不是主行。**主行真实分套件**为：
+
+  | delay | spatial | object | goal | libero_10 | 总 |
+  |---|---|---|---|---|---|
+  | d0 | 95.6 | 93.8 | 85.4 | 89.0 | 90.95 |
+  | d10 | 90.2 | 89.4 | 77.2 | 77.8 | 83.7 |
+  | d20 | 85.6 | 86.4 | 75.2 | 71.6 | 79.7 |
+  | d40 | 81.0 | 75.0 | 67.2 | 59.4 | 70.7 |
+
+  今后凡"变体 vs 主行"的 Δ 一律用本表，不用 seed 均值。
+
+## 2026-11-04 19:25 edgedelay 的 D=0 一致性自检**逐格精确通过**
+
+- 现象：`edgedelay` d0 跑到 29/40 格时汇总 1365/1450 = **94.14%**，而 a6 主行 d0 是
+  91.0% —— 看起来像自检失败（该行 D=0 时应与主行逐位相同）。
+- 核查：按 (suite, task_id) 取两边**重叠的 29 格**逐一比对 —— 主行 1365/1450，
+  edgedelay 1365/1450，**0 格成功数不同，完全一致**。
+- 结论：**自检通过**。偏差来自取样次序：已完成的 29 格恰好是较容易的任务
+  （spatial 已满 10 格），剩下 11 格更难。**在 delay 未跑满时拿汇总率互比是错的**，
+  必须按重叠格比对。此后再出现"某行 d0 与主行不符"，先做重叠格比对再谈异常。
+- 附带教训：这也说明**跨行比较的正确口径是"同格比较"**，不是"同 delay 比较"。
+
+## 2026-11-04 18:20 AHA RoboTwin 六档全齐；edgedelay 起送
+
+- **AHA（`ahawam/robotwin_v2_sweep`）d80 50/50 落定，六档 episode 级读数**：
+  d0 2337/2500 = **93.5%**、d10 1967/2500 = **78.7%**、d20 1357/2500 = **54.3%**、
+  d40 740/2500 = **29.6%**、d60 466/2500 = **18.6%**、d80 379/2500 = **15.2%**。
+  每档 50 任务 × 50 trials，口径统一，可直接进 §8.4 的 AHA 列。
+  ⚠️ ours 与 starwam 未齐，**跨模型整表仍不可更新**；不同模型的整格子集也不同，
+  只能做曲线形状对比，不能逐点相减。
+- **`eval_edgedelay` 22868541 于 18:18:44 起送**（4×H100，host 10.194.0.222）。
+  首屏四查全过：`userPath=/dahuafs/userdata/2653853/code/FastWAM` ✅、
+  落点 `AIFlow_config_eval_libero_a6_edgedelay` ✅、
+  `LIBERO_EVAL_EXTRA=EVALUATION.edge_uses_delayed_obs=true` ✅、TAG/delays
+  （0 10 20 40）/PACK=1 ✅。**D=0 必须与 a6 主行逐位相同**，这是本行的天然一致性
+  自检：d0 出来先对 91.0%，对不上说明开关串了。
+
+## 2026-11-04 16:35 `cloud_cache_mode=swap` 实现完成（替代三条失效的 token 消融）
+
+- **改动**（原子 mv 上线，`src/fastwam/models/wan22/leapbotce.py`，属主已修）：
+  1. `cloud_cache_mode` 新增合法值 `swap`；`shuffled` 的注释改写为"数学空操作，
+     仅为复现旧 run 保留，不得当消融"。
+  2. 新增 `_swap_cloud_cache()`：模型实例内维护**单槽 FIFO**，每个 episode 返回
+     上一个 episode 预先算好的 K/V，并把自己这份存入槽位。
+  3. 新增 `_swap_used_count` / `_swap_warmup_count` 计数器；首次真正置换时打印
+     `[leapbotce][swap] first cross-episode cache swap (warm-up episodes on this
+     worker: N)`，供论文给确切数字。
+- **保真度**：槽位数、`video_seq_len`、注意力掩码、每槽 K/V 范数、`k` 里烘好的
+  RoPE 位置、每步算力全部等于真实载荷——载荷是真 cache，不是合成替身。
+  **只破坏**槽位与当前场景的对应关系（含被 prefill 折进 K/V 的云侧 prompt）。
+  形状/dtype 不匹配（如 codec 配置变了）时自动回退 warm-up，不会静默串形状。
+- **单测**：`tests/test_cloud_cache_swap.py` 11 项全过（warm-up 透传、第二集拿到
+  第一集载荷、bank 逐集前进、布局/范数保持、形状不匹配回退、不改写入参、自动
+  建图与反向传播的梯度切断、其余三种模式行为不变、合法值元组包含 swap）。
+  回归：`tests/test_leapbotce.py` 29 项全过。
+- **AIFlow config**：`AIFlow_config_eval_libero_a6_swaptoken.py`（TAG
+  `a6_lora_fs_step32544_swaptoken`，唯一 override
+  `model.cloudedge.cloud_cache_mode=swap`）。分发自测四步：
+  `scripts/check_aiflow_dispatch.py` **42/42 PASS**（已加 swaptoken 用例，且断言
+  不会串到 constant/shuffled/use_cloud_cache=false）。
+- **口径（写论文必须写，否则会被追打）**：
+  - worker 连续处理同一 suite 的任务，**约 98% 的 swap 是"同任务、不同初始状态"**
+    （LIBERO initial state 物体位置/朝向差异明显），约每 50 集一次跨任务边界。
+    因此本行严格回答"**当前场景的对应关系**是否被消费"，而不是"任务语义是否被
+    消费"。若审稿人追问，可再补跨任务 bank 变体。
+  - 每个 worker 第 1 集无前驱，跑真实 cache；4 worker ⇒ 每 delay 最多
+    4/2000 = 0.2% 未置换，日志里有确切计数。
+- **待提**：`leapbot_ce_eval_libero_a6_swaptoken`（4 卡，4 套件×D{0,10,20,40}）。
+  前置只有 ckpt（已在），无训练依赖，可随时提。
+- **已提并起送**（2026-11-04 16:30 提交，**单号 22920618**，4×H100，起送 17:04:35）：
+  - 首屏四查：`userPath=/dahuafs/userdata/2653853/code/FastWAM` ✅；分发落点
+    `AIFlow_config_eval_libero_a6_swaptoken` ✅；CMD 含
+    `LIBERO_EVAL_EXTRA=model.cloudedge.cloud_cache_mode=swap` ✅；TAG/ckpt/delays
+    （0 10 20 40）/trials=50/PACK=1 全对 ✅。
+  - **运行时开关确证**：四个 worker 日志各出现一次
+    `[leapbotce][swap] first cross-episode cache swap (warm-up episodes on this
+    worker: 1)` —— 即每 worker 仅 1 集 warm-up，之后全部置换，与设计一致。
+  - 稳态速率 16.0 ep/min（shuffledtoken 17.5 ep/min，同量级，无异常）。
+  - **早期读数（17:30，仅 d0 的 5/40 格，全是 libero_spatial，不可入表）**：
+    按 task id 与主行逐任务比对，swap 一致大幅落后 ——
+    task0 96%→78%、task1 96%→50%、task2 98%→70%、task3 96%→70%、task6 100%→92%，
+    均值 **−25.2 点**；suite 汇总 134/200 = 67.0% vs 主行 spatial 94.1%（−27.1）。
+    方向与设计预期一致：这是三条 token 消融里**唯一真正动起来**的一条，与
+    shuffled 的 90.4%（空操作）形成鲜明对照。样本太小，只作过程记录，等 d0 满格
+    再定稿。
+
+## 2026-11-04 16:14 停掉两条 token 消融（22868522 / 22868440），数值冻结入档
+
+- **停单**：用户 16:14:15 停 `eval_shuffledtoken`（22868522）、16:14:19 停
+  `eval_consttoken`（22868440），各 4×H100 → **释放 8×H100**，正好够排队中的
+  `eval_edgedelay`（22868541，4 卡）起送。
+- **冻结数值**（停单时刻的真实读数，不得当作消融曲线入表）：
+
+  | 行 | d0 | d10 | d20 | d40 |
+  |---|---|---|---|---|
+  | shuffledtoken | 40/40 格，1808/2000 = **90.40%** | 40/40 格，1687/2000 = **84.35%** | 7/40 格，308/350 = 88.00%（截断） | 未起 |
+  | consttoken | 40/40 格，5/2000 = **0.25%** | 4/40 格，0/200 = 0.00%（截断） | 未起 | 未起 |
+  | a6 主行（参照） | 91.0% | 83.7% | 79.7% | 70.7% |
+
+- **shuffled 的判读被数据二次确认**：d0 低 0.6 点、d10 **反高 0.65 点**、d20 已跑的
+  7 格高 8.3 点 —— 与"K/V 同步置换是恒等变换"的代码级证明完全一致。**这不是证据
+  说明云端结构没被消费，而是证据说明开关是惰性的**，写进论文会误导审稿人。
+- **consttoken 的机械假象也自证**：0.25% 与 nocloudcache 的 0.05% 几乎同级，可它
+  保留了完整槽位数与范数；吞吐也印证（d0 40 格耗 3.4 h，shuffled 同样 40 格只
+  1.9 h），成功率为零 → episode 跑满 max steps，与 nocloudcache 同一签名。
+- **保护措施**：两个结果目录已各写 `_INVALID_stopped_sweep.txt`（属主
+  2653853:1167），写明实际格数、机械机制、为何不得入表、以及由 `swap` 取代。
+- **可用的残余价值**：shuffled 可作附录一句"置换云 token 无影响，代码审计已解释
+  原因"；consttoken 可作附录一句"朴素 token 消融不可解释"的引证。两者都只值一句话，
+  不值再多卡时。
+
+## 2026-11-04 P0：shuffled-token 消融是数学空操作（代码级证明），token 消融轴需重设
+
+- **实测**（`eval_libero_a6_shuffledtoken`，22868522）：delay=0 **40/40 整格 = 90.4%**，
+  同 ckpt 的 a6 主行 91.0% —— 差 0.6 点，即在噪声内。
+- **代码级证明（不是猜测）**：`mot.prefill_video_cache_tensor` 在缓存前就把 RoPE
+  （`freqs=video_freqs`）烘焙进 `k`，`forward_action_with_video_cache_tensor` 再把
+  `video_cache_k/v` 与 action 的 k/v 直接 `cat` 后过 `flash_attention`。注意力输出 =
+  softmax(K·q) 对 V 的加权和，与 (K,V) 的**排列无关**（只差浮点求和顺序）。因此
+  **K/V 同步置换在数学上恒等于不置换**，`cloud_cache_mode=shuffled` 这条对照测不出
+  任何东西，不能作为"破坏结构"的证据入表。
+- **连带问题（constant 模式）**：K 置零后，每个零键的注意力分数都是 0
+  （`exp(0)=1`），数百个零槽位会**抢走大量 softmax 质量**、稀释真实 token。实测
+  delay=0 **0.3%（4/1150）** 更像是"注意力几何被破坏"的机械假象，而不是"云端
+  信息被移除"。同理 `off`（零长度，0.050%）混着布局漂移。
+- **结论**：三条 token 消融（off / constant / shuffled）**没有一条干净地隔离了
+  "云端信息"这一个变量**。当前 Table 4 若照原口径写，会被审稿人当稻草人。
+- **正确对照**：跨样本 cache 替换（用另一 episode/任务的 cloud cache：范数、槽位数、
+  注意力几何全保真，只破坏"与当前场景的对应关系"）→ 拟实现
+  `cloud_cache_mode=swap`，配单测 + 分发自测，不占卡。时序性证据（delay 曲线单调
+  下降）已经在手，可作为"内容相关性"的旁证。
+
+## 2026-11-04 审稿 P0 四条实验全部在队列中（单号清单）
+
+- **队列现状**（2026-11-04 00:01 全部提交完毕，等资源）：
+
+  | 行 | 任务名 | 单号 | 卡 | 前置 |
+  |---|---|---|---|---|
+  | A 恒等 token | `leapbot_ce_eval_libero_a6_consttoken` | 22868440 | 4 | 无 |
+  | B 置换 token | `leapbot_ce_eval_libero_a6_shuffledtoken` | 22868522 | 4 | 无 |
+  | C 信息条件对齐 | `leapbot_ce_eval_libero_a6_edgedelay` | 22868541 | 4 | 无 |
+  | D 单分支随机龄·评测 | `leapbot_ce_eval_libero_a6_singleage` | 22868616 已于 00:00:48 停止 | — | **等 22887807 出 `step_032544.pt` 后按 4 卡重提**（原 8 卡单前置 ckpt 不存在，已撤） |
+  | D 单分支随机龄·训练 | `leapbot_ce_train_libero_a6_singleage` | 22887807 | 8 | 无 |
+  | Edge-only 训练 | `leapbot_ce_train_libero_a6_edgeonly` | 22865946 | 8 | 无 |
+  | Edge-only 评测 | `leapbot_ce_eval_libero_a6_edgeonly` | 待提 | 4 | edge-only 训练收工后 |
+
+- **核查口径教训**：判别"是否已提交"不能看 `jinnTrainResult/<任务>-<hash>/`——该目录
+  只在任务**开跑**时创建，排队中的单一律不可见（11-03 深夜据此误报"未提交"四条，
+  实际用户 16:25 就提过了）。是否已提一律以用户平台列表为准。
+- **待办**：edgeonly 起送后做首屏四查（userPath=FastWAM、三条 override、
+  `loss_stale=0.0`/`stale_loss_weight=0.0`、无 video_lora/kv_codec 可训练参数、
+  4–5 s/step）；singleage 训练起送后同法核对 `paired_age_mode=single_random`。
+
+## 2026-11-03 P0：nocloudcache 消融全零（1/2000），定性为零长度 cache 的布局漂移
+
+- **读数（sweep 已按用户指令停在 23:55:35，任务 22865923）**：
+  delay=0 **1/2000 = 0.050%**（40/40 收官 19:31:19）、delay=10 **1/2000 = 0.050%**
+  （40/40 收官 23:25:48）；driver 随后自动进的 d20 只跑了 4/40（0/200）被停，
+  已写 `delay_20/_INVALID_stopped_sweep.txt` 作废标记，禁止入表。
+  同树 d0 对照：a6 主行 90.9%、`stale0` 95.4%、
+  `nocloudproprio` 90.5%、`noedgeprefix` 77.0%。断崖到 0，量级不合常理。
+- **吞吐"变慢"是果不是因**：每 suite 用时 41/36/56 min vs 参照 21/18/32（1.75–1.95×），
+  但同 suite 内单步 it/s 参照 17–22、本行 16–20（≈1.1×）。全零 → 每个 episode 跑满
+  max steps → 单任务 8.4–8.9 min 变 17.9–20.3 min → trials/min 16.7→8.7。无 NaN、
+  无报错、mp4 持续产出，**不是算力/节点问题**。
+- **机制**：`use_cloud_cache=false` 走 `_empty_cloud_cache`（零长度 cache），denoiser
+  从未见过"没有 cloud slot"的序列布局。这既是信息移除，也是**布局分布漂移**——模型
+  没崩（动作非 NaN）但输出无效。结论：该行不能直接当 Table 4 的"无云端信息"证据，
+  审稿人会判为稻草人消融。
+- **处置（用户 18:30 拍板）**：delay=0 跑满 40/40 后**停掉该 sweep**，不跑 d10/20/40
+  （省 4×H100×~27h）。d0 已于 19:31:19 收官，driver 随即自动进了 d10（12/40 时
+  0/600）——pod 内看不到该集群进程、也无平台 CLI，**需用户在平台停 AIFlow 任务
+  22865923**，停后 d10 半成品标记作废（不与正式结果混用）。
+- **口径调整**：`cloud_cache_mode=constant`（等长、零内容、布局不变）**升级为
+  Concern 2「云端内容是否真被消费」的主证据行**；`off`（零长度）行降为附录并明确
+  标注"零长度 cache 改变 token 布局"。shuffled 行仍是"保留统计、破坏结构"的第二条腿。
+- **待补诊断**（卡空出后，1 卡数分钟）：同 ckpt 单任务 5 episode 三档对照
+  （full / constant / off），确认 collapse 归因于信息而非实现 bug。
+
+## 2026-11-03 审稿报告驱动的四条补实验就绪（A/B/C/D，用户拍板全排）
+
+- **缘起**：CVPR2027 模拟审稿报告（Weak Reject；P0 三条 = Edge-only、Constant/
+  Shuffled tokens、同信息条件 baseline、Single-Branch Random-Age）。报告已转
+  Markdown 入论文仓：`LeapBotCEPaper/docs/review_report_cvpr2027_simulated.md`
+  （文末附实验覆盖现状表，供写作 AI 对照）。
+- **A. constant cloud tokens**（eval-time）：`CloudPlanningCache` 保留长度、
+  K/V 置零 → 槽位与算力同 a6，只有内容消失。实现 = `cloud_cache_mode=constant`。
+- **B. shuffled cloud tokens**（eval-time）：token 序列位置置换、**K/V 共用同一
+  置换**（键值配对不破），保留内容统计、破坏时空对应 → `cloud_cache_mode=shuffled`。
+- **C. 信息条件对齐对照**（eval-time）：`EVALUATION.edge_uses_delayed_obs=true`
+  → edge prefix/当前 proprio 也吃云端那条同龄历史帧，直接量化 Concern 1 里
+  "观测新鲜度"的份额。**D=0 时该开关无效，本行 D0 必须与 a6 主行一致**（自检位）。
+- **D. single-branch random-age**（训练）：`paired_age_mode=single_random` ——
+  每步只做一支云端前向（龄由数据集 U{0..20} 采样）、单动作损失、无 λ 混合；
+  不编码 fresh cache（省一次 5B 前向）。与 a6 唯一的配方差异就是这一条。
+- **实现点**：`leapbotce.py` 的 `_apply_cache_token_ablation`（挂在
+  `_encode_cloud_tensor` 出口，训练/评测共用同一choke point）、`training_loss`
+  单分支早返回、ckpt meta 记 `cloud_cache_mode`/`paired_age_mode`；
+  `leapbotce_factory` + `configs/model/leapbotce.yaml` 同步；
+  `configs/sim_libero.yaml` 新增 `EVALUATION.edge_uses_delayed_obs: false`。
+- **验证**：单测 **29 passed**（+5：constant 置零保形、shuffled 置换保配对、
+  full 空操作、单分支只用 aged 分支、encode_cloud 端到端应用模式）；分发回归
+  **41/41 PASS**（+5 用例）；hydra compose 实证三 override 与 EVALUATION 开关
+  均生效；singleage 训练 config 与 a6 diff = 仅 RUN_NAME + 一条 EXTRA_OVERRIDE。
+- **提交口径**：`leapbot_ce_eval_libero_a6_{consttoken,shuffledtoken,edgedelay}`
+  （各 4 卡 ×8h，同 ckpt 同协议，TAG 独立）、
+  `leapbot_ce_train_libero_a6_singleage`（8 卡 ×25-40h）、
+  `leapbot_ce_eval_libero_a6_singleage`（训练收工后提）。**userPath 一律
+  `/dahuafs/userdata/2653853/code/FastWAM`**（见同日误提交事故条）。
+
+## 2026-11-03 误提交事故：userPath 选成 JENA → 跑成 JENA 缓存/Stage-1（已停单重提）
+
+- **现象**：首提的 22864154（`leapbot_ce_eval_libero_a6_nocloudcache`，4×H100）
+  起来后跑的不是评测；22864609（`leapbot_ce_train_libero_a6_edgeonly`，8 卡）
+  调度后同样跑偏，用户 15:33 停单。
+- **根因（两层串联）**：① 平台 userPath 选成了
+  `/dahuafs/userdata/2653853/code/LeapBotJENA_ws/JENA`，平台 import 的是 JENA
+  树的 `AIFlow_config.py`（不是 FastWAM 的）；② JENA 分发器第 127 行
+  `elif "cache" in _TASK:` 是子串匹配，我们的任务名带 **`nocloudcache`** →
+  命中 → 落 `AIFlow_config_cache_rxr.py`（`cache_rxr_s2_aiflow_2653853.sh`）。
+  训练单则因任务名含 `train` 但无 m5/m4 → JENA 分发器 else → Stage-1 训练。
+- **证据**：`JENA/jinnTrainResult/leapbot_ce_eval_libero_a6_nocloudcache-9dcdb84a/`
+  平台日志 `15:10:43 userPath .../LeapBotJENA_ws/JENA`、
+  `'CMD': "... bash .../JENA/scripts/cache_rxr_s2_aiflow_2653853.sh --gpus 4"`；
+  本侧 train.log 均 0 字节。
+- **副作用核实**：JENA 缓存产物 `S2_wp_cache_rxr_v1`/`S2_lang_cache_rxr_v1`
+  15:20 后无新增（续跑式，未毁数据）；训练单在
+  `/mnt/c2-worldmodel/2653853/leapbot-jena/runs/stage1_b256_gpu_1103_1533`
+  留了空目录（4 分钟即停，无文件）。以上残留已清。
+- **重提（15:34-15:35）**：22865923 评测（4×H100，FastWAM userPath，CMD 已核
+  `LIBERO_EVAL_EXTRA=model.cloudedge.use_cloud_cache=false` / TAG
+  `a6_lora_fs_step32544_nocloudcache` / D{0,10,20,40} / trials 50 / PACK=1）、
+  22865946 训练（8 卡，排队，起送后须核 userPath=FastWAM）。
+- **教训**：**提交前先核 userPath**；跨树任务名避免带 `cache` 词元（JENA 分发器
+  对 `cache` 做子串匹配），否则即使名字相同也会串树。
+
 ## 2026-11-03 w/o cloud (training, edge-only) 训练变体就绪 — 任务名 `leapbot_ce_train_libero_a6_edgeonly`
 
 - **缘起（用户 11-03 拍板）**：eval-time 行只能证明"部署模型依赖云端"，
