@@ -3,6 +3,46 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-08 11:00 结果拷贝串号事故：根因定位 + v2 管线 + 两组重跑单就绪
+
+- **现象**：D60/D80 探针 98.0/99.0 被判"不可用"（见 11-04 21:55 条目）。复查发现
+  **探针本身跑得没问题**，坏的是 lane 的结果拷贝。
+- **根因**（`baseline_delay/leapbotce_robotwin_sweep_lane_2653853.sh:127`）：
+  `SRC_RESULT=$(ls "${EVAL_RESULT_BASE}/${RUN_TS}"/*/_result_clean.txt | head -1)`。
+  `RUN_TS` 是 **lane 时钟**，eval 的 `run_<ts>` 目录来自 **eval 进程时钟**，两者可差
+  数十秒；多 lane 同时起跑时时间戳相撞，`head -1` 抄到**兄弟 lane 的 run 目录里
+  字母序第一个任务**的结果。铁证（handover_block D60）：cell 文件 0.98（ts
+  20261031_144159）、本格 log 逐集 5/50=0.10、log 指向的 run 目录 0.04/0.08。
+- **污染面**（逐格比对 cell vs 本格 log 的 "Data has been saved to" 目录）：
+
+  | 结果根 | 污染格 | 记录值→复算值 |
+  |---|---|---|
+  | `robotwin_v2_sweep_b6`（native D{0,10,20,40}） | 20/200，**全在 D0** | D0 92.92 → **86.96** |
+  | `robotwin_v2_sweep_b6_ext_rs8`（rs8） | 22/300（D0 19、D40 3） | 88.56→**87.44**、82.48→**81.76** |
+  | `robotwin_v2_sweep_b6_ext`（D60/80 探针） | 13/20 | 98.0/99.0 → **79.2/74.4** |
+
+  同批 20 个 D0 格被抄成同一个 0.98（= 共享 run 目录里字母序第一个任务）是判据。
+- **§8.4 结论不变、幅度下修**：10 任务受限 macro ours 95.2/94.4/91.4/88.2/79.2/74.4
+  vs StarWAM 96.0/95.4/93.4/79.6/53.6/41.5 → 分离 D40 +8.6、D60 **+25.6**、D80
+  **+32.9**（原误报 +44.4/+57.5）。"StarWAM 塌陷、ours 平缓衰减" 仍成立。
+- **论文可见数**：Table 3 ours native 行 D0 92.9/retention 87.0% 基于污染格；去污染
+  为 86.96 → retention **93.0%**。**未改论文**，等重跑冻结后再动。
+- **修复（新增文件，旧脚本未删只归档）**：
+  - `baseline_delay/leapbotce_robotwin_sweep_lane_v2_2653853.sh`：结果路径取本格 log
+    的 `Data has been saved to <run_dir>/_result_clean.txt`，**不回退 glob**，取不到
+    即判失败重试。旧脚本归档 `...sh.bak_20261108`。
+  - `scripts/eval_leapbotce_robotwin_sweep_v2_2653853.sh`：薄 wrapper（只改
+    `LANE_DRIVER`），其余转发原驱动。
+  - `AIFlow_config_eval_robotwin.py`：`SWEEP_REL` 改为可由 `AI_FLOW_SWEEP_REL` 覆盖
+    （缺省不变，其余变体零影响）。
+  - 新单：`AIFlow_config_eval_robotwin_b6_ext2.py`（D60/80，10 任务，根
+    `robotwin_v2_sweep_b6_ext2`）、`AIFlow_config_eval_robotwin_b6_d0recheck.py`
+    （D0，20 污染格，根 `robotwin_v2_sweep_b6_d0recheck`）。ckpt=latest →
+    step_158206.pt，与原批完全同一文件；新根为空，不复用任何 .done。
+  - `scripts/check_aiflow_dispatch.py` 新增两用例（断言 v2 入口进 CMD）：**47/47 PASS**；
+    wrapper 预检实测（坏 python）在算完 lane 路径后才失败，证明 LANE_DRIVER 解析正确。
+- **未做**：未杀任何进程、未删任何资产、未改在跑任务引用的脚本、未改论文数字。
+
 ## 2026-11-05 19:00 出差期无人值守准备：a6 训练消融合并评测单建成（dispatch 43/43 PASS）
 
 - **背景**：用户 11-05 晚出差两天，不能按点提交 AIFlow 单。`tab:ablations` 训练块

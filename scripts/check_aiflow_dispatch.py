@@ -83,6 +83,27 @@ CASES = [
       "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer",
       "LEAPBOTCE_CKPT=latest"],
      ["robotwin_sweep_b6'", "0 10 20 40", "REPLAN_STEPS"]),
+    # ── 串号修复重跑（11-08；旧 lane 结果拷贝抄到兄弟 lane 的 run 目录）──
+    # ours 探针 20 格：独立 ext2 根 + D{60,80} + 10 任务 + **v2 入口**
+    # （CMD 必须出现 v2 wrapper，否则又跑回旧 lane）。
+    ("leapbot_ce_eval_robotwin_b6_ext2", "eval_robotwin_b6_ext2",
+     ["LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_v2_sweep_b6_ext2",
+      "ROBOTWIN_EVAL_DELAYS='60 80'",
+      "LEAPBOTCE_EVAL_TASK=robotwin_all_leapbotce_codec_lora",
+      "ROBOTWIN_EVAL_TASKS='adjust_bottle beat_block_hammer",
+      "eval_leapbotce_robotwin_sweep_v2_2653853.sh",
+      "LEAPBOTCE_CKPT=latest"],
+     ["robotwin_v2_sweep_b6_ext'", "robotwin_v2_sweep_b6'", "0 10 20 40"]),
+    # ours v2 D0 污染 20 格重跑：独立 d0recheck 根 + 单窗 D0 + 20 任务表 +
+    # v2 入口。任务名含 d0 令牌，基座快捷键也会给 0（双保险，断言单窗）。
+    ("leapbot_ce_eval_robotwin_b6_d0recheck", "eval_robotwin_b6_d0recheck",
+     ["LEAPBOTCE_SWEEP_ROOT=/mnt/c2-worldmodel/2653853/baseline-evaluations/"
+      "leapbotce/robotwin_v2_sweep_b6_d0recheck",
+      "ROBOTWIN_EVAL_DELAYS=0",
+      "ROBOTWIN_EVAL_TASKS='blocks_ranking_rgb blocks_ranking_size",
+      "eval_leapbotce_robotwin_sweep_v2_2653853.sh"],
+     ["robotwin_v2_sweep_b6'", "10 20 40", "60 80"]),
     # StarWAM 侧：4 词后缀压过既有 3 词 starwam 委托；env 预设探针口径 +
     # V2_SWEEP_ROOT patch 到独立 ext 根（该常量非 env 可覆盖，缺省会写进
     # v2 主根）。

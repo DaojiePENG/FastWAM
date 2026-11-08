@@ -140,7 +140,11 @@ elif "b6" in _TASK_NAME:
 # checkpoint："latest" = 训练 run 下最新 step_*.pt；或具体 ckpt 绝对路径
 AI_FLOW_CKPT = os.environ.get("AI_FLOW_CKPT", "latest")
 
-SWEEP_REL = Path("scripts") / "eval_leapbotce_robotwin_sweep_2653853.sh"
+# 入口脚本可被变体换成 wrapper（2026-11-08: 结果拷贝串号修复版 v2 入口）。
+# 缺省不变，只有显式设 AI_FLOW_SWEEP_REL 的变体才走别的入口。
+SWEEP_REL = Path("scripts") / os.environ.get(
+    "AI_FLOW_SWEEP_REL", "eval_leapbotce_robotwin_sweep_2653853.sh"
+)
 
 THREAD_CAPS = {
     "OMP_NUM_THREADS": "8",
