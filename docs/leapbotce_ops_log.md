@@ -3,6 +3,46 @@
 > 用途：跟进实验状态 + 提交 AIFlow 申请的速查。新条目在最上。
 > 技术论证见 `leapbotce_dualstream_gap_analysis.md`，配方细节见根目录 `LEAPBOTCE.md`。
 
+## 2026-11-09 09:3x ours 主根 D0 去污染改净入表 + d0recheck 停单 + StarWAM D80 定稿
+
+**一、ours 主根 D0 去污染（论文 `tab:robotwin` 的 `\method` 行，编译编号 = Table 2）**
+- 20/50 格 D0 是旧 lane 拷贝 bug 残留（`_result_clean.txt` 被兄弟 lane 覆盖成 0.98）。
+  以本格 `delay_0/<task>/<task>.log` 末行（进程内计数）重算：**D0 2174/2500 = 86.96%**
+  （原 2323/2500 = 92.92%），D10/D20/D40 = 2146/2129/2022 **与现表逐格一致**，
+  Ret = 2022/2174 = **93.01%**（原 87.04%）。
+- 已改净：`sec/4_experiments.tex`（行 + RoboTwin 段 + 图 3 caption 的 93.0%/+61.3pp）、
+  摘要/引言/结论 4 处、附录 `X_pertask_robotwin.tex`（宏平均 87.0，绿标 29 / 红标 2）、
+  `supplement_body.tex` 着色说明、`Figures/data/*.csv|json`（含 provenance 更正与
+  重算 sha256）、`fig_delay_curves.*` 重画。latexmk rc=0，唯一 overfull 仍 3.06pt。
+
+| 系统 | D0 | D10 | D20 | D40 | Ret |
+|---|---|---|---|---|---|
+| ours (native chunk24) 旧表 | 92.9 | 85.8 | 85.2 | 80.9 | 87.0% |
+| ours (native chunk24) 去污染 | **87.0** | 85.8 | 85.2 | 80.9 | **93.0%** |
+
+**二、`robotwin_v2_sweep_b6_d0recheck` 停单（用户 11-09 批准）**：18/20 完成；同 18 格
+宏平均 82.11（旧）vs 82.56（新跑）、逐格 mean|Δ| 4.67pp、max 16pp、无系统偏差 →
+旧跑 log 值可信，重跑定性为验证而非替换。剩 2 格：
+- `lift_pot`：首格 `setup_demo` 时 curobo warmup 撞 Warp JIT 缓存 PCH 竞争
+  （`catastrophic error: error while deleting file ~/.cache/warp/1.12.0/
+  wp_curobo.rollout.cost.bound_cost_1ed748f.pch: No such file or directory` →
+  `CUDA kernel build failed with error code 6`，栈在 `planner.py:82 warmup()`）。
+  `CuroboPlanner` 构造失败后进程内 planner 坏死，此后每个 seed 秒失败于
+  `lift_pot.py:38 → _base_task.py:1227 target_pose cannot be None`；
+  `eval_policy.py:266` 的 `while succ_seed < test_num` **无重试上限**，`succ_seed` 恒 0
+  ⇒ 空转 18.7 h（14:37 起、09:19 随停单终止；**55,649 次** `error occurs`、log 51.6 MB、
+  0 条 `Success rate`、0 集）。
+  对照主线根同任务 D0 = 48/50（同类别错误仅 12 次）⇒ 远超 2× 阈值，按异常即停上报，
+  未自行杀进程；用户停单后该格取主线根 log 值 48/50。
+- `place_bread_basket`：被堵未起跑，同样取主线根 log 值。
+- **改进方向（下次动 lane 时做，本波不改）**：每格加超时（正常格 ~5 min，20× 余量即可）；
+  启动前清空/独占 `~/.cache/warp`（或以 `WARP_CACHE_PATH` 指向每 lane 私有目录）；
+  `succ_seed` 加"连续失败 N 次即放弃该任务"的护栏。
+
+**三、StarWAM rs8 D80 定稿**：末格 `turn_switch` 07:36 收满，驱动 `rc=0` 退出，六窗
+50/50 全齐。D80 = **8.40**（210/2500，原 47/50 临时值 7.74 作废），D60 = 10.40 复核不变；
+末 50 行法与 (episode, seed) 去重法计数完全一致。论文表尾 `\rev` 句已随之定稿（commit 280eff8）。
+
 ## 2026-11-08 23:05 两单收数：D60/80 探针 20/20 结案、StarWAM rs8 四窗全齐入表
 
 - **23116191 `b6_ext2`（D60/80 探针，修复后重跑）**：20:06:34 全格完成，`delay_60 10/10`
